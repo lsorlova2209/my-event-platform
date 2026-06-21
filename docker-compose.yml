@@ -1,0 +1,23 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: sportdok_postgres
+    environment:
+      POSTGRES_DB: sportdok
+      POSTGRES_USER: sportdok_user
+      POSTGRES_PASSWORD: sportdok_pass
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: sportdok_redis
+    ports:
+      - '6379:6379'
+
+volumes:
+  postgres_data:
