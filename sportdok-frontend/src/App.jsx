@@ -677,7 +677,7 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch) {
       { x1: midX, y1: ya, x2: midX, y2: yb }, { x1: midX, y1: py, x2: xTo, y2: py })
     boxes.push({
       x: xTo, y: py - BR_BOX_H / 2, text: bronzeMatch.winner ? bronzeMatch.winner.full_name : "",
-      pending: !bronzeMatch.winner && bronzeMatch.a && bronzeMatch.b, match: bronzeMatch, roundLabel: "bronze"
+      win: !!bronzeMatch.winner, pending: !bronzeMatch.winner && bronzeMatch.a && bronzeMatch.b, match: bronzeMatch, roundLabel: "bronze"
     })
     height = yb + BR_BOX_H / 2 + 10
   }
