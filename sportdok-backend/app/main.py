@@ -18,7 +18,7 @@ from app.auth import hash_password, verify_password, create_token
 from app.draw import build_category_draw
 from app.kumite_protocol import determine_winner
 from app.kata_protocol import ROUND_SCALES, validate_scores, compute_total, determine_round_result
-from app.documents import build_workbook, team_standings
+from app.documents import build_workbook, build_pdf, team_standings
 
 Base.metadata.create_all(bind=engine)
 
@@ -686,11 +686,13 @@ def list_kata_sessions(tournament_id: str, db: Session = Depends(get_db)):
 
 # ─── ИТОГОВЫЕ ДОКУМЕНТЫ ───────────────────────────────────────────────────────
 
-@app.get("/api/v1/tournaments/{tournament_id}/documents/excel")
-def export_documents_excel(tournament_id: str, db: Session = Depends(get_db)):
+def _assemble_tournament_documents(tournament_id, db):
+    """Shared data assembly for both the Excel and PDF exports. Returns
+    None if the tournament doesn't exist, else (tournament_info, summary,
+    categories_payload, all_placements)."""
     tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
     if not tournament:
-        return {"success": False, "message": "Турнир не найден"}
+        return None
 
     regs = db.query(Registration).filter(Registration.tournament_id == tournament_id).all()
     groups = {}
@@ -816,6 +818,15 @@ def export_documents_excel(tournament_id: str, db: Session = Depends(get_db)):
         "status": tournament.status
     }
 
+    return tournament_info, summary, categories_payload, all_placements
+
+@app.get("/api/v1/tournaments/{tournament_id}/documents/excel")
+def export_documents_excel(tournament_id: str, db: Session = Depends(get_db)):
+    assembled = _assemble_tournament_documents(tournament_id, db)
+    if not assembled:
+        return {"success": False, "message": "Турнир не найден"}
+    tournament_info, summary, categories_payload, all_placements = assembled
+
     wb = build_workbook(tournament_info, summary, categories_payload, team_standings(all_placements))
     buffer = BytesIO()
     wb.save(buffer)
@@ -825,6 +836,21 @@ def export_documents_excel(tournament_id: str, db: Session = Depends(get_db)):
         buffer,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=sportdok_export_{tournament_id[:8]}.xlsx"}
+    )
+
+@app.get("/api/v1/tournaments/{tournament_id}/documents/pdf")
+def export_documents_pdf(tournament_id: str, db: Session = Depends(get_db)):
+    assembled = _assemble_tournament_documents(tournament_id, db)
+    if not assembled:
+        return {"success": False, "message": "Турнир не найден"}
+    tournament_info, summary, categories_payload, all_placements = assembled
+
+    buffer = build_pdf(tournament_info, summary, categories_payload, team_standings(all_placements))
+
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=sportdok_export_{tournament_id[:8]}.pdf"}
     )
 
 # ─── СПРАВОЧНИКИ ──────────────────────────────────────────────────────────────
