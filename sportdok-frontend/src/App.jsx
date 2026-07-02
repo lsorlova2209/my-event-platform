@@ -362,6 +362,9 @@ function AdminPanel({ user, onLogout }) {
 function TournamentDetail({ tournament, onBack }) {
   const [athletes, setAthletes] = useState([])
   const [showForm, setShowForm] = useState(false)
+  const [ranks, setRanks] = useState([])
+  const [weightCategories, setWeightCategories] = useState([])
+  const [kataTypes, setKataTypes] = useState([])
   const [form, setForm] = useState({
     last_name: "", first_name: "", middle_name: "",
     gender: "male", birth_date: "", weight: "",
@@ -372,11 +375,28 @@ function TournamentDetail({ tournament, onBack }) {
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
+  const setDiscipline = (v) => setForm(f => ({ ...f, discipline: v, category_name: "" }))
+
   const loadAthletes = async () => {
     try { const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/athletes`); setAthletes(r.data) } catch {}
   }
+  const loadRanks = async () => {
+    try { const r = await axios.get(`${API}/api/v1/ranks/`); setRanks(r.data) } catch {}
+  }
+  const loadWeightCategories = async () => {
+    try { const r = await axios.get(`${API}/api/v1/weight-categories/`); setWeightCategories(r.data) } catch {}
+  }
+  const loadKataTypes = async () => {
+    try { const r = await axios.get(`${API}/api/v1/kata-types/`); setKataTypes(r.data) } catch {}
+  }
 
-  useEffect(() => { loadAthletes() }, [])
+  useEffect(() => { loadAthletes(); loadRanks(); loadWeightCategories(); loadKataTypes() }, [])
+
+  const kataGroups = kataTypes.reduce((groups, k) => {
+    if (!groups[k.group]) groups[k.group] = []
+    groups[k.group].push(k)
+    return groups
+  }, {})
 
   const handleDeleteAthlete = async (id) => {
     if (!window.confirm("Удалить участника? Это действие необратимо.")) return
@@ -444,16 +464,7 @@ function TournamentDetail({ tournament, onBack }) {
                   <label style={labelStyle}>Разряд / звание</label>
                   <select value={form.rank} onChange={e => set("rank", e.target.value)} style={inputStyle}>
                     <option value="">— выберите —</option>
-                    <option>МСМК</option>
-                    <option>МС</option>
-                    <option>КМС</option>
-                    <option>1 разряд</option>
-                    <option>2 разряд</option>
-                    <option>3 разряд</option>
-                    <option>1 юн. разряд</option>
-                    <option>2 юн. разряд</option>
-                    <option>3 юн. разряд</option>
-                    <option>Б/р</option>
+                    {ranks.map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
                   </select>
                 </div>
                 <div style={{ flex: 1 }}><label style={labelStyle}>Клуб</label><input type="text" value={form.club_name} onChange={e => set("club_name", e.target.value)} style={inputStyle} /></div>
@@ -463,14 +474,33 @@ function TournamentDetail({ tournament, onBack }) {
               <div style={{ display: "flex", gap: "12px", marginBottom: "16px" }}>
                 <div style={{ flex: 1 }}>
                   <label style={labelStyle}>Дисциплина</label>
-                  <select value={form.discipline} onChange={e => set("discipline", e.target.value)} style={inputStyle}>
+                  <select value={form.discipline} onChange={e => setDiscipline(e.target.value)} style={inputStyle}>
                     <option value="kata">Ката</option>
                     <option value="kumite_ok">ОК (ограниченный контакт)</option>
                     <option value="kumite_pk">ПК (полный контакт)</option>
                     <option value="kumite_sz">СЗ (средства защиты)</option>
                   </select>
                 </div>
-                <div style={{ flex: 1 }}><label style={labelStyle}>Категория</label><input type="text" value={form.category_name} onChange={e => set("category_name", e.target.value)} placeholder="Мужчины 18+, до 75кг" style={inputStyle} /></div>
+                <div style={{ flex: 1 }}>
+                  <label style={labelStyle}>Категория</label>
+                  {form.discipline === "kata" ? (
+                    <select value={form.category_name} onChange={e => set("category_name", e.target.value)} style={inputStyle}>
+                      <option value="">— выберите —</option>
+                      {Object.entries(kataGroups).map(([group, types]) => (
+                        <optgroup key={group} label={group}>
+                          {types.map(k => <option key={k.id} value={k.name}>{k.name}</option>)}
+                        </optgroup>
+                      ))}
+                    </select>
+                  ) : (
+                    <select value={form.category_name} onChange={e => set("category_name", e.target.value)} style={inputStyle}>
+                      <option value="">— выберите —</option>
+                      {weightCategories.filter(c => c.discipline === form.discipline).map(c => (
+                        <option key={c.id} value={c.name}>{c.name}</option>
+                      ))}
+                    </select>
+                  )}
+                </div>
               </div>
 
               {error && <div style={errorBox}>{error}</div>}

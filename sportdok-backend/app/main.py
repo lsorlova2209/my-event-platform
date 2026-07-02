@@ -9,6 +9,7 @@ from app.models.user import User
 from app.models.tournament import Tournament
 from app.models.athlete import Athlete, Registration
 from app.models.club import Club
+from app.models.reference import WeightCategory, Rank, KataType
 from app.auth import hash_password, verify_password, create_token
 
 Base.metadata.create_all(bind=engine)
@@ -78,6 +79,57 @@ def create_admin():
             name="Администратор"
         )
         db.add(admin)
+        db.commit()
+
+WEIGHT_CATEGORIES = {
+    "kumite_ok": [
+        "38", "40", "42", "45", "47", "50", "52", "55", "57", "58", "60", "62",
+        "63", "65", "67", "68", "70", "70+", "73", "75", "78", "80", "83", "90", "90+",
+        "абсолютная категория", "командные соревнования", "двоеборье"
+    ],
+    "kumite_pk": [
+        "35", "40", "45", "50", "55", "60", "65", "70", "75", "75+", "80", "85", "90", "90+", "95"
+    ],
+    "kumite_sz": [
+        "36", "39", "42", "45", "48", "51", "54", "57", "60", "64", "68", "72",
+        "76", "76+", "80", "85", "90", "90+"
+    ],
+}
+
+RANKS = [
+    "МСМК", "МС", "КМС", "1 разряд", "2 разряд", "3 разряд",
+    "1 юн. разряд", "2 юн. разряд", "3 юн. разряд", "Б/р"
+]
+
+KATA_TYPES = {
+    "ОК-ката": ["Годзю-рю", "Вадо-рю", "Ренгокай", "Группа", "Бункай"],
+    "СЗ-ката": [
+        "Соло", "Соло с предметом", "Пара", "Пара с предметами",
+        "Группа", "Группа смешанная", "Группа смешанная с предметами"
+    ],
+}
+
+@app.on_event("startup")
+def seed_reference_catalogs():
+    db = next(get_db())
+    if db.query(WeightCategory).first() is None:
+        categories = [
+            WeightCategory(discipline=discipline, name=name, sort_order=i)
+            for discipline, names in WEIGHT_CATEGORIES.items()
+            for i, name in enumerate(names)
+        ]
+        db.add_all(categories)
+        db.commit()
+    if db.query(Rank).first() is None:
+        db.add_all([Rank(name=name, sort_order=i) for i, name in enumerate(RANKS)])
+        db.commit()
+    if db.query(KataType).first() is None:
+        kata_types = [
+            KataType(group=group, name=name, sort_order=i)
+            for group, names in KATA_TYPES.items()
+            for i, name in enumerate(names)
+        ]
+        db.add_all(kata_types)
         db.commit()
 
 # ─── AUTH ─────────────────────────────────────────────────────────────────────
@@ -293,3 +345,32 @@ def delete_athlete(athlete_id: str, db: Session = Depends(get_db)):
     db.delete(athlete)
     db.commit()
     return {"success": True, "message": f"Участник {full_name} удалён"}
+
+# ─── СПРАВОЧНИКИ ──────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/weight-categories/")
+def list_weight_categories(discipline: Optional[str] = None, db: Session = Depends(get_db)):
+    query = db.query(WeightCategory)
+    if discipline:
+        query = query.filter(WeightCategory.discipline == discipline)
+    categories = query.order_by(WeightCategory.discipline, WeightCategory.sort_order).all()
+    return [
+        {"id": str(c.id), "discipline": c.discipline, "name": c.name}
+        for c in categories
+    ]
+
+@app.get("/api/v1/ranks/")
+def list_ranks(db: Session = Depends(get_db)):
+    ranks = db.query(Rank).order_by(Rank.sort_order).all()
+    return [{"id": str(r.id), "name": r.name} for r in ranks]
+
+@app.get("/api/v1/kata-types/")
+def list_kata_types(group: Optional[str] = None, db: Session = Depends(get_db)):
+    query = db.query(KataType)
+    if group:
+        query = query.filter(KataType.group == group)
+    kata_types = query.order_by(KataType.group, KataType.sort_order).all()
+    return [
+        {"id": str(k.id), "group": k.group, "name": k.name}
+        for k in kata_types
+    ]
