@@ -897,23 +897,29 @@ function TournamentDetail({ tournament, user, onBack }) {
         </div>
 
         <div style={card}>
-          {athletes.length === 0 ? (
+          {Object.keys(bracketGroups).length === 0 ? (
             <p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Участников пока нет. Добавьте первого!</p>
-          ) : athletes.map(a => (
-            <div key={a.id} style={{ padding: "16px", borderBottom: "1px solid #f3f2ee", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
-                <div style={{ fontWeight: "bold", color: "#1A56A0" }}>{a.full_name}</div>
-                <div style={{ color: "#4A4A48", fontSize: "14px" }}>
-                  {a.club_name && `${a.club_name} · `}
-                  {a.discipline === "kata" ? "Ката" : a.discipline === "kumite_ok" ? "ОК" : a.discipline === "kumite_pk" ? "ПК" : "СЗ"}
-                  {a.category_name && ` · ${a.category_name}`}
-                  {a.weight && ` · ${a.weight} кг`}
-                  {a.rank && ` · ${a.rank}`}
+          ) : Object.values(bracketGroups).map(group => {
+            const label = categoryLabel(group.discipline, group.gender, group.category_name)
+            return (
+              <div key={label} style={{ marginBottom: "12px" }}>
+                <div style={{ padding: "10px 4px", background: "#f3f2ee", fontWeight: "bold", color: "#1A56A0", fontSize: "14px" }}>
+                  {label} ({group.athletes.length})
                 </div>
+                {group.athletes.map(a => (
+                  <div key={a.id} style={{ padding: "16px 4px", borderBottom: "1px solid #f3f2ee", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div>
+                      <div style={{ fontWeight: "bold", color: "#1A56A0" }}>{a.full_name}</div>
+                      <div style={{ color: "#4A4A48", fontSize: "14px" }}>
+                        {[a.club_name, a.weight && `${a.weight} кг`, a.rank].filter(Boolean).join(" · ")}
+                      </div>
+                    </div>
+                    <button onClick={() => handleDeleteAthlete(a.id)} style={{ ...btnDanger, padding: "6px 12px", fontSize: "13px" }}>✗ Удалить</button>
+                  </div>
+                ))}
               </div>
-              <button onClick={() => handleDeleteAthlete(a.id)} style={{ ...btnDanger, padding: "6px 12px", fontSize: "13px" }}>✗ Удалить</button>
-            </div>
-          ))}
+            )
+          })}
         </div>
 
         <div style={card}>
@@ -954,29 +960,15 @@ function TournamentDetail({ tournament, user, onBack }) {
                   )
                 }
 
-                // Кумитэ - настоящая турнирная сетка (та же геометрия, что и в
-                // PDF-протоколе), только для просмотра - ввод результатов у секретаря.
-                const data = computeKumiteBracketData(group.athletes, bouts)
+                // Кумитэ - тот же интерактивный компонент, что и у секретаря
+                // (KumiteBracket сам по себе не завязан на конкретный "стол",
+                // ему нужен только tournament_id), поэтому админ тоже может
+                // кликнуть по бою прямо в сетке и внести результат.
                 return (
                   <div key={label} style={{ marginBottom: "24px" }}>
                     <div style={{ fontWeight: "bold", color: "#1A56A0", marginBottom: "8px" }}>{label}</div>
-                    {!data.drawn ? (
-                      <p style={{ color: "#4A4A48", fontSize: "14px" }}>Жеребьёвка не проведена</p>
-                    ) : data.roundRobin ? (
-                      <>
-                        <div style={{ fontSize: "13px", color: "#4A4A48", marginBottom: "8px" }}>Круговая система — каждый с каждым</div>
-                        {data.pairs.map((m, i) => (
-                          <div key={i} style={{ fontSize: "14px", padding: "4px 0" }}>
-                            {m.a.full_name} vs {m.b.full_name}
-                            {m.winner && <span style={{ color: "#0F6E56", fontWeight: "bold" }}> — {m.winner.full_name}</span>}
-                          </div>
-                        ))}
-                      </>
-                    ) : (
-                      <div style={{ overflowX: "auto", paddingBottom: "8px" }}>
-                        <BracketSvgView layout={layoutBracket(data.roundsPerGroup, data.finalMatch, data.bronzeMatch)} interactive={false} />
-                      </div>
-                    )}
+                    <KumiteBracket grant={{ tournament_id: tournament.id }} user={user} participants={group.athletes} bouts={bouts}
+                      onChanged={() => { loadAthletes(); loadBouts() }} />
                   </div>
                 )
               })}
@@ -989,7 +981,9 @@ function TournamentDetail({ tournament, user, onBack }) {
               {drawResult.categories.map((cat, i) => (
                 <div key={i} style={{ marginBottom: "16px" }}>
                   <div style={{ fontWeight: "bold" }}>{categoryLabel(cat.discipline, cat.gender, cat.category_name)}</div>
-                  <div style={{ fontSize: "13px", color: "#4A4A48", marginBottom: "6px" }}>{DRAW_SYSTEM_LABELS[cat.system] || cat.system}</div>
+                  <div style={{ fontSize: "13px", color: "#4A4A48", marginBottom: "6px" }}>
+                    {cat.already_drawn ? "Уже проведена ранее — не тронута" : (DRAW_SYSTEM_LABELS[cat.system] || cat.system)}
+                  </div>
 
                   {cat.system === "kata_order" && cat.participants.map(p => (
                     <div key={p.registration_id} style={{ fontSize: "13px" }}>№{p.seed} {p.full_name}</div>

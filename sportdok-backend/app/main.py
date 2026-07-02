@@ -416,6 +416,25 @@ def draw_tournament(tournament_id: str, current_user=Depends(get_current_user), 
 
     categories = []
     for (discipline, gender, category_name), participants in groups.items():
+        # A category that's already fully seeded is left untouched - drawing
+        # is meant to be safe to re-run after a late entrant joins a
+        # *different* category. Redrawing an already-decided bracket doesn't
+        # just reshuffle cosmetically: any bouts already recorded reference
+        # specific registrations, and changing who's paired with whom orphans
+        # them (a completed round-1 match no longer matches any seed pairing,
+        # so the bracket view shows it as undecided even though it happened).
+        if all(p["_reg"].seed is not None for p in participants):
+            for p in participants:
+                del p["_reg"]
+            categories.append({
+                "discipline": discipline,
+                "gender": gender,
+                "category_name": category_name,
+                "participant_count": len(participants),
+                "already_drawn": True
+            })
+            continue
+
         result = build_category_draw(discipline, participants)
         flat = result["participants"] if "participants" in result else [p for sub in result["subgroups"] for p in sub["participants"]]
         for p in flat:
