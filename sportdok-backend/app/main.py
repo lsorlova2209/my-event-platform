@@ -11,6 +11,7 @@ from app.models.athlete import Athlete, Registration
 from app.models.club import Club
 from app.models.reference import WeightCategory, Rank, KataType
 from app.auth import hash_password, verify_password, create_token
+from app.draw import build_category_draw
 
 Base.metadata.create_all(bind=engine)
 
@@ -40,6 +41,9 @@ class ClubRegister(BaseModel):
     email: str
     password: str
     trainers: Optional[str] = None
+
+class TrainerAdd(BaseModel):
+    name: str
 
 class TournamentCreate(BaseModel):
     name: str
@@ -229,6 +233,43 @@ def reject_club(club_id: str, db: Session = Depends(get_db)):
     db.commit()
     return {"success": True, "message": f"Клуб {club.full_name} отклонён"}
 
+@app.get("/api/v1/clubs/{club_id}/trainers")
+def list_club_trainers(club_id: str, db: Session = Depends(get_db)):
+    club = db.query(Club).filter(Club.id == club_id).first()
+    if not club:
+        return {"success": False, "message": "Клуб не найден"}
+    trainers = [t.strip() for t in (club.trainers or "").split(",") if t.strip()]
+    return {"success": True, "trainers": trainers}
+
+@app.post("/api/v1/clubs/{club_id}/trainers")
+def add_club_trainer(club_id: str, data: TrainerAdd, db: Session = Depends(get_db)):
+    club = db.query(Club).filter(Club.id == club_id).first()
+    if not club:
+        return {"success": False, "message": "Клуб не найден"}
+    trainers = [t.strip() for t in (club.trainers or "").split(",") if t.strip()]
+    name = data.name.strip()
+    if not name:
+        return {"success": False, "message": "Укажите ФИО тренера"}
+    if name in trainers:
+        return {"success": False, "message": "Такой тренер уже есть в списке"}
+    trainers.append(name)
+    club.trainers = ", ".join(trainers)
+    db.commit()
+    return {"success": True, "trainers": trainers}
+
+@app.delete("/api/v1/clubs/{club_id}/trainers")
+def remove_club_trainer(club_id: str, name: str, db: Session = Depends(get_db)):
+    club = db.query(Club).filter(Club.id == club_id).first()
+    if not club:
+        return {"success": False, "message": "Клуб не найден"}
+    trainers = [t.strip() for t in (club.trainers or "").split(",") if t.strip()]
+    if name not in trainers:
+        return {"success": False, "message": "Тренер не найден"}
+    trainers.remove(name)
+    club.trainers = ", ".join(trainers)
+    db.commit()
+    return {"success": True, "trainers": trainers}
+
 # ─── TOURNAMENTS ──────────────────────────────────────────────────────────────
 
 @app.post("/api/v1/tournaments/")
@@ -277,6 +318,51 @@ def delete_tournament(tournament_id: str, db: Session = Depends(get_db)):
     db.delete(tournament)
     db.commit()
     return {"success": True, "message": f"Турнир {name} удалён"}
+
+@app.post("/api/v1/tournaments/{tournament_id}/draw")
+def draw_tournament(tournament_id: str, db: Session = Depends(get_db)):
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        return {"success": False, "message": "Турнир не найден"}
+
+    rank_order = {r.name: r.sort_order for r in db.query(Rank).all()}
+    regs = db.query(Registration).filter(Registration.tournament_id == tournament_id).all()
+
+    groups = {}
+    for reg in regs:
+        athlete = db.query(Athlete).filter(Athlete.id == reg.athlete_id).first()
+        if not athlete:
+            continue
+        key = (reg.discipline, athlete.gender, reg.category_name)
+        groups.setdefault(key, []).append({
+            "registration_id": str(reg.id),
+            "full_name": f"{athlete.last_name} {athlete.first_name} {athlete.middle_name or ''}".strip(),
+            "club_name": athlete.club_name,
+            "rank_sort_order": rank_order.get(athlete.rank),
+            "_reg": reg
+        })
+
+    if not groups:
+        return {"success": False, "message": "В турнире нет заявленных участников"}
+
+    categories = []
+    for (discipline, gender, category_name), participants in groups.items():
+        result = build_category_draw(discipline, participants)
+        flat = result["participants"] if "participants" in result else [p for sub in result["subgroups"] for p in sub["participants"]]
+        for p in flat:
+            p["_reg"].seed = p["seed"]
+            p["_reg"].subgroup = p.get("subgroup")
+            del p["_reg"]
+        categories.append({
+            "discipline": discipline,
+            "gender": gender,
+            "category_name": category_name,
+            "participant_count": len(participants),
+            **result
+        })
+
+    db.commit()
+    return {"success": True, "tournament_id": tournament_id, "categories": categories}
 
 # ─── ATHLETES ─────────────────────────────────────────────────────────────────
 
@@ -331,7 +417,9 @@ def list_athletes(tournament_id: str, db: Session = Depends(get_db)):
                 "discipline": reg.discipline,
                 "category_name": reg.category_name,
                 "team_number": reg.team_number,
-                "admission_status": reg.admission_status
+                "admission_status": reg.admission_status,
+                "seed": reg.seed,
+                "subgroup": reg.subgroup
             })
     return result
 

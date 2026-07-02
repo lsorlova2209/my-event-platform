@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Date, DateTime, Numeric
+from sqlalchemy import Column, String, Date, DateTime, Numeric, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime
 import uuid
@@ -31,5 +31,7 @@ class Registration(Base):
     category_name = Column(String, nullable=True)
     team_number = Column(String, nullable=True)
     admission_status = Column(String, nullable=True)
+    seed = Column(Integer, nullable=True)
+    subgroup = Column(Integer, nullable=True)
     status = Column(String, nullable=False, default="active")
     created_at = Column(DateTime, default=datetime.utcnow)
