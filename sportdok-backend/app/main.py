@@ -11,9 +11,11 @@ from app.models.athlete import Athlete, Registration
 from app.models.club import Club
 from app.models.reference import WeightCategory, Rank, KataType
 from app.models.bout import Bout
+from app.models.kata_score import KataScore, KataSession
 from app.auth import hash_password, verify_password, create_token
 from app.draw import build_category_draw
 from app.kumite_protocol import determine_winner
+from app.kata_protocol import ROUND_SCALES, validate_scores, compute_total, determine_round_result
 
 Base.metadata.create_all(bind=engine)
 
@@ -88,6 +90,16 @@ class BoutResult(BaseModel):
     line1_level_b: int = Field(0, ge=0, le=3)
     line2_level_b: int = Field(0, ge=0, le=3)
     line3_level_b: int = Field(0, ge=0, le=3)
+
+class KataScoreSubmit(BaseModel):
+    tournament_id: str
+    registration_id: str
+    round_label: str
+    scores: List[float]
+
+class KataSessionStart(BaseModel):
+    category_name: Optional[str] = None
+    gender: Optional[str] = None
 
 # ─── STARTUP ──────────────────────────────────────────────────────────────────
 
@@ -546,6 +558,127 @@ def list_bouts(tournament_id: str, db: Session = Depends(get_db)):
             "status": b.status
         }
         for b in bouts
+    ]
+
+# ─── ПРОТОКОЛ КАТА ────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/kata-scores/")
+def submit_kata_score(data: KataScoreSubmit, db: Session = Depends(get_db)):
+    if data.round_label not in ROUND_SCALES:
+        return {"success": False, "message": "Некорректный круг"}
+    reg = db.query(Registration).filter(Registration.id == data.registration_id).first()
+    if not reg:
+        return {"success": False, "message": "Участник не найден"}
+    if str(reg.tournament_id) != data.tournament_id:
+        return {"success": False, "message": "Участник не заявлен на этот турнир"}
+    if reg.discipline != "kata":
+        return {"success": False, "message": "Протокол ката доступен только для дисциплины «ката»"}
+    if not validate_scores(data.round_label, data.scores):
+        lo, hi = ROUND_SCALES[data.round_label]
+        return {"success": False, "message": f"Нужно ровно 5 оценок в диапазоне {lo}–{hi}"}
+
+    athlete = db.query(Athlete).filter(Athlete.id == reg.athlete_id).first()
+    total, low, high = compute_total(data.scores)
+
+    score_row = db.query(KataScore).filter(
+        KataScore.registration_id == data.registration_id,
+        KataScore.round_label == data.round_label
+    ).first()
+    is_new = score_row is None
+    if is_new:
+        score_row = KataScore(
+            tournament_id=data.tournament_id,
+            registration_id=data.registration_id,
+            category_name=reg.category_name,
+            gender=athlete.gender if athlete else None,
+            round_label=data.round_label
+        )
+
+    score_row.score_1, score_row.score_2, score_row.score_3, score_row.score_4, score_row.score_5 = data.scores
+    score_row.total_score = total
+    score_row.lowest_counted_score = low
+    score_row.highest_counted_score = high
+
+    if is_new:
+        db.add(score_row)
+    db.commit()
+    db.refresh(score_row)
+    return {"success": True, "id": str(score_row.id), "total_score": float(total)}
+
+@app.get("/api/v1/tournaments/{tournament_id}/kata-standings")
+def kata_standings(tournament_id: str, category_name: str, round_label: str, gender: Optional[str] = None, db: Session = Depends(get_db)):
+    if round_label not in ROUND_SCALES:
+        return {"success": False, "message": "Некорректный круг"}
+
+    query = db.query(KataScore).filter(
+        KataScore.tournament_id == tournament_id,
+        KataScore.category_name == category_name,
+        KataScore.round_label == round_label
+    )
+    if gender:
+        query = query.filter(KataScore.gender == gender)
+    scores = query.all()
+    if not scores:
+        return {"success": True, "ranked": [], "cutoff": None, "tie_at_cutoff": False}
+
+    entries = [
+        {
+            "registration_id": str(s.registration_id),
+            "scores": [float(s.score_1), float(s.score_2), float(s.score_3), float(s.score_4), float(s.score_5)]
+        }
+        for s in scores
+    ]
+    result = determine_round_result(round_label, entries)
+
+    def athlete_name(registration_id):
+        reg = db.query(Registration).filter(Registration.id == registration_id).first()
+        if not reg:
+            return None
+        athlete = db.query(Athlete).filter(Athlete.id == reg.athlete_id).first()
+        return f"{athlete.last_name} {athlete.first_name}".strip() if athlete else None
+
+    for r in result["ranked"]:
+        r["full_name"] = athlete_name(r["registration_id"])
+
+    return {"success": True, **result}
+
+@app.post("/api/v1/tournaments/{tournament_id}/kata-sessions")
+def start_kata_session(tournament_id: str, data: KataSessionStart, db: Session = Depends(get_db)):
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        return {"success": False, "message": "Турнир не найден"}
+    session = KataSession(
+        tournament_id=tournament_id,
+        category_name=data.category_name,
+        gender=data.gender,
+        started_at=datetime.utcnow()
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    return {"success": True, "id": str(session.id), "started_at": session.started_at.isoformat()}
+
+@app.post("/api/v1/kata-sessions/{session_id}/finish")
+def finish_kata_session(session_id: str, db: Session = Depends(get_db)):
+    session = db.query(KataSession).filter(KataSession.id == session_id).first()
+    if not session:
+        return {"success": False, "message": "Сессия не найдена"}
+    session.finished_at = datetime.utcnow()
+    db.commit()
+    return {"success": True, "finished_at": session.finished_at.isoformat()}
+
+@app.get("/api/v1/tournaments/{tournament_id}/kata-sessions")
+def list_kata_sessions(tournament_id: str, db: Session = Depends(get_db)):
+    sessions = db.query(KataSession).filter(KataSession.tournament_id == tournament_id).order_by(KataSession.created_at).all()
+    return [
+        {
+            "id": str(s.id),
+            "category_name": s.category_name,
+            "gender": s.gender,
+            "started_at": s.started_at.isoformat() if s.started_at else None,
+            "finished_at": s.finished_at.isoformat() if s.finished_at else None
+        }
+        for s in sessions
     ]
 
 # ─── СПРАВОЧНИКИ ──────────────────────────────────────────────────────────────
