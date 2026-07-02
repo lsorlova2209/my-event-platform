@@ -11,6 +11,7 @@ class Bout(Base):
     tournament_id = Column(UUID(as_uuid=True), nullable=False)
     discipline = Column(String, nullable=False)
     category_name = Column(String, nullable=True)
+    gender = Column(String, nullable=True)
     round_label = Column(String, nullable=False, default="round1")
 
     registration_id_a = Column(UUID(as_uuid=True), nullable=False)

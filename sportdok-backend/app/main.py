@@ -14,7 +14,8 @@ from app.models.club import Club
 from app.models.reference import WeightCategory, Rank, KataType
 from app.models.bout import Bout
 from app.models.kata_score import KataScore, KataSession
-from app.auth import hash_password, verify_password, create_token
+from app.models.secretary_access import SecretaryAccess
+from app.auth import hash_password, verify_password, create_token, get_current_user, require_roles
 from app.draw import build_category_draw
 from app.kumite_protocol import determine_winner
 from app.kata_protocol import ROUND_SCALES, validate_scores, compute_total, determine_round_result
@@ -103,6 +104,17 @@ class KataScoreSubmit(BaseModel):
 class KataSessionStart(BaseModel):
     category_name: Optional[str] = None
     gender: Optional[str] = None
+
+class SecretaryCreate(BaseModel):
+    email: str
+    password: str
+    name: str
+
+class SecretaryAccessGrant(BaseModel):
+    secretary_user_id: str
+    discipline: str
+    gender: Optional[str] = None
+    category_name: Optional[str] = None
 
 # ─── STARTUP ──────────────────────────────────────────────────────────────────
 
@@ -472,8 +484,23 @@ def delete_athlete(athlete_id: str, db: Session = Depends(get_db)):
 
 # ─── ПРОТОКОЛ КУМИТЭ ──────────────────────────────────────────────────────────
 
+def secretary_has_access(db, user, tournament_id, discipline, gender, category_name):
+    """Admins/owners always pass. Secretaries need a matching grant for this
+    exact (tournament, discipline, gender, category) 'стол'."""
+    if user["role"] != "secretary":
+        return True
+    grant = db.query(SecretaryAccess).filter(
+        SecretaryAccess.tournament_id == tournament_id,
+        SecretaryAccess.secretary_user_id == user["user_id"],
+        SecretaryAccess.discipline == discipline,
+        SecretaryAccess.gender == gender,
+        SecretaryAccess.category_name == category_name
+    ).first()
+    return grant is not None
+
 @app.post("/api/v1/bouts/")
-def create_bout(data: BoutCreate, db: Session = Depends(get_db)):
+def create_bout(data: BoutCreate, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner", "secretary"})
     if data.registration_id_a == data.registration_id_b:
         return {"success": False, "message": "Участник не может биться сам с собой"}
     reg_a = db.query(Registration).filter(Registration.id == data.registration_id_a).first()
@@ -487,10 +514,16 @@ def create_bout(data: BoutCreate, db: Session = Depends(get_db)):
     if reg_a.discipline != reg_b.discipline or reg_a.category_name != reg_b.category_name:
         return {"success": False, "message": "Участники из разных категорий"}
 
+    athlete_a = db.query(Athlete).filter(Athlete.id == reg_a.athlete_id).first()
+    gender = athlete_a.gender if athlete_a else None
+    if not secretary_has_access(db, current_user, data.tournament_id, reg_a.discipline, gender, reg_a.category_name):
+        raise HTTPException(status_code=403, detail="Нет доступа к этой сетке")
+
     bout = Bout(
         tournament_id=data.tournament_id,
         discipline=reg_a.discipline,
         category_name=reg_a.category_name,
+        gender=gender,
         round_label=data.round_label or "round1",
         registration_id_a=data.registration_id_a,
         registration_id_b=data.registration_id_b
@@ -501,10 +534,13 @@ def create_bout(data: BoutCreate, db: Session = Depends(get_db)):
     return {"success": True, "id": str(bout.id)}
 
 @app.post("/api/v1/bouts/{bout_id}/result")
-def submit_bout_result(bout_id: str, data: BoutResult, db: Session = Depends(get_db)):
+def submit_bout_result(bout_id: str, data: BoutResult, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner", "secretary"})
     bout = db.query(Bout).filter(Bout.id == bout_id).first()
     if not bout:
         return {"success": False, "message": "Поединок не найден"}
+    if not secretary_has_access(db, current_user, str(bout.tournament_id), bout.discipline, bout.gender, bout.category_name):
+        raise HTTPException(status_code=403, detail="Нет доступа к этой сетке")
 
     bout.waza_ari_a, bout.ippon_a = data.waza_ari_a, data.ippon_a
     bout.line1_level_a, bout.line2_level_a, bout.line3_level_a = data.line1_level_a, data.line2_level_a, data.line3_level_a
@@ -566,7 +602,8 @@ def list_bouts(tournament_id: str, db: Session = Depends(get_db)):
 # ─── ПРОТОКОЛ КАТА ────────────────────────────────────────────────────────────
 
 @app.post("/api/v1/kata-scores/")
-def submit_kata_score(data: KataScoreSubmit, db: Session = Depends(get_db)):
+def submit_kata_score(data: KataScoreSubmit, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner", "secretary"})
     if data.round_label not in ROUND_SCALES:
         return {"success": False, "message": "Некорректный круг"}
     reg = db.query(Registration).filter(Registration.id == data.registration_id).first()
@@ -581,6 +618,8 @@ def submit_kata_score(data: KataScoreSubmit, db: Session = Depends(get_db)):
         return {"success": False, "message": f"Нужно ровно 5 оценок в диапазоне {lo}–{hi}"}
 
     athlete = db.query(Athlete).filter(Athlete.id == reg.athlete_id).first()
+    if not secretary_has_access(db, current_user, data.tournament_id, "kata", athlete.gender if athlete else None, reg.category_name):
+        raise HTTPException(status_code=403, detail="Нет доступа к этой сетке")
     total, low, high = compute_total(data.scores)
 
     score_row = db.query(KataScore).filter(
@@ -646,10 +685,13 @@ def kata_standings(tournament_id: str, category_name: str, round_label: str, gen
     return {"success": True, **result}
 
 @app.post("/api/v1/tournaments/{tournament_id}/kata-sessions")
-def start_kata_session(tournament_id: str, data: KataSessionStart, db: Session = Depends(get_db)):
+def start_kata_session(tournament_id: str, data: KataSessionStart, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner", "secretary"})
     tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
     if not tournament:
         return {"success": False, "message": "Турнир не найден"}
+    if not secretary_has_access(db, current_user, tournament_id, "kata", data.gender, data.category_name):
+        raise HTTPException(status_code=403, detail="Нет доступа к этой сетке")
     session = KataSession(
         tournament_id=tournament_id,
         category_name=data.category_name,
@@ -662,10 +704,13 @@ def start_kata_session(tournament_id: str, data: KataSessionStart, db: Session =
     return {"success": True, "id": str(session.id), "started_at": session.started_at.isoformat()}
 
 @app.post("/api/v1/kata-sessions/{session_id}/finish")
-def finish_kata_session(session_id: str, db: Session = Depends(get_db)):
+def finish_kata_session(session_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner", "secretary"})
     session = db.query(KataSession).filter(KataSession.id == session_id).first()
     if not session:
         return {"success": False, "message": "Сессия не найдена"}
+    if not secretary_has_access(db, current_user, str(session.tournament_id), "kata", session.gender, session.category_name):
+        raise HTTPException(status_code=403, detail="Нет доступа к этой сетке")
     session.finished_at = datetime.utcnow()
     db.commit()
     return {"success": True, "finished_at": session.finished_at.isoformat()}
@@ -682,6 +727,91 @@ def list_kata_sessions(tournament_id: str, db: Session = Depends(get_db)):
             "finished_at": s.finished_at.isoformat() if s.finished_at else None
         }
         for s in sessions
+    ]
+
+# ─── СЕКРЕТАРИ ────────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/secretaries/")
+def create_secretary(data: SecretaryCreate, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
+    existing = db.query(User).filter(User.email == data.email).first()
+    if existing:
+        return {"success": False, "message": "Пользователь с таким email уже существует"}
+    secretary = User(
+        email=data.email,
+        password_hash=hash_password(data.password),
+        role="secretary",
+        name=data.name
+    )
+    db.add(secretary)
+    db.commit()
+    db.refresh(secretary)
+    return {"success": True, "id": str(secretary.id)}
+
+@app.get("/api/v1/secretaries/")
+def list_secretaries(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
+    secretaries = db.query(User).filter(User.role == "secretary").order_by(User.created_at.desc()).all()
+    return [{"id": str(s.id), "email": s.email, "name": s.name} for s in secretaries]
+
+@app.post("/api/v1/tournaments/{tournament_id}/secretary-access")
+def grant_secretary_access(tournament_id: str, data: SecretaryAccessGrant, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
+    secretary = db.query(User).filter(User.id == data.secretary_user_id, User.role == "secretary").first()
+    if not secretary:
+        return {"success": False, "message": "Секретарь не найден"}
+    access = SecretaryAccess(
+        tournament_id=tournament_id,
+        secretary_user_id=data.secretary_user_id,
+        discipline=data.discipline,
+        gender=data.gender,
+        category_name=data.category_name
+    )
+    db.add(access)
+    db.commit()
+    db.refresh(access)
+    return {"success": True, "id": str(access.id)}
+
+@app.delete("/api/v1/secretary-access/{access_id}")
+def revoke_secretary_access(access_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
+    access = db.query(SecretaryAccess).filter(SecretaryAccess.id == access_id).first()
+    if not access:
+        return {"success": False, "message": "Доступ не найден"}
+    db.delete(access)
+    db.commit()
+    return {"success": True}
+
+@app.get("/api/v1/tournaments/{tournament_id}/secretary-access")
+def list_secretary_access(tournament_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
+    grants = db.query(SecretaryAccess).filter(SecretaryAccess.tournament_id == tournament_id).all()
+    result = []
+    for g in grants:
+        secretary = db.query(User).filter(User.id == g.secretary_user_id).first()
+        result.append({
+            "id": str(g.id),
+            "secretary_user_id": str(g.secretary_user_id),
+            "secretary_name": secretary.name if secretary else None,
+            "discipline": g.discipline,
+            "gender": g.gender,
+            "category_name": g.category_name
+        })
+    return result
+
+@app.get("/api/v1/secretaries/me/access")
+def my_secretary_access(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"secretary"})
+    grants = db.query(SecretaryAccess).filter(SecretaryAccess.secretary_user_id == current_user["user_id"]).all()
+    return [
+        {
+            "id": str(g.id),
+            "tournament_id": str(g.tournament_id),
+            "discipline": g.discipline,
+            "gender": g.gender,
+            "category_name": g.category_name
+        }
+        for g in grants
     ]
 
 # ─── ИТОГОВЫЕ ДОКУМЕНТЫ ───────────────────────────────────────────────────────
