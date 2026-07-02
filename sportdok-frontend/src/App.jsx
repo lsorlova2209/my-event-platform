@@ -627,6 +627,9 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch) {
           // here as "won" if it came from an actual decided bout, not from
           // a bye chain propagating with nobody on the other side yet.
           win: !!(match.a && match.b && match.winner), pending: !match.winner && match.a && match.b,
+          // Editable whenever there's a real two-sided match, decided or
+          // not - a wrong result needs to be correctable, not just enterable once.
+          editable: !!(match.a && match.b),
           match, roundLabel
         })
       }
@@ -657,7 +660,7 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch) {
     labels.push({ x: xTo, y: py - BR_BOX_H / 2 - 18, text: "Финал", bold: true })
     boxes.push({
       x: xTo, y: py - BR_BOX_H / 2, text: finalMatch.winner ? finalMatch.winner.full_name : "",
-      win: true, big: true, pending: !finalMatch.winner && finalMatch.a && finalMatch.b,
+      win: true, big: true, pending: !finalMatch.winner && finalMatch.a && finalMatch.b, editable: true,
       match: finalMatch, roundLabel: "final"
     })
     width = Math.max(width, (c + 1) * (BR_BOX_W + BR_H_GAP) - BR_H_GAP)
@@ -677,7 +680,8 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch) {
       { x1: midX, y1: ya, x2: midX, y2: yb }, { x1: midX, y1: py, x2: xTo, y2: py })
     boxes.push({
       x: xTo, y: py - BR_BOX_H / 2, text: bronzeMatch.winner ? bronzeMatch.winner.full_name : "",
-      win: !!bronzeMatch.winner, pending: !bronzeMatch.winner && bronzeMatch.a && bronzeMatch.b, match: bronzeMatch, roundLabel: "bronze"
+      win: !!bronzeMatch.winner, pending: !bronzeMatch.winner && bronzeMatch.a && bronzeMatch.b, editable: true,
+      match: bronzeMatch, roundLabel: "bronze"
     })
     height = yb + BR_BOX_H / 2 + 10
   }
@@ -1525,10 +1529,11 @@ function BracketSvgView({ layout, interactive, onOpenMatch }) {
         }}>{lb.text}</div>
       ))}
       {layout.boxes.map((b, i) => {
-        const clickable = interactive && b.pending
+        const clickable = interactive && b.editable
         return (
           <div key={i}
             onClick={clickable ? () => onOpenMatch(b) : undefined}
+            title={clickable ? (b.pending ? "Ввести результат" : "Нажмите, чтобы изменить результат") : (b.text || undefined)}
             style={{
               position: "absolute", left: b.x, top: b.y, width: BR_BOX_W, height: BR_BOX_H,
               boxSizing: "border-box", border: `${b.big ? 2 : 1}px ${b.pending ? "dashed" : "solid"} ${b.big ? "#1A56A0" : "#D3D1C7"}`,
@@ -1540,7 +1545,6 @@ function BracketSvgView({ layout, interactive, onOpenMatch }) {
               overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
               cursor: clickable ? "pointer" : "default"
             }}
-            title={b.text || undefined}
           >
             {b.text || (b.pending ? (interactive ? "Ввести результат" : "—") : "")}
           </div>
@@ -1587,7 +1591,7 @@ function KumiteBracket({ grant, user, participants, bouts, onChanged }) {
         <Modal onClose={() => setActiveMatch(null)}>
           <h3 style={{ margin: "0 0 12px", color: "#1A56A0" }}>Результат боя</h3>
           <BoutResultForm a={activeMatch.match.a} b={activeMatch.match.b} roundLabel={activeMatch.roundLabel}
-            existingBoutId={activeMatch.match.bout?.id} tournamentId={grant.tournament_id} user={user}
+            existingBout={activeMatch.match.bout} tournamentId={grant.tournament_id} user={user}
             onDone={() => { setActiveMatch(null); onChanged() }} onCancel={() => setActiveMatch(null)} />
         </Modal>
       )}
@@ -1612,28 +1616,32 @@ function MatchBox({ match, roundLabel, tournamentId, user, onChanged }) {
       <div style={rowStyle(a)}>{a ? a.full_name : ""}</div>
       {b && <div style={{ ...rowStyle(b), borderTop: "1px solid #f3f2ee" }}>{b.full_name}</div>}
 
-      {a && b && !decided && (
+      {decided && bout.win_method && !showForm && (
+        <div style={{ fontSize: "11px", color: "#4A4A48", marginTop: "4px" }}>{WIN_METHOD_LABELS[bout.win_method] || bout.win_method}</div>
+      )}
+      {a && b && (
         showForm ? (
-          <BoutResultForm a={a} b={b} roundLabel={roundLabel} existingBoutId={bout?.id} tournamentId={tournamentId} user={user}
+          <BoutResultForm a={a} b={b} roundLabel={roundLabel} existingBout={bout} tournamentId={tournamentId} user={user}
             onDone={() => { setShowForm(false); onChanged() }} onCancel={() => setShowForm(false)} />
         ) : (
-          <button onClick={() => setShowForm(true)} style={{ ...btnOutline, padding: "5px 10px", fontSize: "12px", marginTop: "6px" }}>Ввести результат</button>
+          <button onClick={() => setShowForm(true)} style={{ ...btnOutline, padding: "5px 10px", fontSize: "12px", marginTop: "6px" }}>
+            {decided ? "Изменить результат" : "Ввести результат"}
+          </button>
         )
-      )}
-      {decided && bout.win_method && (
-        <div style={{ fontSize: "11px", color: "#4A4A48", marginTop: "4px" }}>{WIN_METHOD_LABELS[bout.win_method] || bout.win_method}</div>
       )}
     </div>
   )
 }
 
-function BoutResultForm({ a, b, roundLabel, existingBoutId, tournamentId, user, onDone, onCancel }) {
-  const [wazaAriA, setWazaAriA] = useState(0)
-  const [ipponA, setIpponA] = useState(0)
-  const [linesA, setLinesA] = useState([0, 0, 0])
-  const [wazaAriB, setWazaAriB] = useState(0)
-  const [ipponB, setIpponB] = useState(0)
-  const [linesB, setLinesB] = useState([0, 0, 0])
+function BoutResultForm({ a, b, roundLabel, existingBout, tournamentId, user, onDone, onCancel }) {
+  // Pre-fill from the existing bout when correcting an already-decided
+  // match, instead of making the secretary re-type both sides from zero.
+  const [wazaAriA, setWazaAriA] = useState(existingBout?.waza_ari_a ?? 0)
+  const [ipponA, setIpponA] = useState(existingBout?.ippon_a ?? 0)
+  const [linesA, setLinesA] = useState(existingBout?.lines_a ?? [0, 0, 0])
+  const [wazaAriB, setWazaAriB] = useState(existingBout?.waza_ari_b ?? 0)
+  const [ipponB, setIpponB] = useState(existingBout?.ippon_b ?? 0)
+  const [linesB, setLinesB] = useState(existingBout?.lines_b ?? [0, 0, 0])
   const [error, setError] = useState("")
   const [saving, setSaving] = useState(false)
 
@@ -1642,7 +1650,7 @@ function BoutResultForm({ a, b, roundLabel, existingBoutId, tournamentId, user, 
   const submit = async () => {
     setSaving(true); setError("")
     try {
-      let boutId = existingBoutId
+      let boutId = existingBout?.id
       if (!boutId) {
         const r = await axios.post(`${API}/api/v1/bouts/`, {
           tournament_id: tournamentId, registration_id_a: a.registration_id, registration_id_b: b.registration_id, round_label: roundLabel
