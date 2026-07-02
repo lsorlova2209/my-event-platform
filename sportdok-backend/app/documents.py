@@ -1,14 +1,17 @@
 import os
+from datetime import date
 from io import BytesIO
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Flowable, KeepTogether
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+
+from app.draw import next_power_of_two, round1_pairs_by_seed
 
 # Base14 PDF fonts (Helvetica etc.) have no Cyrillic glyphs. DejaVu Sans is
 # bundled under app/fonts/ (freely licensed, same font matplotlib ships) so
@@ -30,6 +33,35 @@ DISCIPLINE_LABELS = {
     "kumite_pk": "Кумитэ ПК",
     "kumite_sz": "Кумитэ СЗ",
 }
+
+# This app targets one federation-classified sport only (see CLAUDE.md) - the
+# official protocol header names it explicitly, so it's a constant rather
+# than a per-tournament field.
+SPORT_NAME = "ВСЕСТИЛЕВОЕ КАРАТЭ"
+SPORT_CODE = "0900001411Я"
+
+GENDER_SHORT = {"male": "м", "female": "ж"}
+
+
+def _fmt_date(value):
+    if not value:
+        return ""
+    if isinstance(value, (date,)):
+        return value.strftime("%d.%m.%Y")
+    text = str(value)
+    try:
+        return date.fromisoformat(text[:10]).strftime("%d.%m.%Y")
+    except ValueError:
+        return text
+
+
+def _short_name(p):
+    last = (p.get("last_name") or "").strip()
+    first = (p.get("first_name") or "").strip()
+    full = f"{last} {first}".strip()
+    if len(full) <= 20 or not first:
+        return full
+    return f"{last} {first[0]}."
 
 
 def team_standings(placements):
@@ -139,7 +171,14 @@ def _pdf_styles():
         styles[name].fontName = "DejaVuSans"
     for name in ("Title", "Heading1", "Heading2", "Heading3"):
         styles[name].fontName = "DejaVuSans-Bold"
+    styles["Title"].alignment = 1
+    styles.add(_paragraph_style("Center", styles["Normal"], alignment=1))
+    styles.add(_paragraph_style("DocTitle", styles["Normal"], fontName="DejaVuSans-Bold", fontSize=13, alignment=1))
     return styles
+
+
+def _paragraph_style(name, parent, **kwargs):
+    return ParagraphStyle(name, parent=parent, **kwargs)
 
 
 def _make_table(rows, header=False):
@@ -159,12 +198,475 @@ def _make_table(rows, header=False):
     return table
 
 
+# ─── OFFICIAL PROTOCOL HEADER / FOOTER ─────────────────────────────────────
+# Layout copied from the federation's own protocol forms (see docs/samples):
+# tournament name, sport line, a 3-column info strip (программа / место /
+# дата), the document title, then (after the body) a judge signature block.
+
+def _official_header(styles, tournament, program_label, doc_title):
+    info_cell = lambda value, caption: Paragraph(
+        f"{value or '—'}<br/><font size=7 color='grey'>{caption}</font>", styles["Center"]
+    )
+    info_table = Table(
+        [[
+            info_cell(program_label, "вид программы"),
+            info_cell(tournament.get("location"), "место проведения соревнований"),
+            info_cell(_fmt_date(tournament.get("event_date")), "дата проведения соревнований"),
+        ]],
+        colWidths=["34%", "33%", "33%"],
+    )
+    info_table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.5, colors.grey),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    return [
+        Paragraph(tournament.get("name") or "Турнир", styles["Title"]),
+        Paragraph(f"Вид спорта: {SPORT_NAME} (номер-код вида спорта {SPORT_CODE})", styles["Center"]),
+        Spacer(1, 0.25 * cm),
+        info_table,
+        Spacer(1, 0.3 * cm),
+        Paragraph(doc_title, styles["DocTitle"]),
+        Spacer(1, 0.3 * cm),
+    ]
+
+
+def _signature_block(styles):
+    table = Table(
+        [
+            ["Главный судья:", "", "Главный секретарь:", ""],
+        ],
+        colWidths=[3.2 * cm, 7 * cm, 3.6 * cm, 7 * cm],
+    )
+    table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "DejaVuSans"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("LINEBELOW", (1, 0), (1, 0), 0.5, colors.black),
+        ("LINEBELOW", (3, 0), (3, 0), 0.5, colors.black),
+        ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+        ("TOPPADDING", (0, 0), (-1, -1), 14),
+    ]))
+    return table
+
+
+# ─── ИТОГОВЫЙ ПРОТОКОЛ (full participant table) ────────────────────────────
+
+_FULL_PROTOCOL_HEADER = [
+    "№<br/>п/п", "№<br/>квал", "пол", "Фамилия", "Имя", "Отчество", "Дата<br/>рождения",
+    "Полных<br/>лет", "Разряд,<br/>звание", "Вид<br/>программы", "Регион", "Тренер", "Занятое<br/>место",
+]
+_FULL_PROTOCOL_WIDTHS = [0.9, 1.0, 0.8, 2.8, 2.4, 2.6, 2.0, 1.3, 2.0, 2.2, 3.85, 3.85, 1.5]
+
+
+def _full_protocol_table(cat):
+    place_by_reg = {p["registration_id"]: p["place"] for p in cat["placements"] if p.get("registration_id")}
+    header_style = ParagraphStyle("ProtoHeader", fontName="DejaVuSans-Bold", fontSize=7.5, alignment=1, leading=9)
+
+    def sort_key(p):
+        place = place_by_reg.get(p["registration_id"])
+        return (0, place) if place is not None else (1, p.get("seed") or 9999, p.get("last_name") or "")
+
+    participants = sorted(cat["participants"], key=sort_key)
+    rows = [[Paragraph(h, header_style) for h in _FULL_PROTOCOL_HEADER]]
+    for i, p in enumerate(participants, start=1):
+        place = place_by_reg.get(p["registration_id"])
+        rows.append([
+            str(i),
+            str(p["seed"]) if p.get("seed") else "",
+            GENDER_SHORT.get(p.get("gender"), p.get("gender") or ""),
+            p.get("last_name") or "",
+            p.get("first_name") or "",
+            p.get("middle_name") or "",
+            _fmt_date(p.get("birth_date")),
+            str(p.get("age_years") or ""),
+            p.get("rank") or "",
+            cat["category_name"] or "",
+            p.get("club_name") or "",
+            p.get("trainer_name") or "",
+            str(place) if place is not None else "",
+        ])
+
+    table = Table(rows, colWidths=[w * cm for w in _FULL_PROTOCOL_WIDTHS], repeatRows=1)
+    table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "DejaVuSans"),
+        ("FONTNAME", (0, 0), (-1, 0), "DejaVuSans-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (0, 0), (2, -1), "CENTER"),
+        ("ALIGN", (6, 0), (7, -1), "CENTER"),
+        ("ALIGN", (-1, 0), (-1, -1), "CENTER"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ]))
+    return table
+
+
+# ─── ПРОТОКОЛ ХОДА СОРЕВНОВАНИЯ — ката (round score table) ─────────────────
+
+_KATA_ROUND_TITLES = {"round1": "1-й круг", "round2": "2-й круг", "final": "Финал"}
+_KATA_ROUND_ORDER = ["round1", "round2", "final"]
+
+
+def _kata_rounds_table(cat):
+    rounds_present = [r for r in _KATA_ROUND_ORDER if any(s["round_label"] == r for s in cat["kata_scores"])]
+    if not rounds_present:
+        return None
+
+    score_by_reg_round = {(s["registration_id"], s["round_label"]): s for s in cat["kata_scores"]}
+    place_by_reg = {p["registration_id"]: p["place"] for p in cat["placements"] if p.get("registration_id")}
+
+    participants = sorted(
+        cat["participants"],
+        key=lambda p: (
+            place_by_reg.get(p["registration_id"]) is None,
+            place_by_reg.get(p["registration_id"], 9999),
+            p.get("seed") or 9999,
+        ),
+    )
+    participants = [p for p in participants if any((p["registration_id"], r) in score_by_reg_round for r in rounds_present)]
+
+    header_top = ["№", "Фамилия Имя"]
+    header_sub = ["", ""]
+    for r in rounds_present:
+        header_top += [_KATA_ROUND_TITLES[r], "", "", "", "", ""]
+        header_sub += ["1", "2", "3", "4", "5", "Итог"]
+    header_top.append("Место")
+    header_sub.append("")
+
+    rows = [header_top, header_sub]
+    for i, p in enumerate(participants, start=1):
+        row = [str(i), _short_name(p)]
+        for r in rounds_present:
+            s = score_by_reg_round.get((p["registration_id"], r))
+            if s:
+                row += [
+                    f'{s["score_1"]:g}', f'{s["score_2"]:g}', f'{s["score_3"]:g}',
+                    f'{s["score_4"]:g}', f'{s["score_5"]:g}', f'{s["total_score"]:g}',
+                ]
+            else:
+                row += ["", "", "", "", "", ""]
+        place = place_by_reg.get(p["registration_id"])
+        row.append(str(place) if place is not None else "")
+        rows.append(row)
+
+    n_round_cols = 6 * len(rounds_present)
+    col_widths = [0.8 * cm, 3.6 * cm] + [1.55 * cm] * n_round_cols + [1.2 * cm]
+    table = Table(rows, colWidths=col_widths, repeatRows=2)
+
+    style = [
+        ("FONTNAME", (0, 0), (-1, -1), "DejaVuSans"),
+        ("FONTNAME", (0, 0), (-1, 1), "DejaVuSans-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("BACKGROUND", (0, 0), (-1, 1), colors.whitesmoke),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (2, 0), (-1, -1), "CENTER"),
+        ("ALIGN", (0, 0), (0, -1), "CENTER"),
+        ("SPAN", (0, 0), (0, 1)),
+        ("SPAN", (1, 0), (1, 1)),
+        ("SPAN", (-1, 0), (-1, 1)),
+    ]
+    col = 2
+    for _ in rounds_present:
+        style.append(("SPAN", (col, 0), (col + 5, 0)))
+        col += 6
+    table.setStyle(TableStyle(style))
+    return table
+
+
+# ─── ПРОТОКОЛ ХОДА СОРЕВНОВАНИЯ — кумитэ (bracket tree) ────────────────────
+
+def _bouts_index(bouts):
+    index = {}
+    for b in bouts:
+        if b.get("registration_id_a") and b.get("registration_id_b"):
+            index[frozenset((b["registration_id_a"], b["registration_id_b"]))] = b
+    return index
+
+
+def _resolve_match(a, b, bouts_by_pair):
+    """a, b: participant dict or None. Returns (winner_or_None, bout_or_None).
+    Matching is purely by which two registrations a bout lists, so it works
+    regardless of how a round was labelled when the secretary entered it."""
+    if a and not b:
+        return a, None
+    if b and not a:
+        return b, None
+    if not a and not b:
+        return None, None
+    bout = bouts_by_pair.get(frozenset((a["registration_id"], b["registration_id"])))
+    if bout and bout["status"] == "completed" and bout.get("winner_registration_id"):
+        winner = a if bout["winner_registration_id"] == a["registration_id"] else b
+        return winner, bout
+    return None, bout
+
+
+def _bracket_rounds(participants, bouts_by_pair):
+    """participants: entries with a 1-based 'seed' *within this group*.
+    Returns a list of rounds; round 0 holds the round-1 matches
+    ({"a", "b", "winner"}), each following round pairs up the previous
+    round's winners in bracket order."""
+    by_seed = {p["seed"]: p for p in participants if p.get("seed")}
+    n = len(by_seed)
+    if n == 0:
+        return []
+    size = next_power_of_two(n)
+    pairs = round1_pairs_by_seed(size)
+
+    current = []
+    for seed_a, seed_b in pairs:
+        pa, pb = by_seed.get(seed_a), by_seed.get(seed_b)
+        winner, bout = _resolve_match(pa, pb, bouts_by_pair)
+        current.append({"a": pa, "b": pb, "winner": winner, "bout": bout})
+
+    rounds = [current]
+    while len(current) > 1:
+        nxt = []
+        for i in range(0, len(current), 2):
+            wa, wb = current[i]["winner"], current[i + 1]["winner"]
+            winner, bout = _resolve_match(wa, wb, bouts_by_pair)
+            nxt.append({"a": wa, "b": wb, "winner": winner, "bout": bout})
+        rounds.append(nxt)
+        current = nxt
+    return rounds
+
+
+class _BracketDiagram(Flowable):
+    """Draws a single-elimination bracket (one tree per subgroup, merging
+    into one final box when there are two subgroups, plus a small
+    consolation-match box for 3rd place) using plain canvas primitives -
+    reportlab has no built-in bracket/tree flowable."""
+
+    BOX_W = 3.2 * cm
+    H_GAP = 0.7 * cm
+    MAX_ROW_H = 0.85 * cm
+    MIN_ROW_H = 0.4 * cm
+    GROUP_GAP = 0.6 * cm
+
+    def __init__(self, rounds_per_group, final_match, bronze_match, avail_width, avail_height, font_name="DejaVuSans"):
+        super().__init__()
+        self.rounds_per_group = rounds_per_group
+        self.final_match = final_match
+        self.bronze_match = bronze_match
+        self.font_name = font_name
+
+        self.leaf_counts = [2 * len(r[0]) for r in rounds_per_group]
+        total_leaf_rows = sum(self.leaf_counts) or 1
+        n_groups = len(rounds_per_group)
+        bronze_rows = 3 if bronze_match else 0
+
+        content_height = total_leaf_rows * self.MAX_ROW_H + max(n_groups - 1, 0) * self.GROUP_GAP
+        content_height += bronze_rows * self.MAX_ROW_H
+        self.row_h = self.MAX_ROW_H
+        if avail_height and content_height > avail_height:
+            scale = max(avail_height / content_height, 0.35)
+            self.row_h = max(self.MAX_ROW_H * scale, self.MIN_ROW_H)
+
+        max_rounds = max((len(r) for r in rounds_per_group), default=0)
+        self.n_cols = 1 + max_rounds + (1 if n_groups > 1 else 0)
+        self.box_w, self.h_gap = self.BOX_W, self.H_GAP
+        natural_width = self.n_cols * self.box_w + (self.n_cols - 1) * self.h_gap
+        if avail_width and natural_width > avail_width:
+            scale = max(avail_width / natural_width, 0.5)
+            self.box_w *= scale
+            self.h_gap *= scale
+        self.font_size = 7 if self.box_w > 2.2 * cm else 6
+
+        self.width = self.n_cols * self.box_w + (self.n_cols - 1) * self.h_gap
+        self.height = (
+            sum(self.leaf_counts) * self.row_h
+            + max(n_groups - 1, 0) * self.GROUP_GAP
+            + (bronze_rows * self.row_h + 0.4 * cm if bronze_match else 0)
+        )
+        self.max_rounds = max_rounds
+
+    def wrap(self, avail_width, avail_height):
+        return self.width, self.height
+
+    def _box(self, c, y_center, text, bold=False):
+        x = c * (self.box_w + self.h_gap)
+        y = y_center - self.row_h / 2
+        canv = self.canv
+        canv.setLineWidth(1.1 if bold else 0.6)
+        canv.rect(x, y, self.box_w, self.row_h, stroke=1, fill=0)
+        if text:
+            canv.setFont(f"{self.font_name}-Bold" if bold else self.font_name, self.font_size)
+            canv.drawCentredString(x + self.box_w / 2, y_center - self.font_size / 3, text)
+        return x, x + self.box_w
+
+    def draw(self):
+        top_y = self.height
+        group_champion_y = []
+
+        y_cursor = top_y
+        for gi, rounds in enumerate(self.rounds_per_group):
+            leaf_n = self.leaf_counts[gi]
+            ys0, present0 = [], []
+            for i in range(leaf_n):
+                y_cursor -= self.row_h
+                ys0.append(y_cursor + self.row_h / 2)
+                match = rounds[0][i // 2]
+                slot = match["a"] if i % 2 == 0 else match["b"]
+                present0.append(slot is not None)
+                if slot is not None:
+                    self._box(0, ys0[-1], _short_name(slot))
+            if gi < len(self.rounds_per_group) - 1:
+                y_cursor -= self.GROUP_GAP
+
+            col_ys, col_present = ys0, present0
+            for c in range(1, len(rounds) + 1):
+                next_ys = []
+                for j, match in enumerate(rounds[c - 1]):
+                    ya, pa = col_ys[2 * j], col_present[2 * j]
+                    yb, pb = col_ys[2 * j + 1], col_present[2 * j + 1]
+                    if pa and pb:
+                        py = (ya + yb) / 2
+                    elif pa:
+                        py = ya
+                    else:
+                        py = yb
+                    next_ys.append(py)
+                    x_from = c * (self.box_w + self.h_gap) - self.h_gap
+                    x_to = c * (self.box_w + self.h_gap)
+                    if pa and pb:
+                        canv = self.canv
+                        canv.setLineWidth(0.6)
+                        mid_x = x_from + self.h_gap / 2
+                        canv.line(x_from, ya, mid_x, ya)
+                        canv.line(x_from, yb, mid_x, yb)
+                        canv.line(mid_x, ya, mid_x, yb)
+                        canv.line(mid_x, py, x_to, py)
+                    else:
+                        canv = self.canv
+                        canv.setLineWidth(0.6)
+                        canv.line(x_from, py, x_to, py)
+                    label = _short_name(match["winner"]) if match["winner"] else ""
+                    self._box(c, py, label)
+                col_ys, col_present = next_ys, [True] * len(next_ys)
+
+            # carry the group champion forward (straight passthrough) if the
+            # other group's tree is taller, so the two line up for the final.
+            champ_y = col_ys[0] if col_ys else ys0[0]
+            champ_label = _short_name(rounds[-1][0]["winner"]) if rounds and rounds[-1][0]["winner"] else ""
+            for c in range(len(rounds) + 1, self.max_rounds + 1):
+                x_from = c * (self.box_w + self.h_gap) - self.h_gap
+                x_to = c * (self.box_w + self.h_gap)
+                self.canv.setLineWidth(0.6)
+                self.canv.line(x_from, champ_y, x_to, champ_y)
+                self._box(c, champ_y, champ_label)
+            group_champion_y.append(champ_y)
+
+        if self.final_match:
+            c = self.max_rounds + 1
+            x_from = c * (self.box_w + self.h_gap) - self.h_gap
+            x_to = c * (self.box_w + self.h_gap)
+            y0, y1 = group_champion_y[0], group_champion_y[-1]
+            py = (y0 + y1) / 2
+            canv = self.canv
+            canv.setLineWidth(0.6)
+            mid_x = x_from + self.h_gap / 2
+            canv.line(x_from, y0, mid_x, y0)
+            canv.line(x_from, y1, mid_x, y1)
+            canv.line(mid_x, y0, mid_x, y1)
+            canv.line(mid_x, py, x_to, py)
+            label = _short_name(self.final_match["winner"]) if self.final_match["winner"] else ""
+            self._box(c, py, label, bold=True)
+
+        if self.bronze_match:
+            self.canv.setFont(self.font_name, self.font_size)
+            label_y = y_cursor - 0.55 * cm
+            self.canv.drawString(0, label_y, "Матч за 3-е место")
+            row_h = self.row_h
+            ya = label_y - 0.25 * cm - row_h / 2
+            yb = ya - row_h - 0.1 * cm
+            a, b, winner = self.bronze_match["a"], self.bronze_match["b"], self.bronze_match["winner"]
+            self._box(0, ya, _short_name(a) if a else "")
+            self._box(0, yb, _short_name(b) if b else "")
+            py = (ya + yb) / 2
+            x_from = 1 * (self.box_w + self.h_gap) - self.h_gap
+            x_to = 1 * (self.box_w + self.h_gap)
+            canv = self.canv
+            mid_x = x_from + self.h_gap / 2
+            canv.line(x_from, ya, mid_x, ya)
+            canv.line(x_from, yb, mid_x, yb)
+            canv.line(mid_x, ya, mid_x, yb)
+            canv.line(mid_x, py, x_to, py)
+            self._box(1, py, _short_name(winner) if winner else "")
+
+
+def _build_bracket_diagram(cat, avail_width, avail_height):
+    participants = cat["participants"]
+    if not any(p.get("seed") for p in participants):
+        return None
+
+    bouts_by_pair = _bouts_index(cat["bouts"])
+    groups = {}
+    for p in participants:
+        groups.setdefault(p.get("subgroup") or 1, []).append(p)
+    group_keys = sorted(groups.keys())
+    rounds_per_group = [_bracket_rounds(groups[k], bouts_by_pair) for k in group_keys]
+    rounds_per_group = [r for r in rounds_per_group if r]
+    if not rounds_per_group:
+        return None
+
+    final_match = None
+    if len(rounds_per_group) > 1:
+        champs = [r[-1][0]["winner"] for r in rounds_per_group]
+        if all(champs):
+            final_match = {"a": champs[0], "b": champs[-1]}
+            final_match["winner"], _ = _resolve_match(champs[0], champs[-1], bouts_by_pair)
+
+    by_reg_id = {p["registration_id"]: p for p in participants}
+    bronze_bout = next((b for b in cat["bouts"] if b["round_label"] == "bronze"), None)
+    bronze_match = None
+    if bronze_bout:
+        a = by_reg_id.get(bronze_bout["registration_id_a"])
+        b = by_reg_id.get(bronze_bout["registration_id_b"])
+        winner = None
+        if bronze_bout["status"] == "completed" and bronze_bout.get("winner_registration_id"):
+            winner_id = bronze_bout["winner_registration_id"]
+            winner = a if a and a["registration_id"] == winner_id else b
+        bronze_match = {"a": a, "b": b, "winner": winner}
+
+    return _BracketDiagram(rounds_per_group, final_match, bronze_match, avail_width, avail_height)
+
+
+def _results_table(cat, styles):
+    if not cat["placements"]:
+        return [Paragraph("Результаты пока не определены.", styles["Normal"])]
+    rows = [["Место", "Фамилия Имя Отчество", "Регион"]] + [
+        [str(p["place"]), p["full_name"], p["club_name"] or ""] for p in cat["placements"]
+    ]
+    table = Table(rows, colWidths=[2 * cm, 8 * cm, 6 * cm])
+    table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "DejaVuSans"),
+        ("FONTNAME", (0, 0), (-1, 0), "DejaVuSans-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
+        ("ALIGN", (0, 0), (0, -1), "CENTER"),
+    ]))
+    return [Paragraph("Результаты", styles["Heading3"]), Spacer(1, 0.15 * cm), table]
+
+
 def build_pdf(tournament, summary, categories, team_ranking):
-    """Same four sections as build_workbook, laid out as one PDF with page
-    breaks between them (PDF has no sheet concept)."""
+    """Two of the four sections (итоговый протокол / протокол хода
+    соревнования) are laid out per-category to match the federation's own
+    protocol forms (see docs/samples); сводная справка and командный зачёт
+    stay as simple summary tables since the samples don't cover those."""
     styles = _pdf_styles()
+    page_size = landscape(A4)
+    margin = 1.2 * cm
     buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
+    doc = SimpleDocTemplate(buffer, pagesize=page_size, topMargin=margin, bottomMargin=margin, leftMargin=margin, rightMargin=margin)
+    avail_width = page_size[0] - 2 * margin
+    avail_height = page_size[1] - 2 * margin - 6 * cm  # leave room for header/footer on the tree page
+
     story = [Paragraph("СпортДок — Итоговые документы", styles["Title"]), Spacer(1, 0.3 * cm)]
 
     story.append(Paragraph("Сводная справка", styles["Heading2"]))
@@ -184,33 +686,36 @@ def build_pdf(tournament, summary, categories, team_ranking):
     ]
     story.append(_make_table(discipline_rows, header=True))
 
-    story.append(PageBreak())
-    story.append(Paragraph("Итоговый протокол", styles["Heading2"]))
-    any_placements = False
     for cat in categories:
-        if not cat["placements"]:
-            continue
-        any_placements = True
-        story.append(Paragraph(_category_label(cat["discipline"], cat["gender"], cat["category_name"]), styles["Heading3"]))
-        rows = [["Место", "Участник", "Клуб"]] + [
-            [str(p["place"]), p["full_name"], p["club_name"] or ""] for p in cat["placements"]
-        ]
-        story.append(_make_table(rows, header=True))
-    if not any_placements:
-        story.append(Paragraph("Итоги пока не определены.", styles["Normal"]))
+        program_label = _category_label(cat["discipline"], cat["gender"], cat["category_name"])
 
-    story.append(PageBreak())
-    story.append(Paragraph("Протокол хода соревнования", styles["Heading2"]))
-    any_progress = False
-    for cat in categories:
-        if not cat["progress"]:
-            continue
-        any_progress = True
-        story.append(Paragraph(_category_label(cat["discipline"], cat["gender"], cat["category_name"]), styles["Heading3"]))
-        for line in cat["progress"]:
-            story.append(Paragraph(line, styles["Normal"]))
-    if not any_progress:
-        story.append(Paragraph("Результатов пока нет.", styles["Normal"]))
+        story.append(PageBreak())
+        story += _official_header(styles, tournament, program_label, "ИТОГОВЫЙ ПРОТОКОЛ")
+        if cat["participants"]:
+            story.append(_full_protocol_table(cat))
+        else:
+            story.append(Paragraph("Участники не заявлены.", styles["Normal"]))
+        story.append(Spacer(1, 1 * cm))
+        story.append(_signature_block(styles))
+
+        story.append(PageBreak())
+        story += _official_header(styles, tournament, program_label, "ПРОТОКОЛ ХОДА СОРЕВНОВАНИЙ")
+        if cat["discipline"] == "kata":
+            kata_table = _kata_rounds_table(cat)
+            if kata_table:
+                story.append(kata_table)
+            else:
+                story.append(Paragraph("Результаты пока не введены.", styles["Normal"]))
+        else:
+            diagram = _build_bracket_diagram(cat, avail_width, avail_height)
+            if diagram:
+                story.append(diagram)
+            else:
+                story.append(Paragraph("Жеребьёвка ещё не проведена.", styles["Normal"]))
+            story.append(Spacer(1, 0.4 * cm))
+            story.append(KeepTogether(_results_table(cat, styles)))
+        story.append(Spacer(1, 0.6 * cm))
+        story.append(_signature_block(styles))
 
     story.append(PageBreak())
     story.append(Paragraph("Командный зачёт", styles["Heading2"]))

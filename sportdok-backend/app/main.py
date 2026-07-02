@@ -884,6 +884,26 @@ def _assemble_tournament_documents(tournament_id, db):
         reg_by_id = {str(reg.id): (reg, athlete) for reg, athlete in members}
         placements = []
         progress = []
+        kata_scores_payload = []
+        bouts_payload = []
+
+        participants_payload = [
+            {
+                "registration_id": str(reg.id),
+                "seed": reg.seed,
+                "subgroup": reg.subgroup,
+                "last_name": athlete.last_name,
+                "first_name": athlete.first_name,
+                "middle_name": athlete.middle_name,
+                "gender": athlete.gender,
+                "birth_date": athlete.birth_date.isoformat() if athlete.birth_date else None,
+                "age_years": athlete.age_years,
+                "rank": athlete.rank,
+                "club_name": athlete.club_name,
+                "trainer_name": athlete.trainer_name,
+            }
+            for reg, athlete in members
+        ]
 
         if discipline == "kata":
             scores = db.query(KataScore).filter(
@@ -891,6 +911,19 @@ def _assemble_tournament_documents(tournament_id, db):
                 KataScore.category_name == category_name,
                 KataScore.gender == gender
             ).order_by(KataScore.round_label, KataScore.total_score.desc()).all()
+            kata_scores_payload = [
+                {
+                    "registration_id": str(s.registration_id),
+                    "round_label": s.round_label,
+                    "score_1": float(s.score_1),
+                    "score_2": float(s.score_2),
+                    "score_3": float(s.score_3),
+                    "score_4": float(s.score_4),
+                    "score_5": float(s.score_5),
+                    "total_score": float(s.total_score),
+                }
+                for s in scores
+            ]
             for s in scores:
                 pair = reg_by_id.get(str(s.registration_id))
                 name = full_name(pair[1]) if pair else "?"
@@ -909,13 +942,24 @@ def _assemble_tournament_documents(tournament_id, db):
                 for r in result["ranked"][:4]:
                     pair = reg_by_id.get(r["registration_id"])
                     if pair:
-                        placements.append({"place": r["place"], "full_name": full_name(pair[1]), "club_name": pair[1].club_name})
+                        placements.append({"place": r["place"], "full_name": full_name(pair[1]), "club_name": pair[1].club_name, "registration_id": r["registration_id"]})
         else:
             bouts = db.query(Bout).filter(
                 Bout.tournament_id == tournament_id,
                 Bout.discipline == discipline,
                 Bout.category_name == category_name
             ).order_by(Bout.created_at).all()
+            bouts_payload = [
+                {
+                    "registration_id_a": str(b.registration_id_a),
+                    "registration_id_b": str(b.registration_id_b),
+                    "winner_registration_id": str(b.winner_registration_id) if b.winner_registration_id else None,
+                    "win_method": b.win_method,
+                    "status": b.status,
+                    "round_label": b.round_label,
+                }
+                for b in bouts
+            ]
             for b in bouts:
                 pair_a = reg_by_id.get(str(b.registration_id_a))
                 pair_b = reg_by_id.get(str(b.registration_id_b))
@@ -936,14 +980,14 @@ def _assemble_tournament_documents(tournament_id, db):
                 for place, reg_id in ((1, winner_id), (2, loser_id)):
                     pair = reg_by_id.get(reg_id)
                     if pair:
-                        placements.append({"place": place, "full_name": full_name(pair[1]), "club_name": pair[1].club_name})
+                        placements.append({"place": place, "full_name": full_name(pair[1]), "club_name": pair[1].club_name, "registration_id": reg_id})
             if bronze_bout:
                 winner_id = str(bronze_bout.winner_registration_id)
                 loser_id = str(bronze_bout.registration_id_b) if winner_id == str(bronze_bout.registration_id_a) else str(bronze_bout.registration_id_a)
                 for place, reg_id in ((3, winner_id), (4, loser_id)):
                     pair = reg_by_id.get(reg_id)
                     if pair:
-                        placements.append({"place": place, "full_name": full_name(pair[1]), "club_name": pair[1].club_name})
+                        placements.append({"place": place, "full_name": full_name(pair[1]), "club_name": pair[1].club_name, "registration_id": reg_id})
 
             # Round-robin (exactly 3 participants, no final/bronze bouts): rank by win count.
             if not final_bout and len(members) == 3 and bouts:
@@ -960,7 +1004,7 @@ def _assemble_tournament_documents(tournament_id, db):
                         prev_count = count
                     pair = reg_by_id.get(reg_id)
                     if pair:
-                        placements.append({"place": place, "full_name": full_name(pair[1]), "club_name": pair[1].club_name})
+                        placements.append({"place": place, "full_name": full_name(pair[1]), "club_name": pair[1].club_name, "registration_id": reg_id})
 
         placements.sort(key=lambda p: p["place"])
         all_placements.extend(placements)
@@ -969,7 +1013,10 @@ def _assemble_tournament_documents(tournament_id, db):
             "gender": gender,
             "category_name": category_name,
             "placements": placements,
-            "progress": progress
+            "progress": progress,
+            "participants": participants_payload,
+            "kata_scores": kata_scores_payload,
+            "bouts": bouts_payload
         })
 
     discipline_counts = {}
