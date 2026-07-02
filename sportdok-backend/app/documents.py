@@ -429,7 +429,12 @@ def _bracket_rounds(participants, bouts_by_pair):
         nxt = []
         for i in range(0, len(current), 2):
             wa, wb = current[i]["winner"], current[i + 1]["winner"]
-            winner, bout = _resolve_match(wa, wb, bouts_by_pair)
+            # Byes only exist at the leaf level (padding to a power of two);
+            # from round 2 on, a missing side means "not decided yet", not
+            # "no opponent" - _resolve_match can't tell those apart, so only
+            # call it once both feeder matches have an actual winner, or an
+            # undecided semifinal would let the other side prematurely "win".
+            winner, bout = _resolve_match(wa, wb, bouts_by_pair) if wa and wb else (None, None)
             nxt.append({"a": wa, "b": wb, "winner": winner, "bout": bout})
         rounds.append(nxt)
         current = nxt

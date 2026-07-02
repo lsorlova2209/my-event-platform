@@ -489,8 +489,14 @@ function buildBracketRounds(participants, boutsByPair) {
   while (current.length > 1) {
     const next = []
     for (let i = 0; i < current.length; i += 2) {
-      const { winner, bout } = resolveMatch(current[i].winner, current[i + 1].winner, boutsByPair)
-      next.push({ a: current[i].winner, b: current[i + 1].winner, winner, bout })
+      const wa = current[i].winner, wb = current[i + 1].winner
+      // Byes only exist at the leaf level (padding to a power of two); from
+      // round 2 on, a missing side means "not decided yet", not "no
+      // opponent" - resolveMatch can't tell those apart, so only call it
+      // once both feeder matches have an actual winner, or an undecided
+      // semifinal would let the other side prematurely "win" the final.
+      const { winner, bout } = wa && wb ? resolveMatch(wa, wb, boutsByPair) : { winner: null, bout: null }
+      next.push({ a: wa, b: wb, winner, bout })
     }
     rounds.push(next)
     current = next
@@ -502,8 +508,178 @@ const loserOf = (match) => {
   return match.a && match.a.registration_id === match.winner.registration_id ? match.b : match.a
 }
 
+// participants: [{registration_id, full_name, seed, subgroup, ...}], bouts: raw list for the whole tournament.
+// Returns either {roundRobin:true, pairs, drawn} or {roundRobin:false, drawn, subgroupKeys, roundsPerGroup,
+// twoGroups, finalMatch, bronzeMatch} - same shape used by both the secretary's entry screen and the
+// read-only admin жеребьёвка view, so the two never drift apart.
+function computeKumiteBracketData(participants, bouts) {
+  const participantIds = new Set(participants.map(p => p.registration_id))
+  const tableBouts = bouts.filter(b => participantIds.has(b.registration_id_a) && participantIds.has(b.registration_id_b))
+  const boutsByPair = boutsByPairKey(tableBouts)
+
+  if (participants.length === 3) {
+    const sorted = [...participants].sort((a, b) => (a.seed ?? 99) - (b.seed ?? 99))
+    const pairs = [[0, 1], [0, 2], [1, 2]].map(([i, j]) => {
+      const a = sorted[i], b = sorted[j]
+      const { winner, bout } = resolveMatch(a, b, boutsByPair)
+      return { a, b, winner, bout }
+    })
+    return { roundRobin: true, pairs, drawn: sorted.some(p => p.seed) }
+  }
+
+  if (!participants.some(p => p.seed)) return { roundRobin: false, drawn: false }
+
+  const bySubgroup = {}
+  participants.forEach(p => { const k = p.subgroup || 1; (bySubgroup[k] = bySubgroup[k] || []).push(p) })
+  const subgroupKeys = Object.keys(bySubgroup).sort()
+  const roundsPerGroup = subgroupKeys.map(k => buildBracketRounds(bySubgroup[k], boutsByPair))
+  const twoGroups = subgroupKeys.length > 1
+
+  const champs = roundsPerGroup.map(r => (r.length ? r[r.length - 1][0].winner : null))
+  const rawFinal = twoGroups && champs[0] && champs[1] ? resolveMatch(champs[0], champs[1], boutsByPair) : null
+
+  let bronzeCandidates = null
+  if (twoGroups) {
+    const last1 = roundsPerGroup[0][roundsPerGroup[0].length - 1]?.[0]
+    const last2 = roundsPerGroup[1][roundsPerGroup[1].length - 1]?.[0]
+    if (last1?.winner && last2?.winner) bronzeCandidates = [loserOf(last1), loserOf(last2)]
+  } else if (roundsPerGroup[0] && roundsPerGroup[0].length >= 2) {
+    const semi = roundsPerGroup[0][roundsPerGroup[0].length - 2]
+    if (semi.length === 2 && semi[0].winner && semi[1].winner) bronzeCandidates = [loserOf(semi[0]), loserOf(semi[1])]
+  }
+  const rawBronze = bronzeCandidates ? resolveMatch(bronzeCandidates[0], bronzeCandidates[1], boutsByPair) : null
+
+  return {
+    roundRobin: false, drawn: true, subgroupKeys, roundsPerGroup, twoGroups,
+    finalMatch: rawFinal ? { a: champs[0], b: champs[1], winner: rawFinal.winner, bout: rawFinal.bout } : null,
+    bronzeMatch: bronzeCandidates ? { a: bronzeCandidates[0], b: bronzeCandidates[1], winner: rawBronze.winner, bout: rawBronze.bout } : null
+  }
+}
+
+// ─── ГЕОМЕТРИЯ СЕТКИ (боксы + линии, как в официальных протоколах) ────────────
+// Тот же макет, что и в app/documents.py::_BracketDiagram для PDF, только в
+// пикселях: колонка листьев, колонки кругов на подгруппу, финал сшивает две
+// подгруппы, матч за 3-е место - отдельный мини-блок снизу.
+const BR_BOX_W = 190
+const BR_BOX_H = 40
+const BR_H_GAP = 34
+const BR_ROW_H = 50
+const BR_GROUP_GAP = 30
+
+function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch) {
+  const boxes = []
+  const lines = []
+  const labels = []
+  const nGroups = roundsPerGroup.length
+  const leafCounts = roundsPerGroup.map(r => 2 * r[0].length)
+  const maxRounds = Math.max(0, ...roundsPerGroup.map(r => r.length))
+  const colX = c => c * (BR_BOX_W + BR_H_GAP)
+
+  let y = 0
+  const champYs = []
+
+  roundsPerGroup.forEach((rounds, gi) => {
+    if (nGroups > 1) labels.push({ x: 0, y: y - 8, text: `Подгруппа ${gi + 1}`, bold: true })
+    const leafN = leafCounts[gi]
+    const ys0 = [], present0 = []
+    for (let i = 0; i < leafN; i++) {
+      const cy = y + BR_BOX_H / 2
+      ys0.push(cy)
+      const match = rounds[0][Math.floor(i / 2)]
+      const slot = i % 2 === 0 ? match.a : match.b
+      present0.push(!!slot)
+      if (slot) {
+        boxes.push({ x: 0, y, text: slot.full_name, win: !!(match.winner && match.winner.registration_id === slot.registration_id) })
+      }
+      y += BR_ROW_H
+    }
+    if (rounds.length) labels.push({ x: 0, y: ys0[0] - BR_BOX_H / 2 - 18, text: "Круг 1" })
+    if (gi < nGroups - 1) y += BR_GROUP_GAP
+
+    let colYs = ys0, colPresent = present0
+    for (let c = 1; c <= rounds.length; c++) {
+      const isLastRound = c === rounds.length
+      const roundLabel = isLastRound ? (nGroups > 1 ? "semifinal" : "final") : `round${c}`
+      if (c > 1) labels.push({ x: colX(c), y: colYs[0] - BR_BOX_H / 2 - 18, text: isLastRound ? (nGroups > 1 ? "Финал подгруппы" : "Финал") : `Круг ${c}` })
+      const nextYs = []
+      for (let j = 0; j < rounds[c - 1].length; j++) {
+        const match = rounds[c - 1][j]
+        const ya = colYs[2 * j], pa = colPresent[2 * j]
+        const yb = colYs[2 * j + 1], pb = colPresent[2 * j + 1]
+        const py = pa && pb ? (ya + yb) / 2 : (pa ? ya : yb)
+        nextYs.push(py)
+        const xFrom = colX(c) - BR_H_GAP, xTo = colX(c)
+        if (pa && pb) {
+          const midX = xFrom + BR_H_GAP / 2
+          lines.push({ x1: xFrom, y1: ya, x2: midX, y2: ya }, { x1: xFrom, y1: yb, x2: midX, y2: yb },
+            { x1: midX, y1: ya, x2: midX, y2: yb }, { x1: midX, y1: py, x2: xTo, y2: py })
+        } else {
+          lines.push({ x1: xFrom, y1: py, x2: xTo, y2: py })
+        }
+        boxes.push({
+          x: xTo, y: py - BR_BOX_H / 2, text: match.winner ? match.winner.full_name : "",
+          win: isLastRound && nGroups === 1, pending: !match.winner && match.a && match.b,
+          match, roundLabel
+        })
+      }
+      colYs = nextYs; colPresent = nextYs.map(() => true)
+    }
+
+    const champion = rounds.length ? rounds[rounds.length - 1][0].winner : null
+    let champY = colYs.length ? colYs[0] : ys0[0]
+    for (let c = rounds.length + 1; c <= maxRounds; c++) {
+      const xFrom = colX(c) - BR_H_GAP, xTo = colX(c)
+      lines.push({ x1: xFrom, y1: champY, x2: xTo, y2: champY })
+      boxes.push({ x: xTo, y: champY - BR_BOX_H / 2, text: champion ? champion.full_name : "" })
+    }
+    champYs.push(champY)
+  })
+
+  let width = (1 + maxRounds) * (BR_BOX_W + BR_H_GAP) - BR_H_GAP
+  let height = y
+
+  if (finalMatch) {
+    const c = maxRounds + 1
+    const xFrom = colX(c) - BR_H_GAP, xTo = colX(c)
+    const y0 = champYs[0], y1 = champYs[champYs.length - 1]
+    const py = (y0 + y1) / 2
+    const midX = xFrom + BR_H_GAP / 2
+    lines.push({ x1: xFrom, y1: y0, x2: midX, y2: y0 }, { x1: xFrom, y1: y1, x2: midX, y2: y1 },
+      { x1: midX, y1: y0, x2: midX, y2: y1 }, { x1: midX, y1: py, x2: xTo, y2: py })
+    labels.push({ x: xTo, y: py - BR_BOX_H / 2 - 18, text: "Финал", bold: true })
+    boxes.push({
+      x: xTo, y: py - BR_BOX_H / 2, text: finalMatch.winner ? finalMatch.winner.full_name : "",
+      win: true, big: true, pending: !finalMatch.winner && finalMatch.a && finalMatch.b,
+      match: finalMatch, roundLabel: "final"
+    })
+    width = Math.max(width, (c + 1) * (BR_BOX_W + BR_H_GAP) - BR_H_GAP)
+  }
+
+  if (bronzeMatch) {
+    const labelY = height + 14
+    const ya = labelY + 18 + BR_BOX_H / 2
+    const yb = ya + BR_ROW_H
+    labels.push({ x: 0, y: labelY, text: "Матч за 3-е место", bold: true })
+    boxes.push({ x: 0, y: ya - BR_BOX_H / 2, text: bronzeMatch.a ? bronzeMatch.a.full_name : "", win: !!(bronzeMatch.winner && bronzeMatch.a && bronzeMatch.winner.registration_id === bronzeMatch.a.registration_id) })
+    boxes.push({ x: 0, y: yb - BR_BOX_H / 2, text: bronzeMatch.b ? bronzeMatch.b.full_name : "", win: !!(bronzeMatch.winner && bronzeMatch.b && bronzeMatch.winner.registration_id === bronzeMatch.b.registration_id) })
+    const xFrom = colX(1) - BR_H_GAP, xTo = colX(1)
+    const midX = xFrom + BR_H_GAP / 2
+    const py = (ya + yb) / 2
+    lines.push({ x1: xFrom, y1: ya, x2: midX, y2: ya }, { x1: xFrom, y1: yb, x2: midX, y2: yb },
+      { x1: midX, y1: ya, x2: midX, y2: yb }, { x1: midX, y1: py, x2: xTo, y2: py })
+    boxes.push({
+      x: xTo, y: py - BR_BOX_H / 2, text: bronzeMatch.winner ? bronzeMatch.winner.full_name : "",
+      pending: !bronzeMatch.winner && bronzeMatch.a && bronzeMatch.b, match: bronzeMatch, roundLabel: "bronze"
+    })
+    height = yb + BR_BOX_H / 2 + 10
+  }
+
+  return { width, height, boxes, lines, labels }
+}
+
 function TournamentDetail({ tournament, user, onBack }) {
   const [athletes, setAthletes] = useState([])
+  const [bouts, setBouts] = useState([])
   const [showForm, setShowForm] = useState(false)
   const [ranks, setRanks] = useState([])
   const [weightCategories, setWeightCategories] = useState([])
@@ -530,6 +706,9 @@ function TournamentDetail({ tournament, user, onBack }) {
   const loadAthletes = async () => {
     try { const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/athletes`); setAthletes(r.data) } catch {}
   }
+  const loadBouts = async () => {
+    try { const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/bouts`); setBouts(r.data) } catch {}
+  }
   const loadRanks = async () => {
     try { const r = await axios.get(`${API}/api/v1/ranks/`); setRanks(r.data) } catch {}
   }
@@ -552,7 +731,7 @@ function TournamentDetail({ tournament, user, onBack }) {
     } catch {}
   }
 
-  useEffect(() => { loadAthletes(); loadRanks(); loadWeightCategories(); loadKataTypes(); loadSecretaries(); loadGrants() }, [])
+  useEffect(() => { loadAthletes(); loadBouts(); loadRanks(); loadWeightCategories(); loadKataTypes(); loadSecretaries(); loadGrants() }, [])
 
   const setGrantField = (k, v) => setGrantForm(f => ({ ...f, [k]: v }))
 
@@ -753,26 +932,50 @@ function TournamentDetail({ tournament, user, onBack }) {
             <div style={{ marginTop: "16px" }}>
               {Object.values(bracketGroups).map(group => {
                 const label = categoryLabel(group.discipline, group.gender, group.category_name)
-                const drawn = group.athletes.some(a => a.seed != null)
-                const sorted = [...group.athletes].sort((x, y) => {
-                  const sx = x.subgroup ?? -1, sy = y.subgroup ?? -1
-                  if (sx !== sy) return sx - sy
-                  return (x.seed ?? 999) - (y.seed ?? 999)
-                })
+
+                if (group.discipline === "kata") {
+                  const drawn = group.athletes.some(a => a.seed != null)
+                  const sorted = [...group.athletes].sort((x, y) => (x.seed ?? 999) - (y.seed ?? 999))
+                  return (
+                    <div key={label} style={{ marginBottom: "20px" }}>
+                      <div style={{ fontWeight: "bold", color: "#1A56A0", marginBottom: "8px" }}>{label}</div>
+                      {!drawn ? (
+                        <p style={{ color: "#4A4A48", fontSize: "14px" }}>Жеребьёвка не проведена</p>
+                      ) : (
+                        sorted.map(a => (
+                          <div key={a.id} style={{ display: "flex", gap: "12px", padding: "6px 0", borderBottom: "1px solid #f3f2ee", fontSize: "14px" }}>
+                            <span style={{ fontWeight: "bold", minWidth: "30px" }}>№{a.seed}</span>
+                            <span style={{ flex: 1 }}>{a.full_name}</span>
+                            <span style={{ color: "#4A4A48" }}>{a.club_name}</span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )
+                }
+
+                // Кумитэ - настоящая турнирная сетка (та же геометрия, что и в
+                // PDF-протоколе), только для просмотра - ввод результатов у секретаря.
+                const data = computeKumiteBracketData(group.athletes, bouts)
                 return (
-                  <div key={label} style={{ marginBottom: "20px" }}>
+                  <div key={label} style={{ marginBottom: "24px" }}>
                     <div style={{ fontWeight: "bold", color: "#1A56A0", marginBottom: "8px" }}>{label}</div>
-                    {!drawn ? (
+                    {!data.drawn ? (
                       <p style={{ color: "#4A4A48", fontSize: "14px" }}>Жеребьёвка не проведена</p>
+                    ) : data.roundRobin ? (
+                      <>
+                        <div style={{ fontSize: "13px", color: "#4A4A48", marginBottom: "8px" }}>Круговая система — каждый с каждым</div>
+                        {data.pairs.map((m, i) => (
+                          <div key={i} style={{ fontSize: "14px", padding: "4px 0" }}>
+                            {m.a.full_name} vs {m.b.full_name}
+                            {m.winner && <span style={{ color: "#0F6E56", fontWeight: "bold" }}> — {m.winner.full_name}</span>}
+                          </div>
+                        ))}
+                      </>
                     ) : (
-                      sorted.map(a => (
-                        <div key={a.id} style={{ display: "flex", gap: "12px", padding: "6px 0", borderBottom: "1px solid #f3f2ee", fontSize: "14px" }}>
-                          {a.subgroup && <span style={{ color: "#4A4A48", minWidth: "90px" }}>Подгруппа {a.subgroup}</span>}
-                          <span style={{ fontWeight: "bold", minWidth: "30px" }}>№{a.seed}</span>
-                          <span style={{ flex: 1 }}>{a.full_name}</span>
-                          <span style={{ color: "#4A4A48" }}>{a.club_name}</span>
-                        </div>
-                      ))
+                      <div style={{ overflowX: "auto", paddingBottom: "8px" }}>
+                        <BracketSvgView layout={layoutBracket(data.roundsPerGroup, data.finalMatch, data.bronzeMatch)} interactive={false} />
+                      </div>
                     )}
                   </div>
                 )
@@ -1286,105 +1489,105 @@ function KataScoreForm({ registrationId, roundLabel, tournamentId, user, onDone,
   )
 }
 
+function Modal({ children, onClose }) {
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(20,20,20,0.45)",
+      display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: "16px"
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: "white", borderRadius: "12px", padding: "20px 24px", maxWidth: "480px", width: "100%",
+        boxShadow: "0 16px 48px rgba(0,0,0,0.25)", maxHeight: "90vh", overflowY: "auto"
+      }}>
+        {children}
+      </div>
+    </div>
+  )
+}
+
+// Линии - через <svg>, боксы - через позиционированные HTML-блоки поверх
+// (чтобы форма ввода результата оставалась обычной интерактивной вёрсткой,
+// а не жила внутри svg). Геометрия общая с PDF (app/documents.py).
+function BracketSvgView({ layout, interactive, onOpenMatch }) {
+  return (
+    <div style={{ position: "relative", width: layout.width, height: layout.height }}>
+      <svg width={layout.width} height={layout.height} style={{ position: "absolute", top: 0, left: 0 }}>
+        {layout.lines.map((l, i) => (
+          <line key={i} x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2} stroke="#C9C7BC" strokeWidth="1.5" />
+        ))}
+      </svg>
+      {layout.labels.map((lb, i) => (
+        <div key={i} style={{
+          position: "absolute", left: lb.x, top: lb.y, width: BR_BOX_W, fontSize: "12px",
+          color: "#4A4A48", fontWeight: lb.bold ? "bold" : "normal", textAlign: lb.bold ? "center" : "left"
+        }}>{lb.text}</div>
+      ))}
+      {layout.boxes.map((b, i) => {
+        const clickable = interactive && b.pending
+        return (
+          <div key={i}
+            onClick={clickable ? () => onOpenMatch(b) : undefined}
+            style={{
+              position: "absolute", left: b.x, top: b.y, width: BR_BOX_W, height: BR_BOX_H,
+              boxSizing: "border-box", border: `${b.big ? 2 : 1}px ${b.pending ? "dashed" : "solid"} ${b.big ? "#1A56A0" : "#D3D1C7"}`,
+              borderRadius: "6px", background: "white",
+              display: "flex", alignItems: "center", justifyContent: b.text ? "flex-start" : "center",
+              padding: "0 10px", fontSize: "13px", fontFamily: "Arial",
+              fontWeight: b.text && b.win ? "bold" : "normal",
+              color: b.text && b.win ? "#0F6E56" : (b.pending ? "#4A4A48" : "#1A1A1A"),
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              cursor: clickable ? "pointer" : "default"
+            }}
+            title={b.text || undefined}
+          >
+            {b.text || (b.pending ? (interactive ? "Ввести результат" : "—") : "")}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 function KumiteBracket({ grant, user, participants, bouts, onChanged }) {
-  const participantIds = new Set(participants.map(p => p.registration_id))
-  const tableBouts = bouts.filter(b => participantIds.has(b.registration_id_a) && participantIds.has(b.registration_id_b))
-  const boutsByPair = boutsByPairKey(tableBouts)
+  const [activeMatch, setActiveMatch] = useState(null)
 
   if (participants.length === 0) {
     return <div style={card}><p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Участников в этой категории нет.</p></div>
   }
 
+  const data = computeKumiteBracketData(participants, bouts)
+
+  if (!data.drawn) {
+    return <div style={card}><p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Жеребьёвка ещё не проведена администратором.</p></div>
+  }
+
   // Круговая система (ровно 3 участника, ТЗ 5.3.2) - не олимпийская сетка,
-  // каждый играет с каждым, любое название круга подходит.
-  if (participants.length === 3) {
-    const sorted = [...participants].sort((a, b) => (a.seed ?? 99) - (b.seed ?? 99))
-    if (!sorted.some(p => p.seed)) {
-      return <div style={card}><p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Жеребьёвка ещё не проведена администратором.</p></div>
-    }
-    const pairs = [[0, 1], [0, 2], [1, 2]].map(([i, j]) => {
-      const a = sorted[i], b = sorted[j]
-      const { winner, bout } = resolveMatch(a, b, boutsByPair)
-      return { a, b, winner, bout }
-    })
+  // каждый играет с каждым, любое название круга подходит - без линий/боксов.
+  if (data.roundRobin) {
     return (
       <div style={card}>
         <div style={{ fontSize: "13px", color: "#4A4A48", marginBottom: "12px" }}>Круговая система — каждый с каждым</div>
-        {pairs.map((m, i) => (
+        {data.pairs.map((m, i) => (
           <MatchBox key={i} match={m} roundLabel="round1" tournamentId={grant.tournament_id} user={user} onChanged={onChanged} />
         ))}
       </div>
     )
   }
 
-  if (!participants.some(p => p.seed)) {
-    return <div style={card}><p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Жеребьёвка ещё не проведена администратором.</p></div>
-  }
-
-  const bySubgroup = {}
-  participants.forEach(p => { const k = p.subgroup || 1; (bySubgroup[k] = bySubgroup[k] || []).push(p) })
-  const subgroupKeys = Object.keys(bySubgroup).sort()
-  const roundsPerGroup = subgroupKeys.map(k => buildBracketRounds(bySubgroup[k], boutsByPair))
-  const twoGroups = subgroupKeys.length > 1
-
-  const champs = roundsPerGroup.map(r => (r.length ? r[r.length - 1][0].winner : null))
-  const finalMatch = twoGroups && champs[0] && champs[1] ? resolveMatch(champs[0], champs[1], boutsByPair) : null
-
-  let bronzeCandidates = null
-  if (twoGroups) {
-    const last1 = roundsPerGroup[0][roundsPerGroup[0].length - 1]?.[0]
-    const last2 = roundsPerGroup[1][roundsPerGroup[1].length - 1]?.[0]
-    if (last1?.winner && last2?.winner) bronzeCandidates = [loserOf(last1), loserOf(last2)]
-  } else if (roundsPerGroup[0] && roundsPerGroup[0].length >= 2) {
-    const semi = roundsPerGroup[0][roundsPerGroup[0].length - 2]
-    if (semi.length === 2 && semi[0].winner && semi[1].winner) bronzeCandidates = [loserOf(semi[0]), loserOf(semi[1])]
-  }
-  const bronzeMatch = bronzeCandidates ? resolveMatch(bronzeCandidates[0], bronzeCandidates[1], boutsByPair) : null
+  const layout = layoutBracket(data.roundsPerGroup, data.finalMatch, data.bronzeMatch)
 
   return (
     <div style={card}>
-      {subgroupKeys.map((k, gi) => (
-        <div key={k} style={{ marginBottom: "20px" }}>
-          {twoGroups && <div style={{ fontWeight: "bold", color: "#4A4A48", marginBottom: "8px" }}>Подгруппа {k}</div>}
-          <div style={{ display: "flex", gap: "16px", overflowX: "auto", paddingBottom: "4px" }}>
-            {roundsPerGroup[gi].map((round, ri) => (
-              <div key={ri} style={{ minWidth: "230px" }}>
-                <div style={{ fontSize: "12px", color: "#4A4A48", marginBottom: "6px", fontWeight: "bold" }}>
-                  {ri === roundsPerGroup[gi].length - 1 ? (twoGroups ? "Финал подгруппы" : "Финал") : `Круг ${ri + 1}`}
-                </div>
-                {round.map((match, mi) => (
-                  <MatchBox key={mi} match={match} tournamentId={grant.tournament_id} user={user}
-                    roundLabel={ri === roundsPerGroup[gi].length - 1 ? (twoGroups ? "semifinal" : "final") : `round${ri + 1}`}
-                    onChanged={onChanged} />
-                ))}
-              </div>
-            ))}
-          </div>
-        </div>
-      ))}
-
-      {twoGroups && (
-        <div style={{ marginBottom: "20px" }}>
-          <div style={{ fontSize: "12px", color: "#4A4A48", marginBottom: "6px", fontWeight: "bold" }}>Финал</div>
-          {champs[0] && champs[1] ? (
-            <div style={{ maxWidth: "230px", margin: "0 auto" }}>
-              <MatchBox match={{ a: champs[0], b: champs[1], winner: finalMatch.winner, bout: finalMatch.bout }}
-                tournamentId={grant.tournament_id} user={user} roundLabel="final" onChanged={onChanged} />
-            </div>
-          ) : (
-            <p style={{ color: "#4A4A48", fontSize: "13px" }}>Ждём победителей обеих подгрупп</p>
-          )}
-        </div>
-      )}
-
-      {bronzeCandidates && bronzeCandidates[0] && bronzeCandidates[1] && (
-        <div>
-          <div style={{ fontSize: "12px", color: "#4A4A48", marginBottom: "6px", fontWeight: "bold" }}>Матч за 3-е место</div>
-          <div style={{ maxWidth: "230px", margin: "0 auto" }}>
-            <MatchBox match={{ a: bronzeCandidates[0], b: bronzeCandidates[1], winner: bronzeMatch.winner, bout: bronzeMatch.bout }}
-              tournamentId={grant.tournament_id} user={user} roundLabel="bronze" onChanged={onChanged} />
-          </div>
-        </div>
+      <div style={{ overflowX: "auto", paddingBottom: "8px" }}>
+        <BracketSvgView layout={layout} interactive onOpenMatch={setActiveMatch} />
+      </div>
+      {activeMatch && (
+        <Modal onClose={() => setActiveMatch(null)}>
+          <h3 style={{ margin: "0 0 12px", color: "#1A56A0" }}>Результат боя</h3>
+          <BoutResultForm a={activeMatch.match.a} b={activeMatch.match.b} roundLabel={activeMatch.roundLabel}
+            existingBoutId={activeMatch.match.bout?.id} tournamentId={grant.tournament_id} user={user}
+            onDone={() => { setActiveMatch(null); onChanged() }} onCancel={() => setActiveMatch(null)} />
+        </Modal>
       )}
     </div>
   )
