@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import axios from "axios"
 
 const API = "http://127.0.0.1:8000"
@@ -1508,8 +1508,23 @@ function KataScoreForm({ registrationId, roundLabel, existingScores, tournamentI
   const [error, setError] = useState("")
   const [saving, setSaving] = useState(false)
   const [lo, hi] = KATA_ROUND_RANGES[roundLabel] || [0, 10]
+  const inputRefs = useRef([])
+
+  // So the secretary can enter all 5 judges' scores in a row without
+  // touching the mouse: focus the first field on open, and let ←/→ jump
+  // between fields instead of only moving the caret within one.
+  useEffect(() => { inputRefs.current[0]?.focus() }, [])
 
   const setScore = (i, v) => setScores(s => s.map((x, j) => j === i ? v : x))
+
+  const jumpTo = (i) => {
+    const el = inputRefs.current[i]
+    if (el) { el.focus(); el.select() }
+  }
+  const handleKeyDown = (i, e) => {
+    if (e.key === "ArrowRight") { e.preventDefault(); jumpTo(i + 1) }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); jumpTo(i - 1) }
+  }
 
   const submit = async () => {
     const nums = scores.map(s => parseFloat(s))
@@ -1530,7 +1545,8 @@ function KataScoreForm({ registrationId, roundLabel, existingScores, tournamentI
   return (
     <div style={{ marginTop: "10px", display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
       {scores.map((v, i) => (
-        <input key={i} type="number" step="0.1" min={lo} max={hi} value={v} onChange={e => setScore(i, e.target.value)}
+        <input key={i} ref={el => (inputRefs.current[i] = el)} type="number" step="0.1" min={lo} max={hi} value={v}
+          onChange={e => setScore(i, e.target.value)} onKeyDown={e => handleKeyDown(i, e)}
           style={{ ...inputStyle, width: "70px" }} placeholder={`${lo}-${hi}`} />
       ))}
       <button onClick={submit} disabled={saving} style={{ ...btnGreen, padding: "8px 14px", fontSize: "13px" }}>Сохранить</button>
