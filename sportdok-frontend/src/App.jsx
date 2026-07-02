@@ -689,6 +689,33 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch) {
   return { width, height, boxes, lines, labels }
 }
 
+// Круговая система (ровно 3 участника, ТЗ 5.3.2) не имеет игровой сетки -
+// все играют со всеми, никто не выбывает - но должна выглядеть так же, как
+// олимпийская: та же геометрия "два листа сходятся в один бокс", что и у
+// одного матча в layoutBracket (тот же приём уже используется для матча за
+// 3-е место), просто три таких блока подряд, без общего дерева.
+function layoutRoundRobin(pairs) {
+  const boxes = [], lines = [], labels = []
+  let y = 0, bottom = 0
+  const xFrom = BR_BOX_W, xTo = BR_BOX_W + BR_H_GAP, midX = xFrom + BR_H_GAP / 2
+  pairs.forEach(m => {
+    const ya = y + BR_BOX_H / 2
+    const yb = ya + BR_ROW_H
+    const py = (ya + yb) / 2
+    boxes.push({ x: 0, y: ya - BR_BOX_H / 2, text: m.a.full_name, win: !!(m.winner && m.winner.registration_id === m.a.registration_id) })
+    boxes.push({ x: 0, y: yb - BR_BOX_H / 2, text: m.b.full_name, win: !!(m.winner && m.winner.registration_id === m.b.registration_id) })
+    lines.push({ x1: xFrom, y1: ya, x2: midX, y2: ya }, { x1: xFrom, y1: yb, x2: midX, y2: yb },
+      { x1: midX, y1: ya, x2: midX, y2: yb }, { x1: midX, y1: py, x2: xTo, y2: py })
+    boxes.push({
+      x: xTo, y: py - BR_BOX_H / 2, text: m.winner ? m.winner.full_name : "",
+      win: !!m.winner, pending: !m.winner, editable: true, match: m, roundLabel: "round1"
+    })
+    bottom = yb + BR_BOX_H / 2
+    y = yb + BR_ROW_H
+  })
+  return { width: xTo + BR_BOX_W, height: bottom, boxes, lines, labels }
+}
+
 function TournamentDetail({ tournament, user, onBack }) {
   const [athletes, setAthletes] = useState([])
   const [bouts, setBouts] = useState([])
@@ -1283,7 +1310,6 @@ function ClubPanel({ user, onLogout }) {
 }
 
 // ─── КАБИНЕТ СЕКРЕТАРЯ ────────────────────────────────────────────────────────
-const WIN_METHOD_LABELS = { hansoku: "ханзоку", ippon: "иппон", waza_ari: "ваза-ари", score: "по очкам" }
 const KATA_ROUND_LABELS = { round1: "1-й круг", round2: "2-й круг", final: "Финал" }
 const KATA_ROUND_RANGES = { round1: [5, 7], round2: [6, 8], final: [7, 9] }
 
@@ -1567,23 +1593,17 @@ function KumiteBracket({ grant, user, participants, bouts, onChanged }) {
     return <div style={card}><p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Жеребьёвка ещё не проведена администратором.</p></div>
   }
 
-  // Круговая система (ровно 3 участника, ТЗ 5.3.2) - не олимпийская сетка,
-  // каждый играет с каждым, любое название круга подходит - без линий/боксов.
-  if (data.roundRobin) {
-    return (
-      <div style={card}>
-        <div style={{ fontSize: "13px", color: "#4A4A48", marginBottom: "12px" }}>Круговая система — каждый с каждым</div>
-        {data.pairs.map((m, i) => (
-          <MatchBox key={i} match={m} roundLabel="round1" tournamentId={grant.tournament_id} user={user} onChanged={onChanged} />
-        ))}
-      </div>
-    )
-  }
-
-  const layout = layoutBracket(data.roundsPerGroup, data.finalMatch, data.bronzeMatch)
+  // Круговая система (ровно 3 участника, ТЗ 5.3.2) не имеет игровой сетки -
+  // все играют со всеми, никто не выбывает - но использует ту же геометрию
+  // (layoutRoundRobin) и тот же интерактивный BracketSvgView/модалку, что и
+  // олимпийская сетка ниже, чтобы визуально они не отличались.
+  const layout = data.roundRobin
+    ? layoutRoundRobin(data.pairs)
+    : layoutBracket(data.roundsPerGroup, data.finalMatch, data.bronzeMatch)
 
   return (
     <div style={card}>
+      {data.roundRobin && <div style={{ fontSize: "13px", color: "#4A4A48", marginBottom: "12px" }}>Круговая система — каждый с каждым</div>}
       <div style={{ overflowX: "auto", paddingBottom: "8px" }}>
         <BracketSvgView layout={layout} interactive onOpenMatch={setActiveMatch} />
       </div>
@@ -1594,40 +1614,6 @@ function KumiteBracket({ grant, user, participants, bouts, onChanged }) {
             existingBout={activeMatch.match.bout} tournamentId={grant.tournament_id} user={user}
             onDone={() => { setActiveMatch(null); onChanged() }} onCancel={() => setActiveMatch(null)} />
         </Modal>
-      )}
-    </div>
-  )
-}
-
-function MatchBox({ match, roundLabel, tournamentId, user, onChanged }) {
-  const [showForm, setShowForm] = useState(false)
-  const { a, b, winner, bout } = match
-  if (!a && !b) return null
-  const decided = bout && bout.status === "completed"
-
-  const rowStyle = (p) => ({
-    padding: "3px 0", fontSize: "13px",
-    fontWeight: winner && p && winner.registration_id === p.registration_id ? "bold" : "normal",
-    color: winner && p && winner.registration_id === p.registration_id ? "#0F6E56" : "#1A1A1A"
-  })
-
-  return (
-    <div style={{ border: "1px solid #D3D1C7", borderRadius: "8px", padding: "10px", marginBottom: "10px", background: "white" }}>
-      <div style={rowStyle(a)}>{a ? a.full_name : ""}</div>
-      {b && <div style={{ ...rowStyle(b), borderTop: "1px solid #f3f2ee" }}>{b.full_name}</div>}
-
-      {decided && bout.win_method && !showForm && (
-        <div style={{ fontSize: "11px", color: "#4A4A48", marginTop: "4px" }}>{WIN_METHOD_LABELS[bout.win_method] || bout.win_method}</div>
-      )}
-      {a && b && (
-        showForm ? (
-          <BoutResultForm a={a} b={b} roundLabel={roundLabel} existingBout={bout} tournamentId={tournamentId} user={user}
-            onDone={() => { setShowForm(false); onChanged() }} onCancel={() => setShowForm(false)} />
-        ) : (
-          <button onClick={() => setShowForm(true)} style={{ ...btnOutline, padding: "5px 10px", fontSize: "12px", marginTop: "6px" }}>
-            {decided ? "Изменить результат" : "Ввести результат"}
-          </button>
-        )
       )}
     </div>
   )
