@@ -533,6 +533,220 @@ function TournamentDetail({ tournament, onBack }) {
   )
 }
 
+// ─── КАБИНЕТ КЛУБА ────────────────────────────────────────────────────────────
+function ClubPanel({ user, onLogout }) {
+  const [tournaments, setTournaments] = useState([])
+  const [club, setClub] = useState(null)
+  const [selectedTournament, setSelectedTournament] = useState(null)
+  const [showForm, setShowForm] = useState(false)
+  const [ranks, setRanks] = useState([])
+  const [weightCategories, setWeightCategories] = useState([])
+  const [kataTypes, setKataTypes] = useState([])
+  const [form, setForm] = useState({
+    last_name: "", first_name: "", middle_name: "",
+    gender: "male", birth_date: "", weight: "",
+    rank: "", trainer_name: "",
+    discipline: "kata", category_name: "", team_number: ""
+  })
+  const [error, setError] = useState("")
+  const [success, setSuccess] = useState("")
+
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+  const setDiscipline = (v) => setForm(f => ({ ...f, discipline: v, category_name: "", team_number: "" }))
+
+  const loadTournaments = async () => {
+    try { const r = await axios.get(`${API}/api/v1/tournaments/`); setTournaments(r.data) } catch {}
+  }
+  const loadClub = async () => {
+    try {
+      const r = await axios.get(`${API}/api/v1/clubs/`)
+      setClub(r.data.find(c => c.id === user.club_id) || null)
+    } catch {}
+  }
+  const loadRanks = async () => {
+    try { const r = await axios.get(`${API}/api/v1/ranks/`); setRanks(r.data) } catch {}
+  }
+  const loadWeightCategories = async () => {
+    try { const r = await axios.get(`${API}/api/v1/weight-categories/`); setWeightCategories(r.data) } catch {}
+  }
+  const loadKataTypes = async () => {
+    try { const r = await axios.get(`${API}/api/v1/kata-types/`); setKataTypes(r.data) } catch {}
+  }
+
+  useEffect(() => { loadTournaments(); loadClub(); loadRanks(); loadWeightCategories(); loadKataTypes() }, [])
+
+  const kataGroups = kataTypes.reduce((groups, k) => {
+    if (!groups[k.group]) groups[k.group] = []
+    groups[k.group].push(k)
+    return groups
+  }, {})
+
+  const trainers = (club?.trainers || "").split(",").map(t => t.trim()).filter(Boolean)
+
+  const resetForm = () => setForm({
+    last_name: "", first_name: "", middle_name: "", gender: "male", birth_date: "", weight: "",
+    rank: "", trainer_name: "", discipline: "kata", category_name: "", team_number: ""
+  })
+
+  const handleCreate = async () => {
+    if (!form.last_name || !form.first_name || !form.birth_date) {
+      setError("Заполните фамилию, имя и дату рождения"); return
+    }
+    try {
+      await axios.post(`${API}/api/v1/athletes/`, {
+        ...form,
+        weight: form.weight ? parseFloat(form.weight) : null,
+        middle_name: form.middle_name || null,
+        rank: form.rank || null,
+        trainer_name: form.trainer_name || null,
+        category_name: form.category_name || null,
+        team_number: form.team_number || null,
+        club_name: club ? (club.short_name || club.full_name) : null,
+        tournament_id: selectedTournament.id
+      })
+      resetForm()
+      setShowForm(false); setError(""); setSuccess("Участник добавлен")
+    } catch { setError("Ошибка при добавлении участника") }
+  }
+
+  if (selectedTournament) {
+    return (
+      <div style={{ minHeight: "100vh", background: "#f3f2ee", fontFamily: "Arial", padding: "32px" }}>
+        <div style={{ maxWidth: "900px", margin: "0 auto" }}>
+          <button onClick={() => { setSelectedTournament(null); setShowForm(false); setError(""); setSuccess("") }} style={{ ...btnOutline, marginBottom: "16px" }}>← Назад к турнирам</button>
+          <div style={{ marginBottom: "24px" }}>
+            <h1 style={{ color: "#1A56A0", margin: 0 }}>{selectedTournament.name}</h1>
+            <p style={{ color: "#4A4A48", margin: "4px 0 0" }}>{selectedTournament.location && `${selectedTournament.location} · `}{selectedTournament.event_date}</p>
+          </div>
+
+          <div style={card}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h2 style={{ margin: 0, color: "#1A56A0" }}>Заявить участника</h2>
+              <button onClick={() => { setShowForm(!showForm); setSuccess("") }} style={btnPrimary}>{showForm ? "Отмена" : "+ Добавить участника"}</button>
+            </div>
+
+            {success && <div style={{ ...successBox, marginTop: "16px" }}>{success}</div>}
+
+            {showForm && (
+              <div style={{ borderTop: "1px solid #f3f2ee", paddingTop: "24px", marginTop: "24px" }}>
+                <div style={{ display: "flex", gap: "12px", marginBottom: "16px" }}>
+                  <div style={{ flex: 1 }}><label style={labelStyle}>Фамилия *</label><input type="text" value={form.last_name} onChange={e => set("last_name", e.target.value)} style={inputStyle} /></div>
+                  <div style={{ flex: 1 }}><label style={labelStyle}>Имя *</label><input type="text" value={form.first_name} onChange={e => set("first_name", e.target.value)} style={inputStyle} /></div>
+                  <div style={{ flex: 1 }}><label style={labelStyle}>Отчество</label><input type="text" value={form.middle_name} onChange={e => set("middle_name", e.target.value)} style={inputStyle} /></div>
+                </div>
+
+                <div style={{ display: "flex", gap: "12px", marginBottom: "16px" }}>
+                  <div style={{ flex: 1 }}>
+                    <label style={labelStyle}>Пол *</label>
+                    <select value={form.gender} onChange={e => set("gender", e.target.value)} style={inputStyle}>
+                      <option value="male">Мужской</option>
+                      <option value="female">Женский</option>
+                    </select>
+                  </div>
+                  <div style={{ flex: 1 }}><label style={labelStyle}>Дата рождения *</label><input type="date" value={form.birth_date} onChange={e => set("birth_date", e.target.value)} style={inputStyle} /></div>
+                  <div style={{ flex: 1 }}><label style={labelStyle}>Точный вес (кг)</label><input type="number" value={form.weight} onChange={e => set("weight", e.target.value)} style={inputStyle} /></div>
+                </div>
+
+                <div style={{ display: "flex", gap: "12px", marginBottom: "16px" }}>
+                  <div style={{ flex: 1 }}>
+                    <label style={labelStyle}>Разряд / звание</label>
+                    <select value={form.rank} onChange={e => set("rank", e.target.value)} style={inputStyle}>
+                      <option value="">— выберите —</option>
+                      {ranks.map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
+                    </select>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <label style={labelStyle}>Тренер</label>
+                    <select value={form.trainer_name} onChange={e => set("trainer_name", e.target.value)} style={inputStyle}>
+                      <option value="">— выберите —</option>
+                      {trainers.map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", gap: "12px", marginBottom: "16px" }}>
+                  <div style={{ flex: 1 }}>
+                    <label style={labelStyle}>Дисциплина</label>
+                    <select value={form.discipline} onChange={e => setDiscipline(e.target.value)} style={inputStyle}>
+                      <option value="kata">Ката</option>
+                      <option value="kumite_ok">ОК (ограниченный контакт)</option>
+                      <option value="kumite_pk">ПК (полный контакт)</option>
+                      <option value="kumite_sz">СЗ (средства защиты)</option>
+                    </select>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <label style={labelStyle}>Категория</label>
+                    {form.discipline === "kata" ? (
+                      <select value={form.category_name} onChange={e => set("category_name", e.target.value)} style={inputStyle}>
+                        <option value="">— выберите —</option>
+                        {Object.entries(kataGroups).map(([group, types]) => (
+                          <optgroup key={group} label={group}>
+                            {types.map(k => <option key={k.id} value={k.name}>{k.name}</option>)}
+                          </optgroup>
+                        ))}
+                      </select>
+                    ) : (
+                      <select value={form.category_name} onChange={e => set("category_name", e.target.value)} style={inputStyle}>
+                        <option value="">— выберите —</option>
+                        {weightCategories.filter(c => c.discipline === form.discipline).map(c => (
+                          <option key={c.id} value={c.name}>{c.name}</option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                </div>
+
+                {form.discipline === "kumite_ok" && form.category_name === "командные соревнования" && (
+                  <div style={{ marginBottom: "16px" }}>
+                    <label style={labelStyle}>Номер команды</label>
+                    <input type="text" value={form.team_number} onChange={e => set("team_number", e.target.value)} placeholder="Команда 1" style={inputStyle} />
+                  </div>
+                )}
+
+                {error && <div style={errorBox}>{error}</div>}
+                <button onClick={handleCreate} style={btnGreen}>Подать заявку</button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#f3f2ee", fontFamily: "Arial", padding: "32px" }}>
+      <div style={{ maxWidth: "900px", margin: "0 auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px" }}>
+          <div>
+            <h1 style={{ color: "#1A56A0", margin: 0 }}>СпортДок</h1>
+            <p style={{ color: "#4A4A48", margin: "4px 0 0" }}>{club ? (club.short_name || club.full_name) : user.name} · клуб</p>
+          </div>
+          <button onClick={onLogout} style={btnOutline}>Выйти</button>
+        </div>
+
+        <div style={card}>
+          <h2 style={{ margin: "0 0 24px", color: "#1A56A0" }}>Турниры</h2>
+          {tournaments.length === 0 ? (
+            <p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Турниров пока нет.</p>
+          ) : tournaments.map(t => (
+            <div key={t.id} onClick={() => setSelectedTournament(t)} style={{
+              padding: "16px", borderBottom: "1px solid #f3f2ee",
+              display: "flex", justifyContent: "space-between",
+              alignItems: "center", cursor: "pointer"
+            }}>
+              <div>
+                <div style={{ fontWeight: "bold", color: "#1A56A0" }}>{t.name}</div>
+                <div style={{ color: "#4A4A48", fontSize: "14px" }}>{t.location && `${t.location} · `}{t.event_date}</div>
+              </div>
+              <span style={{ padding: "4px 12px", background: "#f3f2ee", borderRadius: "6px", fontSize: "13px", color: "#4A4A48" }}>{t.status}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── ГЛАВНЫЙ КОМПОНЕНТ ────────────────────────────────────────────────────────
 export default function App() {
   const [page, setPage] = useState("login")
@@ -547,6 +761,9 @@ export default function App() {
   if (page === "panel" && user) {
     if (user.role === "admin" || user.role === "owner") {
       return <AdminPanel user={user} onLogout={() => { setUser(null); setPage("login") }} />
+    }
+    if (user.role === "club") {
+      return <ClubPanel user={user} onLogout={() => { setUser(null); setPage("login") }} />
     }
   }
   return <LoginPage onLogin={handleLogin} onRegister={() => setPage("register")} />
