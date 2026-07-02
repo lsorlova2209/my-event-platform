@@ -77,6 +77,18 @@ class AthleteCreate(BaseModel):
     category_name: Optional[str] = None
     team_number: Optional[str] = None
 
+class AthleteUpdate(BaseModel):
+    last_name: Optional[str] = None
+    first_name: Optional[str] = None
+    middle_name: Optional[str] = None
+    gender: Optional[str] = None
+    birth_date: Optional[date] = None
+    age_years: Optional[str] = None
+    weight: Optional[float] = None
+    rank: Optional[str] = None
+    club_name: Optional[str] = None
+    trainer_name: Optional[str] = None
+
 class BoutCreate(BaseModel):
     tournament_id: str
     registration_id_a: str
@@ -516,6 +528,30 @@ def list_athletes(tournament_id: str, db: Session = Depends(get_db)):
                 "subgroup": reg.subgroup
             })
     return result
+
+@app.patch("/api/v1/athletes/{athlete_id}")
+def update_athlete(athlete_id: str, data: AthleteUpdate, db: Session = Depends(get_db)):
+    athlete = db.query(Athlete).filter(Athlete.id == athlete_id).first()
+    if not athlete:
+        return {"success": False, "message": "Участник не найден"}
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(athlete, field, value)
+    db.commit()
+    db.refresh(athlete)
+    return {
+        "success": True,
+        "id": str(athlete.id),
+        "last_name": athlete.last_name,
+        "first_name": athlete.first_name,
+        "middle_name": athlete.middle_name,
+        "gender": athlete.gender,
+        "birth_date": str(athlete.birth_date),
+        "age_years": athlete.age_years,
+        "weight": float(athlete.weight) if athlete.weight else None,
+        "rank": athlete.rank,
+        "club_name": athlete.club_name,
+        "trainer_name": athlete.trainer_name
+    }
 
 @app.delete("/api/v1/athletes/{athlete_id}")
 def delete_athlete(athlete_id: str, db: Session = Depends(get_db)):
