@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer
+from sqlalchemy import Column, String, Integer, Numeric
 from sqlalchemy.dialects.postgresql import UUID
 import uuid
 from app.database import Base
@@ -27,3 +27,7 @@ class KataType(Base):
     group = Column(String, nullable=False)
     name = Column(String, nullable=False)
     sort_order = Column(Integer, nullable=False, default=0)
+    # Реестр ката ФВКР (Приложение №1): официальный номер-код (например
+    # "А-001") и коэффициент сложности, используемый при начислении баллов.
+    code = Column(String, nullable=True, unique=True)
+    coefficient = Column(Numeric, nullable=True)
