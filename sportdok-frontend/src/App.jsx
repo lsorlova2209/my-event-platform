@@ -589,7 +589,12 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch) {
       const slot = i % 2 === 0 ? match.a : match.b
       present0.push(!!slot)
       if (slot) {
-        boxes.push({ x: 0, y, text: slot.full_name, win: !!(match.winner && match.winner.registration_id === slot.registration_id) })
+        // match.a/b both present means a real two-sided bout; a bye (one
+        // side missing) auto-advances the sole entrant with no fight, so it
+        // must render as a plain box, not a "won" highlight - otherwise a
+        // freshly-drawn bracket looks like fights already happened.
+        const realWin = !!(match.a && match.b && match.winner && match.winner.registration_id === slot.registration_id)
+        boxes.push({ x: 0, y, text: slot.full_name, win: realWin })
       }
       y += BR_ROW_H
     }
@@ -618,7 +623,10 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch) {
         }
         boxes.push({
           x: xTo, y: py - BR_BOX_H / 2, text: match.winner ? match.winner.full_name : "",
-          win: isLastRound && nGroups === 1, pending: !match.winner && match.a && match.b,
+          // Same bye rule as the leaf boxes above - only highlight a name
+          // here as "won" if it came from an actual decided bout, not from
+          // a bye chain propagating with nobody on the other side yet.
+          win: !!(match.a && match.b && match.winner), pending: !match.winner && match.a && match.b,
           match, roundLabel
         })
       }
