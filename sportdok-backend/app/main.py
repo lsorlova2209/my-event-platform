@@ -1,9 +1,11 @@
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from datetime import date, datetime
 from typing import Optional, List
+from io import BytesIO
 from app.database import get_db, engine, Base
 from app.models.user import User
 from app.models.tournament import Tournament
@@ -16,6 +18,7 @@ from app.auth import hash_password, verify_password, create_token
 from app.draw import build_category_draw
 from app.kumite_protocol import determine_winner
 from app.kata_protocol import ROUND_SCALES, validate_scores, compute_total, determine_round_result
+from app.documents import build_workbook, team_standings
 
 Base.metadata.create_all(bind=engine)
 
@@ -680,6 +683,149 @@ def list_kata_sessions(tournament_id: str, db: Session = Depends(get_db)):
         }
         for s in sessions
     ]
+
+# ─── ИТОГОВЫЕ ДОКУМЕНТЫ ───────────────────────────────────────────────────────
+
+@app.get("/api/v1/tournaments/{tournament_id}/documents/excel")
+def export_documents_excel(tournament_id: str, db: Session = Depends(get_db)):
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        return {"success": False, "message": "Турнир не найден"}
+
+    regs = db.query(Registration).filter(Registration.tournament_id == tournament_id).all()
+    groups = {}
+    for reg in regs:
+        athlete = db.query(Athlete).filter(Athlete.id == reg.athlete_id).first()
+        if not athlete:
+            continue
+        key = (reg.discipline, athlete.gender, reg.category_name)
+        groups.setdefault(key, []).append((reg, athlete))
+
+    def full_name(athlete):
+        return f"{athlete.last_name} {athlete.first_name} {athlete.middle_name or ''}".strip()
+
+    all_placements = []
+    categories_payload = []
+
+    for (discipline, gender, category_name), members in groups.items():
+        reg_by_id = {str(reg.id): (reg, athlete) for reg, athlete in members}
+        placements = []
+        progress = []
+
+        if discipline == "kata":
+            scores = db.query(KataScore).filter(
+                KataScore.tournament_id == tournament_id,
+                KataScore.category_name == category_name,
+                KataScore.gender == gender
+            ).order_by(KataScore.round_label, KataScore.total_score.desc()).all()
+            for s in scores:
+                pair = reg_by_id.get(str(s.registration_id))
+                name = full_name(pair[1]) if pair else "?"
+                progress.append(f"{s.round_label}: {name} — {float(s.total_score)} (мин. зачётная {float(s.lowest_counted_score)}, макс. зачётная {float(s.highest_counted_score)})")
+
+            final_scores = [s for s in scores if s.round_label == "final"]
+            if final_scores:
+                entries = [
+                    {
+                        "registration_id": str(s.registration_id),
+                        "scores": [float(s.score_1), float(s.score_2), float(s.score_3), float(s.score_4), float(s.score_5)]
+                    }
+                    for s in final_scores
+                ]
+                result = determine_round_result("final", entries)
+                for r in result["ranked"][:4]:
+                    pair = reg_by_id.get(r["registration_id"])
+                    if pair:
+                        placements.append({"place": r["place"], "full_name": full_name(pair[1]), "club_name": pair[1].club_name})
+        else:
+            bouts = db.query(Bout).filter(
+                Bout.tournament_id == tournament_id,
+                Bout.discipline == discipline,
+                Bout.category_name == category_name
+            ).order_by(Bout.created_at).all()
+            for b in bouts:
+                pair_a = reg_by_id.get(str(b.registration_id_a))
+                pair_b = reg_by_id.get(str(b.registration_id_b))
+                name_a = full_name(pair_a[1]) if pair_a else "?"
+                name_b = full_name(pair_b[1]) if pair_b else "?"
+                if b.status == "completed":
+                    winner_name = name_a if str(b.winner_registration_id) == str(b.registration_id_a) else name_b
+                    progress.append(f"{b.round_label}: {name_a} vs {name_b} — победитель {winner_name} ({b.win_method})")
+                else:
+                    progress.append(f"{b.round_label}: {name_a} vs {name_b} — результат не введён")
+
+            final_bout = next((b for b in bouts if b.round_label == "final" and b.status == "completed"), None)
+            bronze_bout = next((b for b in bouts if b.round_label == "bronze" and b.status == "completed"), None)
+
+            if final_bout:
+                winner_id = str(final_bout.winner_registration_id)
+                loser_id = str(final_bout.registration_id_b) if winner_id == str(final_bout.registration_id_a) else str(final_bout.registration_id_a)
+                for place, reg_id in ((1, winner_id), (2, loser_id)):
+                    pair = reg_by_id.get(reg_id)
+                    if pair:
+                        placements.append({"place": place, "full_name": full_name(pair[1]), "club_name": pair[1].club_name})
+            if bronze_bout:
+                winner_id = str(bronze_bout.winner_registration_id)
+                loser_id = str(bronze_bout.registration_id_b) if winner_id == str(bronze_bout.registration_id_a) else str(bronze_bout.registration_id_a)
+                for place, reg_id in ((3, winner_id), (4, loser_id)):
+                    pair = reg_by_id.get(reg_id)
+                    if pair:
+                        placements.append({"place": place, "full_name": full_name(pair[1]), "club_name": pair[1].club_name})
+
+            # Round-robin (exactly 3 participants, no final/bronze bouts): rank by win count.
+            if not final_bout and len(members) == 3 and bouts:
+                wins = {reg_id: 0 for reg_id in reg_by_id}
+                for b in bouts:
+                    if b.status == "completed" and b.winner_registration_id:
+                        wid = str(b.winner_registration_id)
+                        wins[wid] = wins.get(wid, 0) + 1
+                ranked_ids = sorted(wins.items(), key=lambda kv: -kv[1])
+                place, prev_count = 0, None
+                for i, (reg_id, count) in enumerate(ranked_ids):
+                    if count != prev_count:
+                        place = i + 1
+                        prev_count = count
+                    pair = reg_by_id.get(reg_id)
+                    if pair:
+                        placements.append({"place": place, "full_name": full_name(pair[1]), "club_name": pair[1].club_name})
+
+        placements.sort(key=lambda p: p["place"])
+        all_placements.extend(placements)
+        categories_payload.append({
+            "discipline": discipline,
+            "gender": gender,
+            "category_name": category_name,
+            "placements": placements,
+            "progress": progress
+        })
+
+    discipline_counts = {}
+    for reg in regs:
+        discipline_counts[reg.discipline] = discipline_counts.get(reg.discipline, 0) + 1
+
+    summary = {
+        "participant_count": len(regs),
+        "category_count": len(groups),
+        "discipline_counts": discipline_counts
+    }
+    tournament_info = {
+        "name": tournament.name,
+        "location": tournament.location,
+        "event_date": str(tournament.event_date),
+        "registration_closes_at": str(tournament.registration_closes_at) if tournament.registration_closes_at else None,
+        "status": tournament.status
+    }
+
+    wb = build_workbook(tournament_info, summary, categories_payload, team_standings(all_placements))
+    buffer = BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=sportdok_export_{tournament_id[:8]}.xlsx"}
+    )
 
 # ─── СПРАВОЧНИКИ ──────────────────────────────────────────────────────────────
 
