@@ -116,6 +116,10 @@ class SecretaryAccessGrant(BaseModel):
     gender: Optional[str] = None
     category_name: Optional[str] = None
 
+class SeedSwapRequest(BaseModel):
+    registration_id_a: str
+    registration_id_b: str
+
 # ─── STARTUP ──────────────────────────────────────────────────────────────────
 
 @app.on_event("startup")
@@ -367,7 +371,8 @@ def delete_tournament(tournament_id: str, db: Session = Depends(get_db)):
     return {"success": True, "message": f"Турнир {name} удалён"}
 
 @app.post("/api/v1/tournaments/{tournament_id}/draw")
-def draw_tournament(tournament_id: str, db: Session = Depends(get_db)):
+def draw_tournament(tournament_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
     tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
     if not tournament:
         return {"success": False, "message": "Турнир не найден"}
@@ -410,6 +415,42 @@ def draw_tournament(tournament_id: str, db: Session = Depends(get_db)):
 
     db.commit()
     return {"success": True, "tournament_id": tournament_id, "categories": categories}
+
+@app.post("/api/v1/tournaments/{tournament_id}/draw/swap-seed")
+def swap_draw_seed(tournament_id: str, data: SeedSwapRequest, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    # ТЗ 5.3.4: only admin/owner may renumber the draw — secretaries and clubs cannot.
+    require_roles(current_user, {"admin", "owner"})
+
+    if data.registration_id_a == data.registration_id_b:
+        return {"success": False, "message": "Нельзя поменять участника местами с самим собой"}
+    reg_a = db.query(Registration).filter(Registration.id == data.registration_id_a).first()
+    reg_b = db.query(Registration).filter(Registration.id == data.registration_id_b).first()
+    if not reg_a or not reg_b:
+        return {"success": False, "message": "Участник не найден"}
+    if str(reg_a.tournament_id) != tournament_id or str(reg_b.tournament_id) != tournament_id:
+        return {"success": False, "message": "Участник не заявлен на этот турнир"}
+    if reg_a.seed is None or reg_b.seed is None:
+        return {"success": False, "message": "Жеребьёвка ещё не проведена для этой категории"}
+
+    athlete_a = db.query(Athlete).filter(Athlete.id == reg_a.athlete_id).first()
+    athlete_b = db.query(Athlete).filter(Athlete.id == reg_b.athlete_id).first()
+    same_category = (
+        reg_a.discipline == reg_b.discipline
+        and reg_a.category_name == reg_b.category_name
+        and (athlete_a.gender if athlete_a else None) == (athlete_b.gender if athlete_b else None)
+    )
+    if not same_category:
+        return {"success": False, "message": "Участники из разных категорий"}
+    if reg_a.subgroup != reg_b.subgroup:
+        return {"success": False, "message": "Участники из разных подгрупп сетки"}
+
+    reg_a.seed, reg_b.seed = reg_b.seed, reg_a.seed
+    db.commit()
+    return {
+        "success": True,
+        "registration_id_a": str(reg_a.id), "seed_a": reg_a.seed,
+        "registration_id_b": str(reg_b.id), "seed_b": reg_b.seed
+    }
 
 # ─── ATHLETES ─────────────────────────────────────────────────────────────────
 
