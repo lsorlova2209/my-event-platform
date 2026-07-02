@@ -980,20 +980,14 @@ function TournamentDetail({ tournament, user, onBack }) {
 
                 if (group.discipline === "kata") {
                   const drawn = group.athletes.some(a => a.seed != null)
-                  const sorted = [...group.athletes].sort((x, y) => (x.seed ?? 999) - (y.seed ?? 999))
                   return (
-                    <div key={label} style={{ marginBottom: "20px" }}>
+                    <div key={label} style={{ marginBottom: "24px" }}>
                       <div style={{ fontWeight: "bold", color: "#1A56A0", marginBottom: "8px" }}>{label}</div>
                       {!drawn ? (
                         <p style={{ color: "#4A4A48", fontSize: "14px" }}>Жеребьёвка не проведена</p>
                       ) : (
-                        sorted.map(a => (
-                          <div key={a.id} style={{ display: "flex", gap: "12px", padding: "6px 0", borderBottom: "1px solid #f3f2ee", fontSize: "14px" }}>
-                            <span style={{ fontWeight: "bold", minWidth: "30px" }}>№{a.seed}</span>
-                            <span style={{ flex: 1 }}>{a.full_name}</span>
-                            <span style={{ color: "#4A4A48" }}>{a.club_name}</span>
-                          </div>
-                        ))
+                        <KataTable grant={{ tournament_id: tournament.id, category_name: group.category_name, gender: group.gender }}
+                          user={user} participants={group.athletes} />
                       )}
                     </div>
                   )
@@ -1375,8 +1369,6 @@ function SecretaryPanel({ user, onLogout }) {
 function SecretaryTable({ user, grant, tournament, onBack }) {
   const [athletes, setAthletes] = useState([])
   const [bouts, setBouts] = useState([])
-  const [kataRound, setKataRound] = useState("round1")
-  const [kataStandings, setKataStandings] = useState(null)
   const isKata = grant.discipline === "kata"
 
   const load = async () => {
@@ -1397,16 +1389,6 @@ function SecretaryTable({ user, grant, tournament, onBack }) {
     (!grant.gender || a.gender === grant.gender)
   )
 
-  const loadKataStandings = async () => {
-    try {
-      const params = { category_name: grant.category_name, round_label: kataRound }
-      if (grant.gender) params.gender = grant.gender
-      const r = await axios.get(`${API}/api/v1/tournaments/${grant.tournament_id}/kata-standings`, { params })
-      setKataStandings(r.data)
-    } catch { setKataStandings(null) }
-  }
-  useEffect(() => { if (isKata) loadKataStandings() }, [isKata, kataRound, athletes])
-
   const label = categoryLabel(grant.discipline, grant.gender, grant.category_name)
 
   return (
@@ -1419,9 +1401,7 @@ function SecretaryTable({ user, grant, tournament, onBack }) {
         </div>
 
         {isKata ? (
-          <KataTable grant={grant} user={user} participants={participants}
-            kataRound={kataRound} setKataRound={setKataRound}
-            standings={kataStandings} onChanged={loadKataStandings} />
+          <KataTable grant={grant} user={user} participants={participants} />
         ) : (
           <KumiteBracket grant={grant} user={user} participants={participants} bouts={bouts} onChanged={load} />
         )}
@@ -1430,62 +1410,101 @@ function SecretaryTable({ user, grant, tournament, onBack }) {
   )
 }
 
-function KataTable({ grant, user, participants, kataRound, setKataRound, standings, onChanged }) {
-  const [editing, setEditing] = useState(null)
-  const rankedByReg = {}
-  ;(standings?.ranked || []).forEach(r => { rankedByReg[r.registration_id] = r })
+const KATA_TH = { border: "1px solid #D3D1C7", padding: "6px 8px", background: "#f3f2ee", fontSize: "12px", textAlign: "center", whiteSpace: "nowrap" }
+const KATA_TD = { border: "1px solid #D3D1C7", padding: "6px 8px", fontSize: "13px", textAlign: "center" }
+
+// Протокол ката как в официальном образце - все круги видны сразу одной
+// таблицей (ФИО + 5 оценок судей + итог на круг + место), а не по одному
+// кругу за раз с карточками на каждого участника.
+function KataTable({ grant, user, participants }) {
+  const [scores, setScores] = useState([])
+  const [places, setPlaces] = useState({})
+  const [activeCell, setActiveCell] = useState(null)
+
+  const load = async () => {
+    const params = { category_name: grant.category_name }
+    if (grant.gender) params.gender = grant.gender
+    try {
+      const r = await axios.get(`${API}/api/v1/tournaments/${grant.tournament_id}/kata-scores`, { params })
+      setScores(r.data)
+    } catch { setScores([]) }
+    try {
+      const r2 = await axios.get(`${API}/api/v1/tournaments/${grant.tournament_id}/kata-standings`, { params: { ...params, round_label: "final" } })
+      const p = {}
+      ;(r2.data.ranked || []).forEach(x => { p[x.registration_id] = x.place })
+      setPlaces(p)
+    } catch { setPlaces({}) }
+  }
+  useEffect(() => { load() }, [grant.tournament_id, grant.category_name, grant.gender])
+
+  if (participants.length === 0) {
+    return <div style={card}><p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Участников в этой категории нет.</p></div>
+  }
+
+  const rounds = Object.keys(KATA_ROUND_LABELS)
+  const byRegRound = {}
+  scores.forEach(s => { byRegRound[`${s.registration_id}|${s.round_label}`] = s })
   const sorted = [...participants].sort((a, b) => (a.seed ?? 999) - (b.seed ?? 999))
 
   return (
     <div style={card}>
-      <div style={{ display: "flex", gap: "8px", marginBottom: "20px" }}>
-        {Object.keys(KATA_ROUND_LABELS).map(r => (
-          <button key={r} onClick={() => { setKataRound(r); setEditing(null) }} style={{
-            ...btnOutline, fontWeight: kataRound === r ? "bold" : "normal",
-            background: kataRound === r ? "#1A56A0" : "white",
-            color: kataRound === r ? "white" : "#4A4A48"
-          }}>{KATA_ROUND_LABELS[r]}</button>
-        ))}
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ borderCollapse: "collapse", width: "100%" }}>
+          <thead>
+            <tr>
+              <th style={KATA_TH} rowSpan={2}>№</th>
+              <th style={{ ...KATA_TH, textAlign: "left" }} rowSpan={2}>Фамилия Имя</th>
+              {rounds.map(r => <th key={r} style={KATA_TH} colSpan={6}>{KATA_ROUND_LABELS[r]}</th>)}
+              <th style={KATA_TH} rowSpan={2}>Место</th>
+            </tr>
+            <tr>
+              {rounds.map(r => [1, 2, 3, 4, 5, "Итог"].map(c => <th key={r + c} style={KATA_TH}>{c}</th>))}
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((p, i) => (
+              <tr key={p.registration_id}>
+                <td style={KATA_TD}>{i + 1}</td>
+                <td style={{ ...KATA_TD, textAlign: "left" }}>{p.full_name}</td>
+                {rounds.map(r => {
+                  const s = byRegRound[`${p.registration_id}|${r}`]
+                  const vals = s ? [s.score_1, s.score_2, s.score_3, s.score_4, s.score_5, s.total_score] : null
+                  const openForm = () => setActiveCell({
+                    registrationId: p.registration_id, name: p.full_name, roundLabel: r,
+                    existing: vals ? vals.slice(0, 5) : null
+                  })
+                  return [0, 1, 2, 3, 4, 5].map(col => (
+                    <td key={r + col} onClick={openForm} title={vals ? "Нажмите, чтобы изменить оценки" : "Ввести оценки"} style={{
+                      ...KATA_TD, cursor: "pointer", background: vals ? "white" : "#faf9f5",
+                      fontWeight: col === 5 && vals ? "bold" : "normal",
+                      color: col === 5 && vals ? "#0F6E56" : "#1A1A1A"
+                    }}>
+                      {vals ? vals[col] : (col === 0 ? "—" : "")}
+                    </td>
+                  ))
+                })}
+                <td style={{ ...KATA_TD, fontWeight: "bold", color: places[p.registration_id] ? "#0F6E56" : "#1A1A1A" }}>
+                  {places[p.registration_id] || ""}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
-
-      {sorted.length === 0 ? (
-        <p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Участников в этой категории нет.</p>
-      ) : sorted.map(p => {
-        const rank = rankedByReg[p.registration_id]
-        return (
-          <div key={p.registration_id} style={{ padding: "12px 0", borderBottom: "1px solid #f3f2ee" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
-                {p.seed && <span style={{ color: "#4A4A48", marginRight: "8px" }}>№{p.seed}</span>}
-                <strong>{p.full_name}</strong>
-                {p.club_name && <span style={{ color: "#4A4A48" }}> · {p.club_name}</span>}
-              </div>
-              <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-                {rank ? (
-                  <span style={{ fontSize: "13px", color: "#0F6E56", fontWeight: "bold" }}>
-                    {rank.total} балл. {rank.place ? `· ${rank.place} место` : ""}
-                  </span>
-                ) : (
-                  <span style={{ fontSize: "13px", color: "#4A4A48" }}>не оценён</span>
-                )}
-                <button onClick={() => setEditing(editing === p.registration_id ? null : p.registration_id)} style={{ ...btnOutline, padding: "6px 12px", fontSize: "13px" }}>
-                  {rank ? "Изменить оценки" : "Ввести оценки"}
-                </button>
-              </div>
-            </div>
-            {editing === p.registration_id && (
-              <KataScoreForm registrationId={p.registration_id} roundLabel={kataRound} tournamentId={grant.tournament_id} user={user}
-                onDone={() => { setEditing(null); onChanged() }} onCancel={() => setEditing(null)} />
-            )}
-          </div>
-        )
-      })}
+      {activeCell && (
+        <Modal onClose={() => setActiveCell(null)}>
+          <h3 style={{ margin: "0 0 12px", color: "#1A56A0" }}>Оценки: {activeCell.name} — {KATA_ROUND_LABELS[activeCell.roundLabel]}</h3>
+          <KataScoreForm registrationId={activeCell.registrationId} roundLabel={activeCell.roundLabel} existingScores={activeCell.existing}
+            tournamentId={grant.tournament_id} user={user}
+            onDone={() => { setActiveCell(null); load() }} onCancel={() => setActiveCell(null)} />
+        </Modal>
+      )}
     </div>
   )
 }
 
-function KataScoreForm({ registrationId, roundLabel, tournamentId, user, onDone, onCancel }) {
-  const [scores, setScores] = useState(["", "", "", "", ""])
+function KataScoreForm({ registrationId, roundLabel, existingScores, tournamentId, user, onDone, onCancel }) {
+  const [scores, setScores] = useState(existingScores ? existingScores.map(String) : ["", "", "", "", ""])
   const [error, setError] = useState("")
   const [saving, setSaving] = useState(false)
   const [lo, hi] = KATA_ROUND_RANGES[roundLabel] || [0, 10]

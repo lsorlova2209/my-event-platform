@@ -748,6 +748,31 @@ def submit_kata_score(data: KataScoreSubmit, current_user=Depends(get_current_us
     db.refresh(score_row)
     return {"success": True, "id": str(score_row.id), "total_score": float(total)}
 
+@app.get("/api/v1/tournaments/{tournament_id}/kata-scores")
+def list_kata_scores(tournament_id: str, category_name: str, gender: Optional[str] = None, db: Session = Depends(get_db)):
+    """Raw per-judge scores across all rounds for a category - kata-standings
+    only returns the aggregated total/place for one round at a time, which
+    isn't enough to render the official round-by-round score table."""
+    query = db.query(KataScore).filter(
+        KataScore.tournament_id == tournament_id,
+        KataScore.category_name == category_name
+    )
+    if gender:
+        query = query.filter(KataScore.gender == gender)
+    return [
+        {
+            "registration_id": str(s.registration_id),
+            "round_label": s.round_label,
+            "score_1": float(s.score_1),
+            "score_2": float(s.score_2),
+            "score_3": float(s.score_3),
+            "score_4": float(s.score_4),
+            "score_5": float(s.score_5),
+            "total_score": float(s.total_score)
+        }
+        for s in query.all()
+    ]
+
 @app.get("/api/v1/tournaments/{tournament_id}/kata-standings")
 def kata_standings(tournament_id: str, category_name: str, round_label: str, gender: Optional[str] = None, db: Session = Depends(get_db)):
     if round_label not in ROUND_SCALES:
