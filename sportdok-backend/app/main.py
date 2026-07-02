@@ -378,7 +378,12 @@ def draw_tournament(tournament_id: str, current_user=Depends(get_current_user), 
         return {"success": False, "message": "Турнир не найден"}
 
     rank_order = {r.name: r.sort_order for r in db.query(Rank).all()}
-    regs = db.query(Registration).filter(Registration.tournament_id == tournament_id).all()
+    # Deterministic order matters here: re-running the draw after a late
+    # entrant joins a different category must not reshuffle a category
+    # that's already been drawn (or worse, already has results) - an
+    # unordered query lets Postgres return rows in a different order
+    # across calls, which silently corrupts an already-decided bracket.
+    regs = db.query(Registration).filter(Registration.tournament_id == tournament_id).order_by(Registration.created_at, Registration.id).all()
 
     groups = {}
     for reg in regs:
