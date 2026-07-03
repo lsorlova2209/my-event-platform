@@ -1572,6 +1572,7 @@ const KATA_TD = { border: "1px solid #D3D1C7", padding: "6px 8px", fontSize: "13
 function KataTable({ grant, user, participants }) {
   const [scores, setScores] = useState([])
   const [places, setPlaces] = useState({})
+  const [tiesAtCutoff, setTiesAtCutoff] = useState([])
   const [activeCell, setActiveCell] = useState(null)
 
   const load = async () => {
@@ -1587,6 +1588,17 @@ function KataTable({ grant, user, participants }) {
       ;(r2.data.ranked || []).forEach(x => { p[x.registration_id] = x.place })
       setPlaces(p)
     } catch { setPlaces({}) }
+    // round1/round2 имеют отсечку (проход в следующий круг) - если на границе
+    // ничья, ТЗ 5.4 требует "дополнительное ката", т.к. текущая цепочка
+    // тай-брейков (итог -> мин. засчитанная -> макс. засчитанная) её не
+    // разрешает. determine_round_result это уже считает, но раньше нигде
+    // не показывалось секретарю/админу.
+    try {
+      const results = await Promise.all(["round1", "round2"].map(round_label =>
+        axios.get(`${API}/api/v1/tournaments/${grant.tournament_id}/kata-standings`, { params: { ...params, round_label } })
+      ))
+      setTiesAtCutoff(results.map((r, i) => r.data.tie_at_cutoff ? ["round1", "round2"][i] : null).filter(Boolean))
+    } catch { setTiesAtCutoff([]) }
   }
   useEffect(() => { load() }, [grant.tournament_id, grant.category_name, grant.gender])
 
@@ -1601,6 +1613,11 @@ function KataTable({ grant, user, participants }) {
 
   return (
     <div style={card}>
+      {tiesAtCutoff.length > 0 && (
+        <div style={{ ...errorBox, marginBottom: "16px" }}>
+          Ничья на границе прохода дальше ({tiesAtCutoff.map(r => KATA_ROUND_LABELS[r]).join(", ")}) — по ТЗ требуется дополнительное ката, чтобы определить, кто проходит дальше.
+        </div>
+      )}
       <div style={{ overflowX: "auto" }}>
         <table style={{ borderCollapse: "collapse", width: "100%" }}>
           <thead>
