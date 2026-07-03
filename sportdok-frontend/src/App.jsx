@@ -803,9 +803,20 @@ function TournamentDetail({ tournament, user, onBack }) {
     return groups
   }, {})
 
+  const kataNameToStyle = kataTypes.reduce((map, k) => {
+    if (!(k.name in map)) map[k.name] = k.group
+    return map
+  }, {})
+
+  // Сетка/протокол ката группируется по стилю целиком (как в официальных
+  // протоколах), а не по конкретной ката, которую выбрал спортсмен - так же,
+  // как на бэкенде (см. app/main.py::draw_category_key).
+  const drawCategoryName = (a) => a.discipline === "kata" ? (kataNameToStyle[a.category_name] || a.category_name) : a.category_name
+
   const bracketGroups = athletes.reduce((groups, a) => {
-    const key = `${a.discipline}|${a.gender}|${a.category_name}`
-    if (!groups[key]) groups[key] = { discipline: a.discipline, gender: a.gender, category_name: a.category_name, athletes: [] }
+    const categoryName = drawCategoryName(a)
+    const key = `${a.discipline}|${a.gender}|${categoryName}`
+    if (!groups[key]) groups[key] = { discipline: a.discipline, gender: a.gender, category_name: categoryName, athletes: [] }
     groups[key].athletes.push(a)
     return groups
   }, {})
@@ -1369,6 +1380,7 @@ function SecretaryPanel({ user, onLogout }) {
 function SecretaryTable({ user, grant, tournament, onBack }) {
   const [athletes, setAthletes] = useState([])
   const [bouts, setBouts] = useState([])
+  const [kataTypes, setKataTypes] = useState([])
   const isKata = grant.discipline === "kata"
 
   const load = async () => {
@@ -1378,14 +1390,25 @@ function SecretaryTable({ user, grant, tournament, onBack }) {
       if (!isKata) {
         const b = await axios.get(`${API}/api/v1/tournaments/${grant.tournament_id}/bouts`)
         setBouts(b.data)
+      } else {
+        const k = await axios.get(`${API}/api/v1/kata-types/`)
+        setKataTypes(k.data)
       }
     } catch {}
   }
   useEffect(() => { load() }, [])
 
+  // grant.category_name — это стиль ката (см. app/main.py::draw_category_key),
+  // а a.category_name у спортсмена — конкретная ката, которую он выбрал при
+  // заявке, поэтому для ката сравниваем через стиль, а не напрямую.
+  const kataNameToStyle = kataTypes.reduce((map, k) => {
+    if (!(k.name in map)) map[k.name] = k.group
+    return map
+  }, {})
+
   const participants = athletes.filter(a =>
     a.discipline === grant.discipline &&
-    a.category_name === grant.category_name &&
+    (isKata ? (kataNameToStyle[a.category_name] || a.category_name) === grant.category_name : a.category_name === grant.category_name) &&
     (!grant.gender || a.gender === grant.gender)
   )
 

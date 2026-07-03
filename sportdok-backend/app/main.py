@@ -20,6 +20,7 @@ from app.draw import build_category_draw
 from app.kumite_protocol import determine_winner
 from app.kata_protocol import ROUND_SCALES, validate_scores, compute_total, determine_round_result
 from app.documents import build_workbook, build_pdf, team_standings
+from app.kata_registry import KATA_TYPES, KATA_STYLE_ORDER, kata_style
 
 Base.metadata.create_all(bind=engine)
 
@@ -167,195 +168,6 @@ RANKS = [
     "МСМК", "МС", "КМС", "1 разряд", "2 разряд", "3 разряд",
     "1 юн. разряд", "2 юн. разряд", "3 юн. разряд", "Б/р"
 ]
-
-# Реестр ката Федерации всестилевого каратэ России, Приложение №1 (А-001 -
-# С-164): группировка по стилю (номер-код группы) с официальным кодом,
-# названием и коэффициентом сложности каждой ката. Транскрибировано из
-# документа как есть, включая нестандартные записи (напр. С-134 "1.1"
-# вместо "1.0X" по остальному ряду) - это не опечатка при вводе, так
-# записано в реестре.
-KATA_TYPES = {
-    "Ашихара": [
-        ("А-001", "Шошин но ката Соно Ити", 1.0),
-        ("А-002", "Кихон но ката Соно Ити", 1.0),
-        ("А-003", "Шошин но ката Соно Ни", 1.01),
-        ("А-004", "Кумитэ но ката Соно Ити", 1.01),
-        ("А-005", "Гошин но ката Соно Ичи", 1.01),
-        ("А-006", "Кумитэ но ката Соно Ни", 1.02),
-        ("А-007", "Кихон но ката Соно Ни", 1.02),
-        ("А-008", "Гейко но ката Соно Ичи", 1.02),
-        ("А-009", "Гошин но ката Соно Ни", 1.02),
-        ("А-010", "Гейко но ката Соно Ни", 1.02),
-        ("А-011", "Кумитэ но ката Соно Сан", 1.03),
-        ("А-012", "Кихон но ката Соно Сан", 1.03),
-        ("А-013", "Гейко но ката Соно Сан", 1.03),
-        ("А-014", "Гейко но ката Соно Йон", 1.03),
-        ("А-015", "Кумитэ но ката Соно Ён", 1.04),
-        ("А-016", "Кумитэ но ката Соно Го", 1.04),
-        ("А-017", "Джисен но ката Соно Ичи", 1.04),
-        ("А-018", "Джисен но ката Соно Ни", 1.04),
-    ],
-    "Косики": [
-        ("Б-019", "Дай Ик-кё", 1.0),
-        ("Б-020", "Дай Сан-кё", 1.0),
-        ("Б-021", "Дай Ни-кё", 1.01),
-        ("Б-022", "Дай Йон-кё", 1.01),
-        ("Б-023", "Дай Го-кё", 1.01),
-        ("Б-024", "Пинан Шодан", 1.02),
-        ("Б-025", "Косики найханчин", 1.02),
-        ("Б-026", "Ванкан", 1.03),
-        ("Б-027", "Сэйсан", 1.03),
-        ("Б-028", "Косики Бассай", 1.03),
-        ("Б-029", "Кушанку", 1.04),
-        ("Б-030", "Косики Кусоку", 1.04),
-        ("Б-031", "Сочин", 1.04),
-        ("Б-032", "Нидзюсихо", 1.04),
-    ],
-    "Вадо-рю": [
-        ("В-033", "Кихон но-ката", 1.0),
-        ("В-034", "Пинан – Нидан", 1.0),
-        ("В-035", "Пинан – Сандан", 1.0),
-        ("В-036", "Пинан – Шодан", 1.01),
-        ("В-037", "Пинан – Ёндан", 1.01),
-        ("В-038", "Пинан – Годан", 1.01),
-        ("В-039", "Дзион", 1.02),
-        ("В-040", "Дзюттэ", 1.02),
-        ("В-041", "Найханчи", 1.02),
-        ("В-042", "Нисейси", 1.02),
-        ("В-043", "Бассай", 1.03),
-        ("В-044", "Рохай", 1.03),
-        ("В-045", "Вансю", 1.03),
-        ("В-046", "Сейшан", 1.04),
-        ("В-047", "Чинто", 1.04),
-        ("В-048", "Кусянку", 1.04),
-    ],
-    "Годзю-рю": [
-        ("Г-049", "Гекисайдай I-II", 1.0),
-        ("Г-050", "Фукугата I-II", 1.0),
-        ("Г-051", "Пинан I-V", 1.0),
-        ("Г-052", "Сайфа", 1.01),
-        ("Г-053", "Сейюнчин", 1.01),
-        ("Г-054", "Сисочин", 1.01),
-        ("Г-055", "Ваншу", 1.01),
-        ("Г-056", "Ананку", 1.01),
-        ("Г-057", "Пасай Дай", 1.01),
-        ("Г-058", "Найфанчи I-III", 1.01),
-        ("Г-059", "Пассай", 1.01),
-        ("Г-060", "Томари Бассай", 1.01),
-        ("Г-061", "Сансэру (Аояги)", 1.02),
-        ("Г-062", "Сейпай", 1.02),
-        ("Г-063", "Дзеон", 1.02),
-        ("Г-064", "Дзиттэ", 1.02),
-        ("Г-065", "Сэйсан", 1.02),
-        ("Г-066", "Рохай", 1.02),
-        ("Г-067", "Ванчин", 1.02),
-        ("Г-068", "Курурунфа", 1.03),
-        ("Г-069", "Бассай Шо", 1.03),
-        ("Г-070", "Нидзюшихо (Нисэйси)", 1.03),
-        ("Г-071", "Томари Ха Бассай", 1.03),
-        ("Г-072", "Кушанку Шо", 1.03),
-        ("Г-073", "Ванкан", 1.03),
-        ("Г-074", "Супаримпей", 1.04),
-        ("Г-075", "Годзюшихо", 1.04),
-        ("Г-076", "Кян Но Шинто", 1.04),
-        ("Г-077", "Яра Кушанку", 1.04),
-    ],
-    "Киокусинкай": [
-        ("Д-078", "Тайкёку Соноичи", 1.0),
-        ("Д-079", "Тайкёку Соно ни", 1.01),
-        ("Д-080", "Пинан Соно ни", 1.01),
-        ("Д-081", "Гексай дай", 1.01),
-        ("Д-082", "Тайкёку Соно сан", 1.02),
-        ("Д-083", "Пинан Соно сан", 1.02),
-        ("Д-084", "Янцу", 1.02),
-        ("Д-085", "Пинан Соноичи", 1.03),
-        ("Д-086", "Пинан Соноён", 1.03),
-        ("Д-087", "Сейчин", 1.03),
-        ("Д-088", "Сайфа", 1.03),
-        ("Д-089", "Гарю", 1.03),
-        ("Д-090", "Цуки но ката", 1.03),
-        ("Д-091", "Пинан Соно го", 1.04),
-        ("Д-092", "Сейпай", 1.04),
-        ("Д-093", "Гексайшо", 1.04),
-        ("Д-094", "Канку дай", 1.04),
-        ("Д-095", "Сусихо", 1.04),
-    ],
-    "Фудокан": [
-        ("Е-096", "Хейан Ой-Куми", 1.0),
-        ("Е-097", "Тайдзи Шодан", 1.01),
-        ("Е-098", "Ваншу", 1.01),
-        ("Е-099", "Мейкьо Шодан", 1.01),
-        ("Е-100", "Текки Ой-Куми", 1.01),
-        ("Е-101", "Тайдзи Нидан", 1.02),
-        ("Е-102", "Канку Ой-Куми", 1.02),
-        ("Е-103", "Матцумура Пассай", 1.02),
-        ("Е-104", "Каминару", 1.03),
-        ("Е-105", "Сэцубама Яма", 1.03),
-        ("Е-106", "Мейкьо Нидан", 1.03),
-        ("Е-107", "Вашинома", 1.04),
-        ("Е-108", "Мейкьо Сандан", 1.04),
-        ("Е-109", "Йон Рэй", 1.04),
-        ("Е-110", "Тайдзи Сандан", 1.04),
-    ],
-    "Шотокан": [
-        ("Ж-111", "Тайкёку Шотокан", 1.0),
-        ("Ж-112", "Хейан Шодан", 1.0),
-        ("Ж-113", "Хейан Нидан", 1.0),
-        ("Ж-114", "Хейан Сандан", 1.01),
-        ("Ж-115", "Хейан Йондан", 1.01),
-        ("Ж-116", "Хейан Годан", 1.01),
-        ("Ж-117", "Тэкки Шодан", 1.01),
-        ("Ж-118", "Бассай Дай", 1.02),
-        ("Ж-119", "Джион", 1.02),
-        ("Ж-120", "Энпи", 1.02),
-        ("Ж-121", "Канку Дай", 1.02),
-        ("Ж-122", "Джиттэ", 1.02),
-        ("Ж-123", "Джиин", 1.02),
-        ("Ж-124", "Сочин", 1.03),
-        ("Ж-125", "Нидзюшихо", 1.03),
-        ("Ж-126", "Канку Шо", 1.03),
-        ("Ж-127", "Бассай Шо", 1.03),
-        ("Ж-128", "Чинтэй", 1.03),
-        ("Ж-129", "Годзюшихо Шо", 1.04),
-        ("Ж-130", "Годзюшихо Дай", 1.04),
-        ("Ж-131", "Ганкаку", 1.04),
-        ("Ж-132", "Унсу", 1.04),
-    ],
-    "Сито-рю": [
-        ("С-133", "Пинан – Хейан (1-5)", 1.0),
-        ("С-134", "Сайфа", 1.1),
-        ("С-135", "Аояги", 1.01),
-        ("С-136", "Дзиин", 1.01),
-        ("С-137", "Дзюроку", 1.01),
-        ("С-138", "Дзиттэ", 1.01),
-        ("С-139", "Сансейру", 1.01),
-        ("С-140", "Найфантин (1-3)", 1.01),
-        ("С-141", "Вансю", 1.01),
-        ("С-142", "Косокун-шо", 1.01),
-        ("С-143", "Сэйнчин", 1.02),
-        ("С-144", "Бассай-дай (шо)", 1.02),
-        ("С-145", "Дзион", 1.02),
-        ("С-146", "Косокун-дай", 1.02),
-        ("С-147", "Нисейси", 1.02),
-        ("С-148", "Матсумура Рохай", 1.02),
-        ("С-149", "Матсумура Бассай", 1.02),
-        ("С-150", "Сэйсан", 1.02),
-        ("С-151", "Чинто", 1.02),
-        ("С-152", "Сэйпай", 1.03),
-        ("С-153", "Томари Бассай", 1.03),
-        ("С-154", "Пайку", 1.03),
-        ("С-155", "Хейку", 1.03),
-        ("С-156", "Пачу", 1.03),
-        ("С-157", "Годзюшихо", 1.03),
-        ("С-158", "Курурумфа", 1.03),
-        ("С-159", "Нипайпо", 1.04),
-        ("С-160", "Супаримпей", 1.04),
-        ("С-161", "Унсу", 1.04),
-        ("С-162", "Папурен", 1.04),
-        ("С-163", "Аннан", 1.04),
-        ("С-164", "Чатаньяра Кушанку", 1.04),
-    ],
-}
 
 @app.on_event("startup")
 def seed_reference_catalogs():
@@ -563,6 +375,27 @@ def delete_tournament(tournament_id: str, db: Session = Depends(get_db)):
     db.commit()
     return {"success": True, "message": f"Турнир {name} удалён"}
 
+def draw_category_key(discipline, category_name):
+    """The 'category' a registration draws/scores into. For ката this is the
+    style (Ашихара/Косики/...), not the specific ката the athlete picked -
+    same as the official protocols (docs/samples), where one сетка/protocol
+    page covers a whole style regardless of which ката each competitor
+    performs. Кумитэ keeps using category_name (weight class) as-is."""
+    return kata_style(category_name) if discipline == "kata" else category_name
+
+
+def category_sort_key(cat):
+    """Groups ката categories together in official style order (Ашихара,
+    Косики, ...); leaves everything else in its original relative order."""
+    if cat["discipline"] == "kata":
+        try:
+            style_index = KATA_STYLE_ORDER.index(cat["category_name"])
+        except ValueError:
+            style_index = len(KATA_STYLE_ORDER)
+        return (0, style_index, cat.get("gender") or "")
+    return (1, 0, "")
+
+
 @app.post("/api/v1/tournaments/{tournament_id}/draw")
 def draw_tournament(tournament_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     require_roles(current_user, {"admin", "owner"})
@@ -583,7 +416,7 @@ def draw_tournament(tournament_id: str, current_user=Depends(get_current_user), 
         athlete = db.query(Athlete).filter(Athlete.id == reg.athlete_id).first()
         if not athlete:
             continue
-        key = (reg.discipline, athlete.gender, reg.category_name)
+        key = (reg.discipline, athlete.gender, draw_category_key(reg.discipline, reg.category_name))
         groups.setdefault(key, []).append({
             "registration_id": str(reg.id),
             "full_name": f"{athlete.last_name} {athlete.first_name} {athlete.middle_name or ''}".strip(),
@@ -630,6 +463,7 @@ def draw_tournament(tournament_id: str, current_user=Depends(get_current_user), 
             **result
         })
 
+    categories.sort(key=category_sort_key)
     db.commit()
     return {"success": True, "tournament_id": tournament_id, "categories": categories}
 
@@ -653,7 +487,7 @@ def swap_draw_seed(tournament_id: str, data: SeedSwapRequest, current_user=Depen
     athlete_b = db.query(Athlete).filter(Athlete.id == reg_b.athlete_id).first()
     same_category = (
         reg_a.discipline == reg_b.discipline
-        and reg_a.category_name == reg_b.category_name
+        and draw_category_key(reg_a.discipline, reg_a.category_name) == draw_category_key(reg_b.discipline, reg_b.category_name)
         and (athlete_a.gender if athlete_a else None) == (athlete_b.gender if athlete_b else None)
     )
     if not same_category:
@@ -900,7 +734,8 @@ def submit_kata_score(data: KataScoreSubmit, current_user=Depends(get_current_us
         return {"success": False, "message": f"Нужно ровно 5 оценок в диапазоне {lo}–{hi}"}
 
     athlete = db.query(Athlete).filter(Athlete.id == reg.athlete_id).first()
-    if not secretary_has_access(db, current_user, data.tournament_id, "kata", athlete.gender if athlete else None, reg.category_name):
+    style = kata_style(reg.category_name)
+    if not secretary_has_access(db, current_user, data.tournament_id, "kata", athlete.gender if athlete else None, style):
         raise HTTPException(status_code=403, detail="Нет доступа к этой сетке")
     total, low, high = compute_total(data.scores)
 
@@ -913,7 +748,7 @@ def submit_kata_score(data: KataScoreSubmit, current_user=Depends(get_current_us
         score_row = KataScore(
             tournament_id=data.tournament_id,
             registration_id=data.registration_id,
-            category_name=reg.category_name,
+            category_name=style,
             gender=athlete.gender if athlete else None,
             round_label=data.round_label
         )
@@ -1137,7 +972,7 @@ def _assemble_tournament_documents(tournament_id, db):
         athlete = db.query(Athlete).filter(Athlete.id == reg.athlete_id).first()
         if not athlete:
             continue
-        key = (reg.discipline, athlete.gender, reg.category_name)
+        key = (reg.discipline, athlete.gender, draw_category_key(reg.discipline, reg.category_name))
         groups.setdefault(key, []).append((reg, athlete))
 
     def full_name(athlete):
@@ -1285,6 +1120,8 @@ def _assemble_tournament_documents(tournament_id, db):
             "bouts": bouts_payload
         })
 
+    categories_payload.sort(key=category_sort_key)
+
     discipline_counts = {}
     for reg in regs:
         discipline_counts[reg.discipline] = discipline_counts.get(reg.discipline, 0) + 1
@@ -1360,7 +1197,14 @@ def list_kata_types(group: Optional[str] = None, db: Session = Depends(get_db)):
     query = db.query(KataType)
     if group:
         query = query.filter(KataType.group == group)
-    kata_types = query.order_by(KataType.group, KataType.sort_order).all()
+    # Сортировка по официальному порядку стилей (KATA_STYLE_ORDER), а не по
+    # алфавиту группы - иначе при совпадающих названиях ката из разных стилей
+    # (напр. "Ванкан" в Косики и Годзю-рю) фронтенд определит стиль иначе,
+    # чем kata_style() на бэкенде, и сетка/доступ секретаря разъедутся.
+    kata_types = sorted(
+        query.all(),
+        key=lambda k: (KATA_STYLE_ORDER.index(k.group) if k.group in KATA_STYLE_ORDER else len(KATA_STYLE_ORDER), k.sort_order)
+    )
     return [
         {
             "id": str(k.id), "group": k.group, "name": k.name,
