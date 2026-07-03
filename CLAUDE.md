@@ -19,9 +19,11 @@ There is no root-level package manager or build tool tying the two together — 
 python -m venv .venv                 # if .venv doesn't already exist
 .venv\Scripts\activate                # Windows
 pip install -r requirements.txt
-docker compose up -d                  # starts postgres (5432) + redis (6379), see docker-compose.yml
+docker compose up -d                  # from repo root: starts postgres (5432) + redis (6379), see docker-compose.yml
 uvicorn app.main:app --reload         # run the API on http://127.0.0.1:8000
 ```
+
+`docker-compose.yml` lives at the repo root (not under `sportdok-backend/`), so run `docker compose up -d` from there.
 
 There is no test suite, linter, or migration tooling wired up yet (Alembic is a dependency in `requirements.txt` but no `alembic/` directory or `alembic.ini` exists). Tables are created ad hoc via `Base.metadata.create_all(bind=engine)` in `app/main.py` on import — there are no migrations to run.
 
