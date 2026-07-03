@@ -511,6 +511,28 @@ const loserOf = (match) => {
   return match.a && match.a.registration_id === match.winner.registration_id ? match.b : match.a
 }
 
+// ТЗ 5.3.7: "Проигравший в первом круге получает второй шанс через
+// утешительную сетку. Финалисты утешительной сетки разыгрывают бронзу." -
+// т.е. каждый проигравший в 1-м круге СВОЕЙ подгруппы получает вторую
+// попытку, а не просто проигрывает того, кто дошёл до финала подгруппы (как
+// было раньше - см. git history). Утешительная сетка строится отдельно на
+// каждую подгруппу (та же логика посева/боёв, что и в buildBracketRounds),
+// её победитель - это "финалист утешительной сетки" этой подгруппы; два
+// таких финалиста (по одному на подгруппу) встречаются в матче за 3-е место.
+function buildRepechageBracket(round1, boutsByPair) {
+  const losers = round1
+    .filter(m => m.a && m.b && m.winner)
+    .map(m => (m.a.registration_id === m.winner.registration_id ? m.b : m.a))
+  if (losers.length === 0) return { rounds: [], champion: null }
+  if (losers.length === 1) return { rounds: [], champion: losers[0] }
+  const reseeded = [...losers]
+    .sort((x, y) => (x.seed ?? 999) - (y.seed ?? 999))
+    .map((p, i) => ({ ...p, seed: i + 1 }))
+  const rounds = buildBracketRounds(reseeded, boutsByPair)
+  const champion = rounds.length ? rounds[rounds.length - 1][0].winner : null
+  return { rounds, champion }
+}
+
 // participants: [{registration_id, full_name, seed, subgroup, ...}], bouts: raw list for the whole tournament.
 // Returns either {roundRobin:true, pairs, drawn} or {roundRobin:false, drawn, subgroupKeys, roundsPerGroup,
 // twoGroups, finalMatch, bronzeMatch} - same shape used by both the secretary's entry screen and the
@@ -542,18 +564,25 @@ function computeKumiteBracketData(participants, bouts) {
   const rawFinal = twoGroups && champs[0] && champs[1] ? resolveMatch(champs[0], champs[1], boutsByPair) : null
 
   let bronzeCandidates = null
+  let repechagePerGroup = []
   if (twoGroups) {
-    const last1 = roundsPerGroup[0][roundsPerGroup[0].length - 1]?.[0]
-    const last2 = roundsPerGroup[1][roundsPerGroup[1].length - 1]?.[0]
-    if (last1?.winner && last2?.winner) bronzeCandidates = [loserOf(last1), loserOf(last2)]
+    // Каждая подгруппа получает свою утешительную сетку из проигравших её
+    // 1-го круга (roundsPerGroup[i][0]); финалисты этих двух утешительных
+    // сеток встречаются в матче за 3-е место - см. buildRepechageBracket.
+    repechagePerGroup = roundsPerGroup.map(rounds => buildRepechageBracket(rounds[0] || [], boutsByPair))
+    const [rep1, rep2] = repechagePerGroup
+    if (rep1.champion && rep2.champion) bronzeCandidates = [rep1.champion, rep2.champion]
   } else if (roundsPerGroup[0] && roundsPerGroup[0].length >= 2) {
+    // Без подгрупп (n=1/2/4 - см. draw.py) круг 1 совпадает с полуфиналом:
+    // ровно 2 боя в круге 1 => ровно 2 проигравших, они сразу играют бронзу,
+    // отдельная утешительная сетка тут структурно не нужна.
     const semi = roundsPerGroup[0][roundsPerGroup[0].length - 2]
     if (semi.length === 2 && semi[0].winner && semi[1].winner) bronzeCandidates = [loserOf(semi[0]), loserOf(semi[1])]
   }
   const rawBronze = bronzeCandidates ? resolveMatch(bronzeCandidates[0], bronzeCandidates[1], boutsByPair) : null
 
   return {
-    roundRobin: false, drawn: true, subgroupKeys, roundsPerGroup, twoGroups,
+    roundRobin: false, drawn: true, subgroupKeys, roundsPerGroup, twoGroups, repechagePerGroup,
     finalMatch: rawFinal ? { a: champs[0], b: champs[1], winner: rawFinal.winner, bout: rawFinal.bout } : null,
     bronzeMatch: bronzeCandidates ? { a: bronzeCandidates[0], b: bronzeCandidates[1], winner: rawBronze.winner, bout: rawBronze.bout } : null
   }
@@ -569,7 +598,7 @@ const BR_H_GAP = 34
 const BR_ROW_H = 50
 const BR_GROUP_GAP = 30
 
-function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch) {
+function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGroup = []) {
   const boxes = []
   const lines = []
   const labels = []
@@ -669,7 +698,12 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch) {
     width = Math.max(width, (c + 1) * (BR_BOX_W + BR_H_GAP) - BR_H_GAP)
   }
 
-  if (bronzeMatch) {
+  const hasRepechageRounds = repechagePerGroup.some(g => g.rounds && g.rounds.length > 0)
+
+  if (bronzeMatch && !hasRepechageRounds) {
+    // Простой случай (0-1 проигравший 1-го круга на подгруппу, или сетка без
+    // подгрупп вовсе) - утешительная сетка вырождается в один прямой бой,
+    // без промежуточных кругов для отрисовки.
     const labelY = height + 14
     const ya = labelY + 18 + BR_BOX_H / 2
     const yb = ya + BR_ROW_H
@@ -687,6 +721,94 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch) {
       match: bronzeMatch, roundLabel: "bronze"
     })
     height = yb + BR_BOX_H / 2 + 10
+  } else if (bronzeMatch && hasRepechageRounds) {
+    // Утешительная сетка на подгруппу (проигравшие её 1-го круга) - та же
+    // геометрия "листья + круги", что и у основной сетки выше, отдельным
+    // блоком, потом финалисты каждой утешительной сетки сходятся в бой за
+    // 3-е место - та же геометрия "два листа -> один бокс", что и в простом
+    // случае выше.
+    const sectionY = height + 14
+    labels.push({ x: 0, y: sectionY, text: "Утешительная сетка", bold: true })
+    let y2 = sectionY + 22
+    const champYs2 = []
+    const maxRepRounds = Math.max(0, ...repechagePerGroup.map(g => g.rounds.length))
+    const nRepGroups = repechagePerGroup.length
+
+    repechagePerGroup.forEach((group, gi) => {
+      const rounds = group.rounds
+      if (nRepGroups > 1) labels.push({ x: 0, y: y2 - 8, text: `Подгруппа ${gi + 1}` })
+      if (rounds.length === 0) {
+        const champ = group.champion
+        if (champ) boxes.push({ x: 0, y: y2, text: champ.full_name })
+        champYs2.push(y2 + BR_BOX_H / 2)
+        y2 += BR_ROW_H
+        if (gi < nRepGroups - 1) y2 += BR_GROUP_GAP
+        return
+      }
+      const leafN = 2 * rounds[0].length
+      const ys0 = [], present0 = []
+      for (let i = 0; i < leafN; i++) {
+        const cy = y2 + BR_BOX_H / 2
+        ys0.push(cy)
+        const match = rounds[0][Math.floor(i / 2)]
+        const slot = i % 2 === 0 ? match.a : match.b
+        present0.push(!!slot)
+        if (slot) {
+          const realWin = !!(match.a && match.b && match.winner && match.winner.registration_id === slot.registration_id)
+          boxes.push({ x: 0, y: y2, text: slot.full_name, win: realWin })
+        }
+        y2 += BR_ROW_H
+      }
+      if (gi < nRepGroups - 1) y2 += BR_GROUP_GAP
+
+      let colYs = ys0, colPresent = present0
+      for (let c = 1; c <= rounds.length; c++) {
+        const nextYs = []
+        for (let j = 0; j < rounds[c - 1].length; j++) {
+          const match = rounds[c - 1][j]
+          const ya = colYs[2 * j], pa = colPresent[2 * j]
+          const yb = colYs[2 * j + 1], pb = colPresent[2 * j + 1]
+          const py = pa && pb ? (ya + yb) / 2 : (pa ? ya : yb)
+          nextYs.push(py)
+          const xFrom = colX(c) - BR_H_GAP, xTo = colX(c)
+          if (pa && pb) {
+            const midX = xFrom + BR_H_GAP / 2
+            lines.push({ x1: xFrom, y1: ya, x2: midX, y2: ya }, { x1: xFrom, y1: yb, x2: midX, y2: yb },
+              { x1: midX, y1: ya, x2: midX, y2: yb }, { x1: midX, y1: py, x2: xTo, y2: py })
+          } else {
+            lines.push({ x1: xFrom, y1: py, x2: xTo, y2: py })
+          }
+          boxes.push({
+            x: xTo, y: py - BR_BOX_H / 2, text: match.winner ? match.winner.full_name : "",
+            win: !!(match.a && match.b && match.winner), pending: !match.winner && match.a && match.b,
+            editable: !!(match.a && match.b),
+            match, roundLabel: `repechage_r${c}`
+          })
+        }
+        colYs = nextYs; colPresent = nextYs.map(() => true)
+      }
+      champYs2.push(colYs.length ? colYs[0] : ys0[0])
+    })
+
+    const c = maxRepRounds + 1
+    const xFrom = colX(c) - BR_H_GAP, xTo = colX(c)
+    const y0b = champYs2[0], y1b = champYs2[champYs2.length - 1]
+    const py = (y0b + y1b) / 2
+    if (champYs2.length > 1) {
+      const midX = xFrom + BR_H_GAP / 2
+      lines.push({ x1: xFrom, y1: y0b, x2: midX, y2: y0b }, { x1: xFrom, y1: y1b, x2: midX, y2: y1b },
+        { x1: midX, y1: y0b, x2: midX, y2: y1b }, { x1: midX, y1: py, x2: xTo, y2: py })
+    } else {
+      lines.push({ x1: xFrom, y1: py, x2: xTo, y2: py })
+    }
+    labels.push({ x: xTo, y: py - BR_BOX_H / 2 - 18, text: "Матч за 3-е место", bold: true })
+    boxes.push({
+      x: xTo, y: py - BR_BOX_H / 2, text: bronzeMatch.winner ? bronzeMatch.winner.full_name : "",
+      win: !!bronzeMatch.winner, pending: !bronzeMatch.winner && bronzeMatch.a && bronzeMatch.b, editable: true,
+      match: bronzeMatch, roundLabel: "bronze"
+    })
+    height = y2 + BR_BOX_H / 2 + 10
+    width = Math.max(width, (c + 1) * (BR_BOX_W + BR_H_GAP) - BR_H_GAP)
   }
 
   return { width, height, boxes, lines, labels }
@@ -2012,7 +2134,7 @@ function KumiteBracket({ grant, user, participants, bouts, onChanged }) {
   // олимпийская сетка ниже, чтобы визуально они не отличались.
   const layout = data.roundRobin
     ? layoutRoundRobin(data.pairs)
-    : layoutBracket(data.roundsPerGroup, data.finalMatch, data.bronzeMatch)
+    : layoutBracket(data.roundsPerGroup, data.finalMatch, data.bronzeMatch, data.repechagePerGroup)
 
   return (
     <div style={card}>
