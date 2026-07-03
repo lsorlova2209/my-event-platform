@@ -865,9 +865,15 @@ function TournamentDetail({ tournament, user, onBack }) {
     <div style={{ minHeight: "100vh", background: "#f3f2ee", fontFamily: "Arial", padding: "32px" }}>
       <div style={{ maxWidth: "900px", margin: "0 auto" }}>
         <button onClick={onBack} style={{ ...btnOutline, marginBottom: "16px" }}>← Назад к турнирам</button>
-        <div style={{ marginBottom: "24px" }}>
-          <h1 style={{ color: "#1A56A0", margin: 0 }}>{tournament.name}</h1>
-          <p style={{ color: "#4A4A48", margin: "4px 0 0" }}>{tournament.location && `${tournament.location} · `}{tournament.event_date}</p>
+        <div style={{ marginBottom: "24px", display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: "12px" }}>
+          <div>
+            <h1 style={{ color: "#1A56A0", margin: 0 }}>{tournament.name}</h1>
+            <p style={{ color: "#4A4A48", margin: "4px 0 0" }}>{tournament.location && `${tournament.location} · `}{tournament.event_date}</p>
+          </div>
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button onClick={() => window.open(`${API}/api/v1/tournaments/${tournament.id}/documents/excel`, "_blank")} style={btnOutline}>Скачать Excel</button>
+            <button onClick={() => window.open(`${API}/api/v1/tournaments/${tournament.id}/documents/pdf`, "_blank")} style={btnOutline}>Скачать PDF</button>
+          </div>
         </div>
 
         <div style={card}>
@@ -1418,9 +1424,15 @@ function SecretaryTable({ user, grant, tournament, onBack }) {
     <div style={{ minHeight: "100vh", background: "#f3f2ee", fontFamily: "Arial", padding: "32px" }}>
       <div style={{ maxWidth: "1000px", margin: "0 auto" }}>
         <button onClick={onBack} style={{ ...btnOutline, marginBottom: "16px" }}>← Назад к столам</button>
-        <div style={{ marginBottom: "24px" }}>
-          <h1 style={{ color: "#1A56A0", margin: 0 }}>{tournament ? tournament.name : "Турнир"}</h1>
-          <p style={{ color: "#4A4A48", margin: "4px 0 0" }}>{label}</p>
+        <div style={{ marginBottom: "24px", display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: "12px" }}>
+          <div>
+            <h1 style={{ color: "#1A56A0", margin: 0 }}>{tournament ? tournament.name : "Турнир"}</h1>
+            <p style={{ color: "#4A4A48", margin: "4px 0 0" }}>{label}</p>
+          </div>
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button onClick={() => window.open(`${API}/api/v1/tournaments/${grant.tournament_id}/documents/excel`, "_blank")} style={btnOutline}>Скачать Excel</button>
+            <button onClick={() => window.open(`${API}/api/v1/tournaments/${grant.tournament_id}/documents/pdf`, "_blank")} style={btnOutline}>Скачать PDF</button>
+          </div>
         </div>
 
         {isKata ? (
