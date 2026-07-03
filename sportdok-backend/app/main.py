@@ -516,6 +516,36 @@ def swap_draw_seed(tournament_id: str, data: SeedSwapRequest, current_user=Depen
 
 # ─── ATHLETES ─────────────────────────────────────────────────────────────────
 
+def find_duplicate_athlete(db, tournament_id, last_name, first_name, middle_name, birth_date):
+    """ТЗ 4.4: один и тот же участник определяется по точному совпадению
+    ФИО и даты рождения (отличие хоть на один символ - уже новый участник).
+    Не указана область поиска, поэтому здесь - в рамках одного турнира: клуб
+    "подаёт повторную карточку на того же участника" именно на этом
+    соревновании, а не глобально по всей истории платформы (это ближе к
+    §5.6 "База спортсменов", которая отдельно вынесена в версию 2)."""
+    return db.query(Athlete).join(Registration, Registration.athlete_id == Athlete.id).filter(
+        Registration.tournament_id == tournament_id,
+        Athlete.last_name == last_name,
+        Athlete.first_name == first_name,
+        (Athlete.middle_name == middle_name) if middle_name else (Athlete.middle_name.is_(None) | (Athlete.middle_name == "")),
+        Athlete.birth_date == birth_date
+    ).first()
+
+
+@app.get("/api/v1/tournaments/{tournament_id}/athletes/lookup")
+def lookup_athlete(tournament_id: str, last_name: str, first_name: str, birth_date: date, middle_name: Optional[str] = None, db: Session = Depends(get_db)):
+    athlete = find_duplicate_athlete(db, tournament_id, last_name, first_name, middle_name, birth_date)
+    if not athlete:
+        return {"found": False}
+    regs = db.query(Registration).filter(Registration.tournament_id == tournament_id, Registration.athlete_id == athlete.id).all()
+    return {
+        "found": True,
+        "athlete_id": str(athlete.id),
+        "full_name": f"{athlete.last_name} {athlete.first_name} {athlete.middle_name or ''}".strip(),
+        "existing_registrations": [{"discipline": r.discipline, "category_name": r.category_name} for r in regs]
+    }
+
+
 @app.post("/api/v1/athletes/")
 def create_athlete(data: AthleteCreate, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     require_roles(current_user, {"admin", "owner", "club"})
@@ -527,21 +557,34 @@ def create_athlete(data: AthleteCreate, current_user=Depends(get_current_user), 
         own_club = db.query(Club).filter(Club.id == current_user["user_id"]).first()
         club_name = (own_club.short_name or own_club.full_name) if own_club else club_name
 
-    athlete = Athlete(
-        last_name=data.last_name,
-        first_name=data.first_name,
-        middle_name=data.middle_name,
-        gender=data.gender,
-        birth_date=data.birth_date,
-        age_years=data.age_years,
-        weight=data.weight,
-        rank=data.rank,
-        club_name=club_name,
-        trainer_name=data.trainer_name
-    )
-    db.add(athlete)
-    db.commit()
-    db.refresh(athlete)
+    existing = find_duplicate_athlete(db, data.tournament_id, data.last_name, data.first_name, data.middle_name, data.birth_date)
+
+    if existing:
+        already = db.query(Registration).filter(
+            Registration.tournament_id == data.tournament_id,
+            Registration.athlete_id == existing.id,
+            Registration.discipline == data.discipline,
+            Registration.category_name == data.category_name
+        ).first()
+        if already:
+            return {"success": False, "message": "Участник уже заявлен в эту категорию"}
+        athlete = existing
+    else:
+        athlete = Athlete(
+            last_name=data.last_name,
+            first_name=data.first_name,
+            middle_name=data.middle_name,
+            gender=data.gender,
+            birth_date=data.birth_date,
+            age_years=data.age_years,
+            weight=data.weight,
+            rank=data.rank,
+            club_name=club_name,
+            trainer_name=data.trainer_name
+        )
+        db.add(athlete)
+        db.commit()
+        db.refresh(athlete)
 
     registration = Registration(
         athlete_id=athlete.id,

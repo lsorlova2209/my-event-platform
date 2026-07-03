@@ -716,6 +716,66 @@ function layoutRoundRobin(pairs) {
   return { width: xTo + BR_BOX_W, height: bottom, boxes, lines, labels }
 }
 
+const KUMITE_DISCIPLINES = [
+  { value: "kumite_ok", label: "ОК (ограниченный контакт)" },
+  { value: "kumite_pk", label: "ПК (полный контакт)" },
+  { value: "kumite_sz", label: "СЗ (средства защиты)" },
+]
+
+// ТЗ 4.1: "Категории ката"/"Категории кумитэ" - выпадающие списки с
+// множественным выбором, а не один на другой (участник может быть заявлен
+// сразу в несколько категорий/дисциплин одной подачей карточки - ТЗ 4.5
+// прямо разрешает совмещать любое количество видов кумитэ в MVP).
+function CategoryMultiSelect({ kataGroups, weightCategories, selectedKata, selectedKumite, onToggleKata, onToggleKumite, disabledKeys }) {
+  const boxStyle = { maxHeight: "180px", overflowY: "auto", border: "1px solid #D3D1C7", borderRadius: "8px", padding: "8px", background: "white" }
+  const rowStyle = (disabled) => ({ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", padding: "3px 0", opacity: disabled ? 0.5 : 1, cursor: disabled ? "default" : "pointer" })
+
+  return (
+    <div style={{ display: "flex", gap: "12px", marginBottom: "16px", flexWrap: "wrap" }}>
+      <div style={{ flex: "1 1 260px" }}>
+        <label style={labelStyle}>Категории ката</label>
+        <div style={boxStyle}>
+          {Object.entries(kataGroups).map(([group, types]) => (
+            <div key={group} style={{ marginBottom: "4px" }}>
+              <div style={{ fontWeight: "bold", fontSize: "12px", color: "#4A4A48", margin: "6px 0 2px" }}>{group}</div>
+              {types.map(k => {
+                const disabled = disabledKeys.has(`kata|${k.name}`)
+                return (
+                  <label key={k.id} style={rowStyle(disabled)}>
+                    <input type="checkbox" checked={selectedKata.includes(k.name)} disabled={disabled} onChange={() => onToggleKata(k.name)} />
+                    {k.name}{disabled ? " (уже заявлен)" : ""}
+                  </label>
+                )
+              })}
+            </div>
+          ))}
+        </div>
+      </div>
+      <div style={{ flex: "1 1 260px" }}>
+        <label style={labelStyle}>Категории кумитэ</label>
+        <div style={boxStyle}>
+          {KUMITE_DISCIPLINES.map(d => (
+            <div key={d.value} style={{ marginBottom: "4px" }}>
+              <div style={{ fontWeight: "bold", fontSize: "12px", color: "#4A4A48", margin: "6px 0 2px" }}>{d.label}</div>
+              {weightCategories.filter(c => c.discipline === d.value).map(c => {
+                const key = `${d.value}|${c.name}`
+                const disabled = disabledKeys.has(key)
+                const checked = selectedKumite.some(s => s.discipline === d.value && s.category_name === c.name)
+                return (
+                  <label key={c.id} style={rowStyle(disabled)}>
+                    <input type="checkbox" checked={checked} disabled={disabled} onChange={() => onToggleKumite(d.value, c.name)} />
+                    {c.name}{disabled ? " (уже заявлен)" : ""}
+                  </label>
+                )
+              })}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function TournamentDetail({ tournament, user, onBack }) {
   const [athletes, setAthletes] = useState([])
   const [bouts, setBouts] = useState([])
@@ -729,9 +789,11 @@ function TournamentDetail({ tournament, user, onBack }) {
   const [form, setForm] = useState({
     last_name: "", first_name: "", middle_name: "",
     gender: "male", birth_date: "", weight: "",
-    rank: "", club_name: "", trainer_name: "",
-    discipline: "kata", category_name: ""
+    rank: "", club_name: "", trainer_name: "", team_number: ""
   })
+  const [selectedKata, setSelectedKata] = useState([])
+  const [selectedKumite, setSelectedKumite] = useState([])
+  const [duplicateInfo, setDuplicateInfo] = useState(null)
   const [error, setError] = useState("")
   const [secretaries, setSecretaries] = useState([])
   const [grants, setGrants] = useState([])
@@ -741,7 +803,26 @@ function TournamentDetail({ tournament, user, onBack }) {
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
-  const setDiscipline = (v) => setForm(f => ({ ...f, discipline: v, category_name: "" }))
+  const toggleKata = (name) => setSelectedKata(s => s.includes(name) ? s.filter(x => x !== name) : [...s, name])
+  const toggleKumite = (discipline, name) => setSelectedKumite(s => {
+    const exists = s.some(x => x.discipline === discipline && x.category_name === name)
+    return exists ? s.filter(x => !(x.discipline === discipline && x.category_name === name)) : [...s, { discipline, category_name: name }]
+  })
+
+  // ТЗ 4.4: определяем "того же участника" по точному совпадению ФИО и даты
+  // рождения - при совпадении подсвечиваем уже занятые категории, чтобы их
+  // нельзя было выбрать повторно (бэкенд всё равно блокирует дубль, это
+  // просто даёт секретарю/админу знать заранее, а не после ошибки).
+  const checkDuplicate = async () => {
+    if (!form.last_name || !form.first_name || !form.birth_date) { setDuplicateInfo(null); return }
+    try {
+      const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/athletes/lookup`, {
+        params: { last_name: form.last_name, first_name: form.first_name, middle_name: form.middle_name, birth_date: form.birth_date }
+      })
+      setDuplicateInfo(r.data.found ? r.data : null)
+    } catch { setDuplicateInfo(null) }
+  }
+  const duplicateKeys = new Set((duplicateInfo?.existing_registrations || []).map(r => `${r.discipline}|${r.category_name}`))
 
   const loadAthletes = async () => {
     try { const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/athletes`); setAthletes(r.data) } catch {}
@@ -855,20 +936,38 @@ function TournamentDetail({ tournament, user, onBack }) {
     if (!form.last_name || !form.first_name || !form.birth_date) {
       setError("Заполните фамилию, имя и дату рождения"); return
     }
-    try {
-      await axios.post(`${API}/api/v1/athletes/`, {
-        ...form,
-        weight: form.weight ? parseFloat(form.weight) : null,
-        middle_name: form.middle_name || null,
-        rank: form.rank || null,
-        club_name: form.club_name || null,
-        trainer_name: form.trainer_name || null,
-        category_name: form.category_name || null,
-        tournament_id: tournament.id
-      }, { headers: { Authorization: `Bearer ${user.token}` } })
-      setForm({ last_name: "", first_name: "", middle_name: "", gender: "male", birth_date: "", weight: "", rank: "", club_name: "", trainer_name: "", discipline: "kata", category_name: "" })
-      setShowForm(false); setError(""); loadAthletes()
-    } catch { setError("Ошибка при добавлении участника") }
+    const categories = [
+      ...selectedKata.map(name => ({ discipline: "kata", category_name: name })),
+      ...selectedKumite
+    ]
+    if (categories.length === 0) { setError("Выберите хотя бы одну категорию"); return }
+
+    const failures = []
+    for (const cat of categories) {
+      try {
+        const r = await axios.post(`${API}/api/v1/athletes/`, {
+          ...form,
+          weight: form.weight ? parseFloat(form.weight) : null,
+          middle_name: form.middle_name || null,
+          rank: form.rank || null,
+          club_name: form.club_name || null,
+          trainer_name: form.trainer_name || null,
+          team_number: (cat.discipline === "kumite_ok" && cat.category_name === "командные соревнования") ? (form.team_number || null) : null,
+          ...cat,
+          tournament_id: tournament.id
+        }, { headers: { Authorization: `Bearer ${user.token}` } })
+        if (!r.data.success) failures.push(`${cat.category_name}: ${r.data.message}`)
+      } catch (e) {
+        failures.push(`${cat.category_name}: ${e.response?.data?.message || e.response?.data?.detail || "ошибка соединения"}`)
+      }
+    }
+
+    if (failures.length) setError(failures.join("; "))
+    else setError("")
+    setForm({ last_name: "", first_name: "", middle_name: "", gender: "male", birth_date: "", weight: "", rank: "", club_name: "", trainer_name: "", team_number: "" })
+    setSelectedKata([]); setSelectedKumite([]); setDuplicateInfo(null)
+    if (!failures.length) setShowForm(false)
+    loadAthletes()
   }
 
   return (
@@ -895,9 +994,9 @@ function TournamentDetail({ tournament, user, onBack }) {
           {showForm && (
             <div style={{ borderTop: "1px solid #f3f2ee", paddingTop: "24px" }}>
               <div style={{ display: "flex", gap: "12px", marginBottom: "16px" }}>
-                <div style={{ flex: 1 }}><label style={labelStyle}>Фамилия *</label><input type="text" value={form.last_name} onChange={e => set("last_name", e.target.value)} style={inputStyle} /></div>
-                <div style={{ flex: 1 }}><label style={labelStyle}>Имя *</label><input type="text" value={form.first_name} onChange={e => set("first_name", e.target.value)} style={inputStyle} /></div>
-                <div style={{ flex: 1 }}><label style={labelStyle}>Отчество</label><input type="text" value={form.middle_name} onChange={e => set("middle_name", e.target.value)} style={inputStyle} /></div>
+                <div style={{ flex: 1 }}><label style={labelStyle}>Фамилия *</label><input type="text" value={form.last_name} onChange={e => set("last_name", e.target.value)} onBlur={checkDuplicate} style={inputStyle} /></div>
+                <div style={{ flex: 1 }}><label style={labelStyle}>Имя *</label><input type="text" value={form.first_name} onChange={e => set("first_name", e.target.value)} onBlur={checkDuplicate} style={inputStyle} /></div>
+                <div style={{ flex: 1 }}><label style={labelStyle}>Отчество</label><input type="text" value={form.middle_name} onChange={e => set("middle_name", e.target.value)} onBlur={checkDuplicate} style={inputStyle} /></div>
               </div>
 
               <div style={{ display: "flex", gap: "12px", marginBottom: "16px" }}>
@@ -908,7 +1007,7 @@ function TournamentDetail({ tournament, user, onBack }) {
                     <option value="female">Женский</option>
                   </select>
                 </div>
-                <div style={{ flex: 1 }}><label style={labelStyle}>Дата рождения *</label><input type="date" value={form.birth_date} onChange={e => set("birth_date", e.target.value)} style={inputStyle} /></div>
+                <div style={{ flex: 1 }}><label style={labelStyle}>Дата рождения *</label><input type="date" value={form.birth_date} onChange={e => set("birth_date", e.target.value)} onBlur={checkDuplicate} style={inputStyle} /></div>
                 <div style={{ flex: 1 }}><label style={labelStyle}>Точный вес (кг)</label><input type="number" value={form.weight} onChange={e => set("weight", e.target.value)} style={inputStyle} /></div>
               </div>
 
@@ -924,37 +1023,22 @@ function TournamentDetail({ tournament, user, onBack }) {
                 <div style={{ flex: 1 }}><label style={labelStyle}>Тренер</label><input type="text" value={form.trainer_name} onChange={e => set("trainer_name", e.target.value)} style={inputStyle} /></div>
               </div>
 
-              <div style={{ display: "flex", gap: "12px", marginBottom: "16px" }}>
-                <div style={{ flex: 1 }}>
-                  <label style={labelStyle}>Дисциплина</label>
-                  <select value={form.discipline} onChange={e => setDiscipline(e.target.value)} style={inputStyle}>
-                    <option value="kata">Ката</option>
-                    <option value="kumite_ok">ОК (ограниченный контакт)</option>
-                    <option value="kumite_pk">ПК (полный контакт)</option>
-                    <option value="kumite_sz">СЗ (средства защиты)</option>
-                  </select>
+              {duplicateInfo && (
+                <div style={{ ...successBox, marginBottom: "16px" }}>
+                  Найден уже поданный участник «{duplicateInfo.full_name}» — личные данные будут взяты из его карточки, здесь можно только добавить новые категории.
                 </div>
-                <div style={{ flex: 1 }}>
-                  <label style={labelStyle}>Категория</label>
-                  {form.discipline === "kata" ? (
-                    <select value={form.category_name} onChange={e => set("category_name", e.target.value)} style={inputStyle}>
-                      <option value="">— выберите —</option>
-                      {Object.entries(kataGroups).map(([group, types]) => (
-                        <optgroup key={group} label={group}>
-                          {types.map(k => <option key={k.id} value={k.name}>{k.name}</option>)}
-                        </optgroup>
-                      ))}
-                    </select>
-                  ) : (
-                    <select value={form.category_name} onChange={e => set("category_name", e.target.value)} style={inputStyle}>
-                      <option value="">— выберите —</option>
-                      {weightCategories.filter(c => c.discipline === form.discipline).map(c => (
-                        <option key={c.id} value={c.name}>{c.name}</option>
-                      ))}
-                    </select>
-                  )}
+              )}
+
+              <CategoryMultiSelect kataGroups={kataGroups} weightCategories={weightCategories}
+                selectedKata={selectedKata} selectedKumite={selectedKumite}
+                onToggleKata={toggleKata} onToggleKumite={toggleKumite} disabledKeys={duplicateKeys} />
+
+              {selectedKumite.some(c => c.discipline === "kumite_ok" && c.category_name === "командные соревнования") && (
+                <div style={{ marginBottom: "16px" }}>
+                  <label style={labelStyle}>Номер команды</label>
+                  <input type="text" value={form.team_number} onChange={e => set("team_number", e.target.value)} placeholder="Команда 1" style={inputStyle} />
                 </div>
-              </div>
+              )}
 
               {error && <div style={errorBox}>{error}</div>}
               <button onClick={handleCreate} style={btnGreen}>Добавить участника</button>
@@ -1152,16 +1236,34 @@ function ClubPanel({ user, onLogout }) {
   const [form, setForm] = useState({
     last_name: "", first_name: "", middle_name: "",
     gender: "male", birth_date: "", weight: "",
-    rank: "", trainer_name: "",
-    discipline: "kata", category_name: "", team_number: ""
+    rank: "", trainer_name: "", team_number: ""
   })
+  const [selectedKata, setSelectedKata] = useState([])
+  const [selectedKumite, setSelectedKumite] = useState([])
+  const [duplicateInfo, setDuplicateInfo] = useState(null)
   const [error, setError] = useState("")
   const [success, setSuccess] = useState("")
   const [newTrainer, setNewTrainer] = useState("")
   const [trainerError, setTrainerError] = useState("")
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
-  const setDiscipline = (v) => setForm(f => ({ ...f, discipline: v, category_name: "", team_number: "" }))
+
+  const toggleKata = (name) => setSelectedKata(s => s.includes(name) ? s.filter(x => x !== name) : [...s, name])
+  const toggleKumite = (discipline, name) => setSelectedKumite(s => {
+    const exists = s.some(x => x.discipline === discipline && x.category_name === name)
+    return exists ? s.filter(x => !(x.discipline === discipline && x.category_name === name)) : [...s, { discipline, category_name: name }]
+  })
+
+  const checkDuplicate = async () => {
+    if (!form.last_name || !form.first_name || !form.birth_date || !selectedTournament) { setDuplicateInfo(null); return }
+    try {
+      const r = await axios.get(`${API}/api/v1/tournaments/${selectedTournament.id}/athletes/lookup`, {
+        params: { last_name: form.last_name, first_name: form.first_name, middle_name: form.middle_name, birth_date: form.birth_date }
+      })
+      setDuplicateInfo(r.data.found ? r.data : null)
+    } catch { setDuplicateInfo(null) }
+  }
+  const duplicateKeys = new Set((duplicateInfo?.existing_registrations || []).map(r => `${r.discipline}|${r.category_name}`))
 
   const loadTournaments = async () => {
     try { const r = await axios.get(`${API}/api/v1/tournaments/`); setTournaments(r.data) } catch {}
@@ -1217,30 +1319,47 @@ function ClubPanel({ user, onLogout }) {
     }
   }
 
-  const resetForm = () => setForm({
-    last_name: "", first_name: "", middle_name: "", gender: "male", birth_date: "", weight: "",
-    rank: "", trainer_name: "", discipline: "kata", category_name: "", team_number: ""
-  })
+  const resetForm = () => {
+    setForm({
+      last_name: "", first_name: "", middle_name: "", gender: "male", birth_date: "", weight: "",
+      rank: "", trainer_name: "", team_number: ""
+    })
+    setSelectedKata([]); setSelectedKumite([]); setDuplicateInfo(null)
+  }
 
   const handleCreate = async () => {
     if (!form.last_name || !form.first_name || !form.birth_date) {
       setError("Заполните фамилию, имя и дату рождения"); return
     }
-    try {
-      await axios.post(`${API}/api/v1/athletes/`, {
-        ...form,
-        weight: form.weight ? parseFloat(form.weight) : null,
-        middle_name: form.middle_name || null,
-        rank: form.rank || null,
-        trainer_name: form.trainer_name || null,
-        category_name: form.category_name || null,
-        team_number: form.team_number || null,
-        club_name: club ? (club.short_name || club.full_name) : null,
-        tournament_id: selectedTournament.id
-      }, { headers: { Authorization: `Bearer ${user.token}` } })
-      resetForm()
-      setShowForm(false); setError(""); setSuccess("Участник добавлен")
-    } catch { setError("Ошибка при добавлении участника") }
+    const categories = [
+      ...selectedKata.map(name => ({ discipline: "kata", category_name: name })),
+      ...selectedKumite
+    ]
+    if (categories.length === 0) { setError("Выберите хотя бы одну категорию"); return }
+
+    const failures = []
+    for (const cat of categories) {
+      try {
+        const r = await axios.post(`${API}/api/v1/athletes/`, {
+          ...form,
+          weight: form.weight ? parseFloat(form.weight) : null,
+          middle_name: form.middle_name || null,
+          rank: form.rank || null,
+          trainer_name: form.trainer_name || null,
+          team_number: (cat.discipline === "kumite_ok" && cat.category_name === "командные соревнования") ? (form.team_number || null) : null,
+          club_name: club ? (club.short_name || club.full_name) : null,
+          ...cat,
+          tournament_id: selectedTournament.id
+        }, { headers: { Authorization: `Bearer ${user.token}` } })
+        if (!r.data.success) failures.push(`${cat.category_name}: ${r.data.message}`)
+      } catch (e) {
+        failures.push(`${cat.category_name}: ${e.response?.data?.message || e.response?.data?.detail || "ошибка соединения"}`)
+      }
+    }
+
+    resetForm()
+    if (failures.length) setError(failures.join("; "))
+    else { setError(""); setShowForm(false); setSuccess("Участник добавлен") }
   }
 
   if (selectedTournament) {
@@ -1264,9 +1383,9 @@ function ClubPanel({ user, onLogout }) {
             {showForm && (
               <div style={{ borderTop: "1px solid #f3f2ee", paddingTop: "24px", marginTop: "24px" }}>
                 <div style={{ display: "flex", gap: "12px", marginBottom: "16px" }}>
-                  <div style={{ flex: 1 }}><label style={labelStyle}>Фамилия *</label><input type="text" value={form.last_name} onChange={e => set("last_name", e.target.value)} style={inputStyle} /></div>
-                  <div style={{ flex: 1 }}><label style={labelStyle}>Имя *</label><input type="text" value={form.first_name} onChange={e => set("first_name", e.target.value)} style={inputStyle} /></div>
-                  <div style={{ flex: 1 }}><label style={labelStyle}>Отчество</label><input type="text" value={form.middle_name} onChange={e => set("middle_name", e.target.value)} style={inputStyle} /></div>
+                  <div style={{ flex: 1 }}><label style={labelStyle}>Фамилия *</label><input type="text" value={form.last_name} onChange={e => set("last_name", e.target.value)} onBlur={checkDuplicate} style={inputStyle} /></div>
+                  <div style={{ flex: 1 }}><label style={labelStyle}>Имя *</label><input type="text" value={form.first_name} onChange={e => set("first_name", e.target.value)} onBlur={checkDuplicate} style={inputStyle} /></div>
+                  <div style={{ flex: 1 }}><label style={labelStyle}>Отчество</label><input type="text" value={form.middle_name} onChange={e => set("middle_name", e.target.value)} onBlur={checkDuplicate} style={inputStyle} /></div>
                 </div>
 
                 <div style={{ display: "flex", gap: "12px", marginBottom: "16px" }}>
@@ -1277,7 +1396,7 @@ function ClubPanel({ user, onLogout }) {
                       <option value="female">Женский</option>
                     </select>
                   </div>
-                  <div style={{ flex: 1 }}><label style={labelStyle}>Дата рождения *</label><input type="date" value={form.birth_date} onChange={e => set("birth_date", e.target.value)} style={inputStyle} /></div>
+                  <div style={{ flex: 1 }}><label style={labelStyle}>Дата рождения *</label><input type="date" value={form.birth_date} onChange={e => set("birth_date", e.target.value)} onBlur={checkDuplicate} style={inputStyle} /></div>
                   <div style={{ flex: 1 }}><label style={labelStyle}>Точный вес (кг)</label><input type="number" value={form.weight} onChange={e => set("weight", e.target.value)} style={inputStyle} /></div>
                 </div>
 
@@ -1298,39 +1417,17 @@ function ClubPanel({ user, onLogout }) {
                   </div>
                 </div>
 
-                <div style={{ display: "flex", gap: "12px", marginBottom: "16px" }}>
-                  <div style={{ flex: 1 }}>
-                    <label style={labelStyle}>Дисциплина</label>
-                    <select value={form.discipline} onChange={e => setDiscipline(e.target.value)} style={inputStyle}>
-                      <option value="kata">Ката</option>
-                      <option value="kumite_ok">ОК (ограниченный контакт)</option>
-                      <option value="kumite_pk">ПК (полный контакт)</option>
-                      <option value="kumite_sz">СЗ (средства защиты)</option>
-                    </select>
+                {duplicateInfo && (
+                  <div style={{ ...successBox, marginBottom: "16px" }}>
+                    Найден уже поданный участник «{duplicateInfo.full_name}» — личные данные будут взяты из его карточки, здесь можно только добавить новые категории.
                   </div>
-                  <div style={{ flex: 1 }}>
-                    <label style={labelStyle}>Категория</label>
-                    {form.discipline === "kata" ? (
-                      <select value={form.category_name} onChange={e => set("category_name", e.target.value)} style={inputStyle}>
-                        <option value="">— выберите —</option>
-                        {Object.entries(kataGroups).map(([group, types]) => (
-                          <optgroup key={group} label={group}>
-                            {types.map(k => <option key={k.id} value={k.name}>{k.name}</option>)}
-                          </optgroup>
-                        ))}
-                      </select>
-                    ) : (
-                      <select value={form.category_name} onChange={e => set("category_name", e.target.value)} style={inputStyle}>
-                        <option value="">— выберите —</option>
-                        {weightCategories.filter(c => c.discipline === form.discipline).map(c => (
-                          <option key={c.id} value={c.name}>{c.name}</option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-                </div>
+                )}
 
-                {form.discipline === "kumite_ok" && form.category_name === "командные соревнования" && (
+                <CategoryMultiSelect kataGroups={kataGroups} weightCategories={weightCategories}
+                  selectedKata={selectedKata} selectedKumite={selectedKumite}
+                  onToggleKata={toggleKata} onToggleKumite={toggleKumite} disabledKeys={duplicateKeys} />
+
+                {selectedKumite.some(c => c.discipline === "kumite_ok" && c.category_name === "командные соревнования") && (
                   <div style={{ marginBottom: "16px" }}>
                     <label style={labelStyle}>Номер команды</label>
                     <input type="text" value={form.team_number} onChange={e => set("team_number", e.target.value)} placeholder="Команда 1" style={inputStyle} />
