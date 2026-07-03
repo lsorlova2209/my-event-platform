@@ -21,6 +21,7 @@ from app.kumite_protocol import determine_winner
 from app.kata_protocol import ROUND_SCALES, validate_scores, compute_total, determine_round_result
 from app.documents import build_workbook, build_pdf, team_standings
 from app.kata_registry import KATA_TYPES, KATA_STYLE_ORDER, kata_style
+from app.age_group import compute_age_group
 
 Base.metadata.create_all(bind=engine)
 
@@ -557,6 +558,7 @@ def create_athlete(data: AthleteCreate, current_user=Depends(get_current_user), 
 
 @app.get("/api/v1/tournaments/{tournament_id}/athletes")
 def list_athletes(tournament_id: str, db: Session = Depends(get_db)):
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
     regs = db.query(Registration).filter(
         Registration.tournament_id == tournament_id
     ).all()
@@ -577,10 +579,31 @@ def list_athletes(tournament_id: str, db: Session = Depends(get_db)):
                 "category_name": reg.category_name,
                 "team_number": reg.team_number,
                 "admission_status": reg.admission_status,
+                "age_group": compute_age_group(athlete.birth_date, tournament.event_date if tournament else None, athlete.gender, reg.discipline),
                 "seed": reg.seed,
                 "subgroup": reg.subgroup
             })
     return result
+
+@app.post("/api/v1/registrations/{registration_id}/admit")
+def admit_registration(registration_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
+    reg = db.query(Registration).filter(Registration.id == registration_id).first()
+    if not reg:
+        return {"success": False, "message": "Заявка не найдена"}
+    reg.admission_status = "approved"
+    db.commit()
+    return {"success": True, "admission_status": reg.admission_status}
+
+@app.post("/api/v1/registrations/{registration_id}/reject-admission")
+def reject_admission(registration_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
+    reg = db.query(Registration).filter(Registration.id == registration_id).first()
+    if not reg:
+        return {"success": False, "message": "Заявка не найдена"}
+    reg.admission_status = "rejected"
+    db.commit()
+    return {"success": True, "admission_status": reg.admission_status}
 
 @app.get("/api/v1/athletes/{athlete_id}")
 def get_athlete(athlete_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):

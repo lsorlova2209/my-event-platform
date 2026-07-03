@@ -842,6 +842,15 @@ function TournamentDetail({ tournament, user, onBack }) {
     loadAthletes()
   }
 
+  const handleAdmit = async (registrationId) => {
+    await axios.post(`${API}/api/v1/registrations/${registrationId}/admit`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
+    loadAthletes()
+  }
+  const handleRejectAdmission = async (registrationId) => {
+    await axios.post(`${API}/api/v1/registrations/${registrationId}/reject-admission`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
+    loadAthletes()
+  }
+
   const handleCreate = async () => {
     if (!form.last_name || !form.first_name || !form.birth_date) {
       setError("Заполните фамилию, имя и дату рождения"); return
@@ -964,14 +973,22 @@ function TournamentDetail({ tournament, user, onBack }) {
                   {label} ({group.athletes.length})
                 </div>
                 {group.athletes.map(a => (
-                  <div key={a.id} style={{ padding: "16px 4px", borderBottom: "1px solid #f3f2ee", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div key={a.registration_id} style={{ padding: "16px 4px", borderBottom: "1px solid #f3f2ee", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
                     <div>
                       <div style={{ fontWeight: "bold", color: "#1A56A0" }}>{a.full_name}</div>
                       <div style={{ color: "#4A4A48", fontSize: "14px" }}>
-                        {[a.club_name, a.weight && `${a.weight} кг`, a.rank].filter(Boolean).join(" · ")}
+                        {[a.club_name, a.weight && `${a.weight} кг`, a.rank, a.age_group].filter(Boolean).join(" · ")}
                       </div>
                     </div>
-                    <div style={{ display: "flex", gap: "8px" }}>
+                    <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                      {!a.admission_status && (
+                        <>
+                          <button onClick={() => handleAdmit(a.registration_id)} style={{ ...btnGreen, padding: "6px 10px", fontSize: "12px" }}>✓ Допустить</button>
+                          <button onClick={() => handleRejectAdmission(a.registration_id)} style={{ ...btnDanger, padding: "6px 10px", fontSize: "12px" }}>✗ Не допустить</button>
+                        </>
+                      )}
+                      {a.admission_status === "approved" && <span style={{ color: "#0F6E56", fontWeight: "bold", fontSize: "12px" }}>✓ Допущен</span>}
+                      {a.admission_status === "rejected" && <span style={{ color: "#A32D2D", fontSize: "12px" }}>✗ Не допущен</span>}
                       <button onClick={() => setEditingAthleteId(a.id)} style={{ ...btnOutline, padding: "6px 12px", fontSize: "13px" }}>✎ Изменить</button>
                       <button onClick={() => handleDeleteAthlete(a.id)} style={{ ...btnDanger, padding: "6px 12px", fontSize: "13px" }}>✗ Удалить</button>
                     </div>
