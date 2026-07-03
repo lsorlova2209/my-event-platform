@@ -272,7 +272,8 @@ def list_clubs(db: Session = Depends(get_db)):
     ]
 
 @app.post("/api/v1/clubs/{club_id}/approve")
-def approve_club(club_id: str, db: Session = Depends(get_db)):
+def approve_club(club_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
     club = db.query(Club).filter(Club.id == club_id).first()
     if not club:
         return {"success": False, "message": "Клуб не найден"}
@@ -281,7 +282,8 @@ def approve_club(club_id: str, db: Session = Depends(get_db)):
     return {"success": True, "message": f"Клуб {club.full_name} одобрен"}
 
 @app.post("/api/v1/clubs/{club_id}/reject")
-def reject_club(club_id: str, db: Session = Depends(get_db)):
+def reject_club(club_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
     club = db.query(Club).filter(Club.id == club_id).first()
     if not club:
         return {"success": False, "message": "Клуб не найден"}
@@ -298,7 +300,10 @@ def list_club_trainers(club_id: str, db: Session = Depends(get_db)):
     return {"success": True, "trainers": trainers}
 
 @app.post("/api/v1/clubs/{club_id}/trainers")
-def add_club_trainer(club_id: str, data: TrainerAdd, db: Session = Depends(get_db)):
+def add_club_trainer(club_id: str, data: TrainerAdd, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner", "club"})
+    if current_user["role"] == "club" and current_user["user_id"] != club_id:
+        raise HTTPException(status_code=403, detail="Нет доступа к этому клубу")
     club = db.query(Club).filter(Club.id == club_id).first()
     if not club:
         return {"success": False, "message": "Клуб не найден"}
@@ -314,7 +319,10 @@ def add_club_trainer(club_id: str, data: TrainerAdd, db: Session = Depends(get_d
     return {"success": True, "trainers": trainers}
 
 @app.delete("/api/v1/clubs/{club_id}/trainers")
-def remove_club_trainer(club_id: str, name: str, db: Session = Depends(get_db)):
+def remove_club_trainer(club_id: str, name: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner", "club"})
+    if current_user["role"] == "club" and current_user["user_id"] != club_id:
+        raise HTTPException(status_code=403, detail="Нет доступа к этому клубу")
     club = db.query(Club).filter(Club.id == club_id).first()
     if not club:
         return {"success": False, "message": "Клуб не найден"}
@@ -329,7 +337,8 @@ def remove_club_trainer(club_id: str, name: str, db: Session = Depends(get_db)):
 # ─── TOURNAMENTS ──────────────────────────────────────────────────────────────
 
 @app.post("/api/v1/tournaments/")
-def create_tournament(data: TournamentCreate, db: Session = Depends(get_db)):
+def create_tournament(data: TournamentCreate, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
     tournament = Tournament(
         name=data.name,
         location=data.location,
@@ -365,7 +374,8 @@ def list_tournaments(db: Session = Depends(get_db)):
     ]
 
 @app.delete("/api/v1/tournaments/{tournament_id}")
-def delete_tournament(tournament_id: str, db: Session = Depends(get_db)):
+def delete_tournament(tournament_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
     tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
     if not tournament:
         return {"success": False, "message": "Турнир не найден"}
@@ -506,7 +516,16 @@ def swap_draw_seed(tournament_id: str, data: SeedSwapRequest, current_user=Depen
 # ─── ATHLETES ─────────────────────────────────────────────────────────────────
 
 @app.post("/api/v1/athletes/")
-def create_athlete(data: AthleteCreate, db: Session = Depends(get_db)):
+def create_athlete(data: AthleteCreate, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner", "club"})
+    club_name = data.club_name
+    if current_user["role"] == "club":
+        # Не доверяем club_name из тела запроса для роли "клуб" - иначе клуб
+        # может подать заявку от имени другого клуба. Берём имя из
+        # собственной записи клуба по токену.
+        own_club = db.query(Club).filter(Club.id == current_user["user_id"]).first()
+        club_name = (own_club.short_name or own_club.full_name) if own_club else club_name
+
     athlete = Athlete(
         last_name=data.last_name,
         first_name=data.first_name,
@@ -516,7 +535,7 @@ def create_athlete(data: AthleteCreate, db: Session = Depends(get_db)):
         age_years=data.age_years,
         weight=data.weight,
         rank=data.rank,
-        club_name=data.club_name,
+        club_name=club_name,
         trainer_name=data.trainer_name
     )
     db.add(athlete)
@@ -564,7 +583,8 @@ def list_athletes(tournament_id: str, db: Session = Depends(get_db)):
     return result
 
 @app.patch("/api/v1/athletes/{athlete_id}")
-def update_athlete(athlete_id: str, data: AthleteUpdate, db: Session = Depends(get_db)):
+def update_athlete(athlete_id: str, data: AthleteUpdate, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
     athlete = db.query(Athlete).filter(Athlete.id == athlete_id).first()
     if not athlete:
         return {"success": False, "message": "Участник не найден"}
@@ -588,7 +608,8 @@ def update_athlete(athlete_id: str, data: AthleteUpdate, db: Session = Depends(g
     }
 
 @app.delete("/api/v1/athletes/{athlete_id}")
-def delete_athlete(athlete_id: str, db: Session = Depends(get_db)):
+def delete_athlete(athlete_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
     athlete = db.query(Athlete).filter(Athlete.id == athlete_id).first()
     if not athlete:
         return {"success": False, "message": "Участник не найден"}

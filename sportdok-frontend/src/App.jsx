@@ -228,25 +228,25 @@ function AdminPanel({ user, onLogout }) {
         name, location, event_date: eventDate,
         registration_closes_at: closesDate || null,
         admin_user_id: user.user_id
-      })
+      }, { headers: { Authorization: `Bearer ${user.token}` } })
       setName(""); setLocation(""); setEventDate(""); setClosesDate("")
       setShowForm(false); setError(""); loadTournaments()
     } catch { setError("Ошибка при создании") }
   }
 
   const handleApprove = async (id) => {
-    await axios.post(`${API}/api/v1/clubs/${id}/approve`)
+    await axios.post(`${API}/api/v1/clubs/${id}/approve`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
     loadClubs()
   }
   const handleReject = async (id) => {
-    await axios.post(`${API}/api/v1/clubs/${id}/reject`)
+    await axios.post(`${API}/api/v1/clubs/${id}/reject`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
     loadClubs()
   }
 
   const handleDeleteTournament = async (id, e) => {
     e.stopPropagation()
     if (!window.confirm("Удалить турнир? Это действие необратимо.")) return
-    await axios.delete(`${API}/api/v1/tournaments/${id}`)
+    await axios.delete(`${API}/api/v1/tournaments/${id}`, { headers: { Authorization: `Bearer ${user.token}` } })
     loadTournaments()
   }
 
@@ -837,7 +837,7 @@ function TournamentDetail({ tournament, user, onBack }) {
 
   const handleDeleteAthlete = async (id) => {
     if (!window.confirm("Удалить участника? Это действие необратимо.")) return
-    await axios.delete(`${API}/api/v1/athletes/${id}`)
+    await axios.delete(`${API}/api/v1/athletes/${id}`, { headers: { Authorization: `Bearer ${user.token}` } })
     loadAthletes()
   }
 
@@ -855,7 +855,7 @@ function TournamentDetail({ tournament, user, onBack }) {
         trainer_name: form.trainer_name || null,
         category_name: form.category_name || null,
         tournament_id: tournament.id
-      })
+      }, { headers: { Authorization: `Bearer ${user.token}` } })
       setForm({ last_name: "", first_name: "", middle_name: "", gender: "male", birth_date: "", weight: "", rank: "", club_name: "", trainer_name: "", discipline: "kata", category_name: "" })
       setShowForm(false); setError(""); loadAthletes()
     } catch { setError("Ошибка при добавлении участника") }
@@ -1176,7 +1176,7 @@ function ClubPanel({ user, onLogout }) {
         team_number: form.team_number || null,
         club_name: club ? (club.short_name || club.full_name) : null,
         tournament_id: selectedTournament.id
-      })
+      }, { headers: { Authorization: `Bearer ${user.token}` } })
       resetForm()
       setShowForm(false); setError(""); setSuccess("Участник добавлен")
     } catch { setError("Ошибка при добавлении участника") }
