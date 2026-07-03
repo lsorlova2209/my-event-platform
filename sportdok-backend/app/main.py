@@ -582,6 +582,30 @@ def list_athletes(tournament_id: str, db: Session = Depends(get_db)):
             })
     return result
 
+@app.get("/api/v1/athletes/{athlete_id}")
+def get_athlete(athlete_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    # Нужен для формы редактирования - список участников турнира отдаёт
+    # только склеенное full_name, а для PATCH нужны фамилия/имя/отчество
+    # по отдельности.
+    require_roles(current_user, {"admin", "owner"})
+    athlete = db.query(Athlete).filter(Athlete.id == athlete_id).first()
+    if not athlete:
+        return {"success": False, "message": "Участник не найден"}
+    return {
+        "success": True,
+        "id": str(athlete.id),
+        "last_name": athlete.last_name,
+        "first_name": athlete.first_name,
+        "middle_name": athlete.middle_name,
+        "gender": athlete.gender,
+        "birth_date": str(athlete.birth_date),
+        "age_years": athlete.age_years,
+        "weight": float(athlete.weight) if athlete.weight else None,
+        "rank": athlete.rank,
+        "club_name": athlete.club_name,
+        "trainer_name": athlete.trainer_name
+    }
+
 @app.patch("/api/v1/athletes/{athlete_id}")
 def update_athlete(athlete_id: str, data: AthleteUpdate, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     require_roles(current_user, {"admin", "owner"})

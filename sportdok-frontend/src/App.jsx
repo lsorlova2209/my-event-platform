@@ -737,6 +737,7 @@ function TournamentDetail({ tournament, user, onBack }) {
   const [grants, setGrants] = useState([])
   const [grantForm, setGrantForm] = useState({ secretary_user_id: "", tableKey: "" })
   const [grantError, setGrantError] = useState("")
+  const [editingAthleteId, setEditingAthleteId] = useState(null)
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
@@ -970,13 +971,25 @@ function TournamentDetail({ tournament, user, onBack }) {
                         {[a.club_name, a.weight && `${a.weight} кг`, a.rank].filter(Boolean).join(" · ")}
                       </div>
                     </div>
-                    <button onClick={() => handleDeleteAthlete(a.id)} style={{ ...btnDanger, padding: "6px 12px", fontSize: "13px" }}>✗ Удалить</button>
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      <button onClick={() => setEditingAthleteId(a.id)} style={{ ...btnOutline, padding: "6px 12px", fontSize: "13px" }}>✎ Изменить</button>
+                      <button onClick={() => handleDeleteAthlete(a.id)} style={{ ...btnDanger, padding: "6px 12px", fontSize: "13px" }}>✗ Удалить</button>
+                    </div>
                   </div>
                 ))}
               </div>
             )
           })}
         </div>
+
+        {editingAthleteId && (
+          <Modal onClose={() => setEditingAthleteId(null)}>
+            <h3 style={{ margin: "0 0 12px", color: "#1A56A0" }}>Изменить участника</h3>
+            <AthleteEditForm athleteId={editingAthleteId} user={user} ranks={ranks}
+              onDone={() => { setEditingAthleteId(null); loadAthletes() }}
+              onCancel={() => setEditingAthleteId(null)} />
+          </Modal>
+        )}
 
         <div style={card}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -1643,6 +1656,95 @@ function KataScoreForm({ registrationId, roundLabel, existingScores, tournamentI
       <button onClick={submit} disabled={saving} style={{ ...btnGreen, padding: "8px 14px", fontSize: "13px" }}>Сохранить</button>
       <button onClick={onCancel} style={{ ...btnOutline, padding: "8px 14px", fontSize: "13px" }}>Отмена</button>
       {error && <div style={{ ...errorBox, width: "100%", margin: 0 }}>{error}</div>}
+    </div>
+  )
+}
+
+// ТЗ 4.6/5.2: редактирование карточки участника (только админ/владелец,
+// сама роль уже проверяется бэкендом). Список участников отдаёт только
+// склеенное full_name, поэтому при открытии формы дозагружаем карточку
+// отдельным GET, чтобы получить фамилию/имя/отчество по отдельности.
+function AthleteEditForm({ athleteId, user, ranks, onDone, onCancel }) {
+  const [form, setForm] = useState(null)
+  const [error, setError] = useState("")
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    axios.get(`${API}/api/v1/athletes/${athleteId}`, { headers: { Authorization: `Bearer ${user.token}` } })
+      .then(r => {
+        if (r.data.success) {
+          const a = r.data
+          setForm({
+            last_name: a.last_name || "", first_name: a.first_name || "", middle_name: a.middle_name || "",
+            gender: a.gender || "male", birth_date: a.birth_date || "", weight: a.weight ?? "",
+            rank: a.rank || "", club_name: a.club_name || "", trainer_name: a.trainer_name || ""
+          })
+        } else setError(r.data.message || "Не удалось загрузить участника")
+      })
+      .catch(() => setError("Не удалось загрузить участника"))
+  }, [athleteId])
+
+  if (!form) return <p style={{ color: "#4A4A48" }}>Загрузка...</p>
+
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+
+  const submit = async () => {
+    if (!form.last_name || !form.first_name || !form.birth_date) {
+      setError("Заполните фамилию, имя и дату рождения"); return
+    }
+    setSaving(true); setError("")
+    try {
+      const r = await axios.patch(`${API}/api/v1/athletes/${athleteId}`, {
+        ...form,
+        weight: form.weight === "" ? null : parseFloat(form.weight),
+        middle_name: form.middle_name || null,
+        rank: form.rank || null
+      }, { headers: { Authorization: `Bearer ${user.token}` } })
+      if (r.data.success) onDone()
+      else { setError(r.data.message || "Ошибка при сохранении"); setSaving(false) }
+    } catch (e) {
+      setError(e.response?.data?.detail || e.response?.data?.message || "Ошибка соединения с сервером")
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: "12px", marginBottom: "16px" }}>
+        <div style={{ flex: 1 }}><label style={labelStyle}>Фамилия *</label><input type="text" value={form.last_name} onChange={e => set("last_name", e.target.value)} style={inputStyle} /></div>
+        <div style={{ flex: 1 }}><label style={labelStyle}>Имя *</label><input type="text" value={form.first_name} onChange={e => set("first_name", e.target.value)} style={inputStyle} /></div>
+      </div>
+      <div style={{ marginBottom: "16px" }}>
+        <label style={labelStyle}>Отчество</label>
+        <input type="text" value={form.middle_name} onChange={e => set("middle_name", e.target.value)} style={inputStyle} />
+      </div>
+      <div style={{ display: "flex", gap: "12px", marginBottom: "16px" }}>
+        <div style={{ flex: 1 }}>
+          <label style={labelStyle}>Пол *</label>
+          <select value={form.gender} onChange={e => set("gender", e.target.value)} style={inputStyle}>
+            <option value="male">Мужской</option>
+            <option value="female">Женский</option>
+          </select>
+        </div>
+        <div style={{ flex: 1 }}><label style={labelStyle}>Дата рождения *</label><input type="date" value={form.birth_date} onChange={e => set("birth_date", e.target.value)} style={inputStyle} /></div>
+        <div style={{ flex: 1 }}><label style={labelStyle}>Точный вес (кг)</label><input type="number" value={form.weight} onChange={e => set("weight", e.target.value)} style={inputStyle} /></div>
+      </div>
+      <div style={{ display: "flex", gap: "12px", marginBottom: "16px" }}>
+        <div style={{ flex: 1 }}>
+          <label style={labelStyle}>Разряд / звание</label>
+          <select value={form.rank} onChange={e => set("rank", e.target.value)} style={inputStyle}>
+            <option value="">— выберите —</option>
+            {ranks.map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
+          </select>
+        </div>
+        <div style={{ flex: 1 }}><label style={labelStyle}>Клуб</label><input type="text" value={form.club_name} onChange={e => set("club_name", e.target.value)} style={inputStyle} /></div>
+        <div style={{ flex: 1 }}><label style={labelStyle}>Тренер</label><input type="text" value={form.trainer_name} onChange={e => set("trainer_name", e.target.value)} style={inputStyle} /></div>
+      </div>
+      {error && <div style={errorBox}>{error}</div>}
+      <div style={{ display: "flex", gap: "8px" }}>
+        <button onClick={submit} disabled={saving} style={btnGreen}>Сохранить</button>
+        <button onClick={onCancel} style={btnOutline}>Отмена</button>
+      </div>
     </div>
   )
 }
