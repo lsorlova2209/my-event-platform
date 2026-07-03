@@ -118,6 +118,7 @@ class KataScoreSubmit(BaseModel):
     registration_id: str
     round_label: str
     scores: List[float]
+    kata_name: Optional[str] = None
 
 class KataNameSet(BaseModel):
     kata_name: str
@@ -934,6 +935,8 @@ def submit_kata_score(data: KataScoreSubmit, current_user=Depends(get_current_us
     score_row.total_score = total
     score_row.lowest_counted_score = low
     score_row.highest_counted_score = high
+    if data.kata_name is not None:
+        score_row.kata_name = data.kata_name
 
     if is_new:
         db.add(score_row)
@@ -956,6 +959,7 @@ def list_kata_scores(tournament_id: str, category_name: str, gender: Optional[st
         {
             "registration_id": str(s.registration_id),
             "round_label": s.round_label,
+            "kata_name": s.kata_name,
             "score_1": float(s.score_1),
             "score_2": float(s.score_2),
             "score_3": float(s.score_3),

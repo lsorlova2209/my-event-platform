@@ -13,6 +13,10 @@ class KataScore(Base):
     category_name = Column(String, nullable=True)
     gender = Column(String, nullable=True)
     round_label = Column(String, nullable=False)
+    # Конкретная ката (реестр ФВКР, Приложение №1), которую участник выступил
+    # в этом конкретном круге - как в официальном протоколе хода
+    # соревнований, где у каждого круга своя колонка "ката" перед оценками.
+    kata_name = Column(String, nullable=True)
 
     score_1 = Column(Numeric, nullable=False)
     score_2 = Column(Numeric, nullable=False)

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, Fragment } from "react"
 import axios from "axios"
 
 const API = "http://127.0.0.1:8000"
@@ -1247,7 +1247,7 @@ function TournamentDetail({ tournament, user, onBack }) {
                         <>
                           <SeedSwapControl tournamentId={tournament.id} athletes={group.athletes} user={user} onChanged={loadAthletes} />
                           <KataTable grant={{ tournament_id: tournament.id, category_name: group.category_name, gender: group.gender }}
-                            user={user} participants={group.athletes} />
+                            user={user} participants={group.athletes} kataTypes={kataTypes} />
                         </>
                       )}
                     </div>
@@ -1735,7 +1735,7 @@ function SecretaryTable({ user, grant, tournament, onBack }) {
         </div>
 
         {isKata ? (
-          <KataTable grant={grant} user={user} participants={participants} />
+          <KataTable grant={grant} user={user} participants={participants} kataTypes={kataTypes} />
         ) : (
           <KumiteBracket grant={grant} user={user} participants={participants} bouts={bouts} onChanged={load} />
         )}
@@ -1800,7 +1800,7 @@ const KATA_TD = { border: "1px solid #D3D1C7", padding: "6px 8px", fontSize: "13
 // Протокол ката как в официальном образце - все круги видны сразу одной
 // таблицей (ФИО + 5 оценок судей + итог на круг + место), а не по одному
 // кругу за раз с карточками на каждого участника.
-function KataTable({ grant, user, participants }) {
+function KataTable({ grant, user, participants, kataTypes = [] }) {
   const [scores, setScores] = useState([])
   const [places, setPlaces] = useState({})
   const [tiesAtCutoff, setTiesAtCutoff] = useState([])
@@ -1854,37 +1854,44 @@ function KataTable({ grant, user, participants }) {
           <thead>
             <tr>
               <th style={KATA_TH} rowSpan={2}>№</th>
-              <th style={{ ...KATA_TH, textAlign: "left" }} rowSpan={2}>Ката</th>
               <th style={{ ...KATA_TH, textAlign: "left" }} rowSpan={2}>Фамилия Имя</th>
-              {rounds.map(r => <th key={r} style={KATA_TH} colSpan={6}>{KATA_ROUND_LABELS[r]}</th>)}
+              {rounds.map(r => <th key={r} style={KATA_TH} colSpan={7}>{KATA_ROUND_LABELS[r]}</th>)}
               <th style={KATA_TH} rowSpan={2}>Место</th>
             </tr>
             <tr>
-              {rounds.map(r => [1, 2, 3, 4, 5, "Итог"].map(c => <th key={r + c} style={KATA_TH}>{c}</th>))}
+              {rounds.map(r => ["Ката", 1, 2, 3, 4, 5, "Итог"].map(c => <th key={r + c} style={KATA_TH}>{c}</th>))}
             </tr>
           </thead>
           <tbody>
             {sorted.map((p, i) => (
               <tr key={p.registration_id}>
                 <td style={KATA_TD}>{i + 1}</td>
-                <td style={{ ...KATA_TD, textAlign: "left" }}>{p.category_name}</td>
                 <td style={{ ...KATA_TD, textAlign: "left" }}>{p.full_name}</td>
                 {rounds.map(r => {
                   const s = byRegRound[`${p.registration_id}|${r}`]
                   const vals = s ? [s.score_1, s.score_2, s.score_3, s.score_4, s.score_5, s.total_score] : null
                   const openForm = () => setActiveCell({
                     registrationId: p.registration_id, name: p.full_name, roundLabel: r,
-                    existing: vals ? vals.slice(0, 5) : null
+                    existing: vals ? vals.slice(0, 5) : null, existingKataName: s?.kata_name || null
                   })
-                  return [0, 1, 2, 3, 4, 5].map(col => (
-                    <td key={r + col} onClick={openForm} title={vals ? "Нажмите, чтобы изменить оценки" : "Ввести оценки"} style={{
-                      ...KATA_TD, cursor: "pointer", background: vals ? "white" : "#faf9f5",
-                      fontWeight: col === 5 && vals ? "bold" : "normal",
-                      color: col === 5 && vals ? "#0F6E56" : "#1A1A1A"
-                    }}>
-                      {vals ? vals[col] : (col === 0 ? "—" : "")}
-                    </td>
-                  ))
+                  return (
+                    <Fragment key={r}>
+                      <td onClick={openForm} title={s?.kata_name ? "Нажмите, чтобы изменить ката" : "Выбрать ката"} style={{
+                        ...KATA_TD, cursor: "pointer", background: s ? "white" : "#faf9f5", textAlign: "left", fontSize: "11px", maxWidth: "90px"
+                      }}>
+                        {s?.kata_name || "—"}
+                      </td>
+                      {[0, 1, 2, 3, 4, 5].map(col => (
+                        <td key={col} onClick={openForm} title={vals ? "Нажмите, чтобы изменить оценки" : "Ввести оценки"} style={{
+                          ...KATA_TD, cursor: "pointer", background: vals ? "white" : "#faf9f5",
+                          fontWeight: col === 5 && vals ? "bold" : "normal",
+                          color: col === 5 && vals ? "#0F6E56" : "#1A1A1A"
+                        }}>
+                          {vals ? vals[col] : (col === 0 ? "—" : "")}
+                        </td>
+                      ))}
+                    </Fragment>
+                  )
                 })}
                 <td style={{ ...KATA_TD, fontWeight: "bold", color: places[p.registration_id] ? "#0F6E56" : "#1A1A1A" }}>
                   {places[p.registration_id] || ""}
@@ -1898,6 +1905,7 @@ function KataTable({ grant, user, participants }) {
         <Modal onClose={() => setActiveCell(null)}>
           <h3 style={{ margin: "0 0 12px", color: "#1A56A0" }}>Оценки: {activeCell.name} — {KATA_ROUND_LABELS[activeCell.roundLabel]}</h3>
           <KataScoreForm registrationId={activeCell.registrationId} roundLabel={activeCell.roundLabel} existingScores={activeCell.existing}
+            existingKataName={activeCell.existingKataName} kataTypes={kataTypes}
             tournamentId={grant.tournament_id} user={user}
             onDone={() => { setActiveCell(null); load() }} onCancel={() => setActiveCell(null)} />
         </Modal>
@@ -1906,12 +1914,18 @@ function KataTable({ grant, user, participants }) {
   )
 }
 
-function KataScoreForm({ registrationId, roundLabel, existingScores, tournamentId, user, onDone, onCancel }) {
+function KataScoreForm({ registrationId, roundLabel, existingScores, existingKataName, kataTypes = [], tournamentId, user, onDone, onCancel }) {
   const [scores, setScores] = useState(existingScores ? existingScores.map(String) : ["", "", "", "", ""])
+  const [kataName, setKataName] = useState(existingKataName || "")
   const [error, setError] = useState("")
   const [saving, setSaving] = useState(false)
   const [lo, hi] = KATA_ROUND_RANGES[roundLabel] || [0, 10]
   const inputRefs = useRef([])
+
+  const kataGroups = kataTypes.reduce((groups, k) => {
+    (groups[k.group] = groups[k.group] || []).push(k)
+    return groups
+  }, {})
 
   // So the secretary can enter all 5 judges' scores in a row without
   // touching the mouse: focus the first field on open, and let ←/→ jump
@@ -1935,7 +1949,8 @@ function KataScoreForm({ registrationId, roundLabel, existingScores, tournamentI
     setSaving(true); setError("")
     try {
       const r = await axios.post(`${API}/api/v1/kata-scores/`, {
-        tournament_id: tournamentId, registration_id: registrationId, round_label: roundLabel, scores: nums
+        tournament_id: tournamentId, registration_id: registrationId, round_label: roundLabel, scores: nums,
+        kata_name: kataName || null
       }, { headers: { Authorization: `Bearer ${user.token}` } })
       if (r.data.success) onDone()
       else { setError(r.data.message || "Ошибка при сохранении"); setSaving(false) }
@@ -1946,15 +1961,28 @@ function KataScoreForm({ registrationId, roundLabel, existingScores, tournamentI
   }
 
   return (
-    <div style={{ marginTop: "10px", display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
-      {scores.map((v, i) => (
-        <input key={i} ref={el => (inputRefs.current[i] = el)} type="number" step="0.1" min={lo} max={hi} value={v}
-          onChange={e => setScore(i, e.target.value)} onKeyDown={e => handleKeyDown(i, e)}
-          style={{ ...inputStyle, width: "70px" }} placeholder={`${lo}-${hi}`} />
-      ))}
-      <button onClick={submit} disabled={saving} style={{ ...btnGreen, padding: "8px 14px", fontSize: "13px" }}>Сохранить</button>
-      <button onClick={onCancel} style={{ ...btnOutline, padding: "8px 14px", fontSize: "13px" }}>Отмена</button>
-      {error && <div style={{ ...errorBox, width: "100%", margin: 0 }}>{error}</div>}
+    <div style={{ marginTop: "10px" }}>
+      <div style={{ marginBottom: "10px" }}>
+        <label style={labelStyle}>Ката (реестр ФВКР)</label>
+        <select value={kataName} onChange={e => setKataName(e.target.value)} style={inputStyle}>
+          <option value="">— выбрать —</option>
+          {Object.entries(kataGroups).map(([group, types]) => (
+            <optgroup key={group} label={group}>
+              {types.map(k => <option key={k.id} value={k.name}>{k.code ? `${k.code} — ${k.name}` : k.name}</option>)}
+            </optgroup>
+          ))}
+        </select>
+      </div>
+      <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+        {scores.map((v, i) => (
+          <input key={i} ref={el => (inputRefs.current[i] = el)} type="number" step="0.1" min={lo} max={hi} value={v}
+            onChange={e => setScore(i, e.target.value)} onKeyDown={e => handleKeyDown(i, e)}
+            style={{ ...inputStyle, width: "70px" }} placeholder={`${lo}-${hi}`} />
+        ))}
+        <button onClick={submit} disabled={saving} style={{ ...btnGreen, padding: "8px 14px", fontSize: "13px" }}>Сохранить</button>
+        <button onClick={onCancel} style={{ ...btnOutline, padding: "8px 14px", fontSize: "13px" }}>Отмена</button>
+        {error && <div style={{ ...errorBox, width: "100%", margin: 0 }}>{error}</div>}
+      </div>
     </div>
   )
 }
