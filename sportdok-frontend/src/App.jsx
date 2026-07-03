@@ -1003,8 +1003,11 @@ function TournamentDetail({ tournament, user, onBack }) {
                       {!drawn ? (
                         <p style={{ color: "#4A4A48", fontSize: "14px" }}>Жеребьёвка не проведена</p>
                       ) : (
-                        <KataTable grant={{ tournament_id: tournament.id, category_name: group.category_name, gender: group.gender }}
-                          user={user} participants={group.athletes} />
+                        <>
+                          <SeedSwapControl tournamentId={tournament.id} athletes={group.athletes} user={user} onChanged={loadAthletes} />
+                          <KataTable grant={{ tournament_id: tournament.id, category_name: group.category_name, gender: group.gender }}
+                            user={user} participants={group.athletes} />
+                        </>
                       )}
                     </div>
                   )
@@ -1017,6 +1020,7 @@ function TournamentDetail({ tournament, user, onBack }) {
                 return (
                   <div key={label} style={{ marginBottom: "24px" }}>
                     <div style={{ fontWeight: "bold", color: "#1A56A0", marginBottom: "8px" }}>{label}</div>
+                    <SeedSwapControl tournamentId={tournament.id} athletes={group.athletes} user={user} onChanged={loadAthletes} />
                     <KumiteBracket grant={{ tournament_id: tournament.id }} user={user} participants={group.athletes} bouts={bouts}
                       onChanged={() => { loadAthletes(); loadBouts() }} />
                   </div>
@@ -1441,6 +1445,56 @@ function SecretaryTable({ user, grant, tournament, onBack }) {
           <KumiteBracket grant={grant} user={user} participants={participants} bouts={bouts} onChanged={load} />
         )}
       </div>
+    </div>
+  )
+}
+
+// ТЗ 5.3.4: ручная перестановка номеров жеребьёвки - админ/владелец может
+// поменять местами посевные номера двух участников одной категории (и
+// подгруппы, если она есть), не перезапуская жеребьёвку целиком.
+function SeedSwapControl({ tournamentId, athletes, user, onChanged }) {
+  const [a, setA] = useState("")
+  const [b, setB] = useState("")
+  const [error, setError] = useState("")
+  const [success, setSuccess] = useState("")
+
+  const seeded = [...athletes].filter(x => x.seed != null).sort((x, y) => x.seed - y.seed)
+  if (seeded.length < 2) return null
+
+  const handleSwap = async () => {
+    setError(""); setSuccess("")
+    if (!a || !b) { setError("Выберите двух участников"); return }
+    try {
+      const r = await axios.post(`${API}/api/v1/tournaments/${tournamentId}/draw/swap-seed`, {
+        registration_id_a: a, registration_id_b: b
+      }, { headers: { Authorization: `Bearer ${user.token}` } })
+      if (r.data.success) {
+        setSuccess("Номера поменяны местами"); setA(""); setB(""); onChanged()
+      } else setError(r.data.message || "Не удалось поменять номера")
+    } catch (e) {
+      setError(e.response?.data?.message || e.response?.data?.detail || "Не удалось поменять номера")
+    }
+  }
+
+  return (
+    <div style={{ display: "flex", gap: "8px", alignItems: "flex-end", flexWrap: "wrap", marginTop: "8px", marginBottom: "8px" }}>
+      <div style={{ flex: "1 1 180px" }}>
+        <label style={labelStyle}>Участник А</label>
+        <select value={a} onChange={e => setA(e.target.value)} style={inputStyle}>
+          <option value="">— выберите —</option>
+          {seeded.map(x => <option key={x.registration_id} value={x.registration_id}>№{x.seed} {x.full_name}</option>)}
+        </select>
+      </div>
+      <div style={{ flex: "1 1 180px" }}>
+        <label style={labelStyle}>Участник Б</label>
+        <select value={b} onChange={e => setB(e.target.value)} style={inputStyle}>
+          <option value="">— выберите —</option>
+          {seeded.map(x => <option key={x.registration_id} value={x.registration_id}>№{x.seed} {x.full_name}</option>)}
+        </select>
+      </div>
+      <button onClick={handleSwap} style={{ ...btnOutline, padding: "8px 14px", fontSize: "13px" }}>Поменять номера местами</button>
+      {error && <div style={{ ...errorBox, flexBasis: "100%", margin: 0 }}>{error}</div>}
+      {success && <div style={{ ...successBox, flexBasis: "100%", margin: 0 }}>{success}</div>}
     </div>
   )
 }
