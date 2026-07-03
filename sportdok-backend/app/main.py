@@ -1147,6 +1147,17 @@ def _assemble_tournament_documents(tournament_id, db):
     if not tournament:
         return None
 
+    # "Регион" не хранится на Athlete/Registration (клуб указывает его один
+    # раз при регистрации клуба, не на каждую заявку участника) - для
+    # официального протокола регистрации сопоставляем club_name участника
+    # с зарегистрированным клубом по имени, чтобы подтянуть регион оттуда.
+    region_by_club_name = {}
+    for club in db.query(Club).all():
+        if club.short_name:
+            region_by_club_name[club.short_name] = club.region
+        if club.full_name:
+            region_by_club_name.setdefault(club.full_name, club.region)
+
     regs = db.query(Registration).filter(Registration.tournament_id == tournament_id).all()
     groups = {}
     for reg in regs:
@@ -1181,8 +1192,13 @@ def _assemble_tournament_documents(tournament_id, db):
                 "birth_date": athlete.birth_date.isoformat() if athlete.birth_date else None,
                 "age_years": athlete.age_years,
                 "rank": athlete.rank,
+                "weight": float(athlete.weight) if athlete.weight else None,
                 "club_name": athlete.club_name,
+                "region": region_by_club_name.get(athlete.club_name),
                 "trainer_name": athlete.trainer_name,
+                "discipline": reg.discipline,
+                "category_name": reg.category_name,
+                "age_group": compute_age_group(athlete.birth_date, tournament.event_date, athlete.gender, reg.discipline),
             }
             for reg, athlete in members
         ]
