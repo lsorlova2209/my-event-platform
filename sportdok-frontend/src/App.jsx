@@ -1140,6 +1140,8 @@ function ClubPanel({ user, onLogout }) {
   })
   const [error, setError] = useState("")
   const [success, setSuccess] = useState("")
+  const [newTrainer, setNewTrainer] = useState("")
+  const [trainerError, setTrainerError] = useState("")
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const setDiscipline = (v) => setForm(f => ({ ...f, discipline: v, category_name: "", team_number: "" }))
@@ -1172,6 +1174,31 @@ function ClubPanel({ user, onLogout }) {
   }, {})
 
   const trainers = (club?.trainers || "").split(",").map(t => t.trim()).filter(Boolean)
+
+  const handleAddTrainer = async () => {
+    const name = newTrainer.trim()
+    if (!name) { setTrainerError("Укажите ФИО тренера"); return }
+    try {
+      const r = await axios.post(`${API}/api/v1/clubs/${user.club_id}/trainers`, { name }, {
+        headers: { Authorization: `Bearer ${user.token}` }
+      })
+      if (r.data.success) { setNewTrainer(""); setTrainerError(""); loadClub() }
+      else setTrainerError(r.data.message || "Не удалось добавить тренера")
+    } catch (e) {
+      setTrainerError(e.response?.data?.message || e.response?.data?.detail || "Не удалось добавить тренера")
+    }
+  }
+
+  const handleRemoveTrainer = async (name) => {
+    try {
+      await axios.delete(`${API}/api/v1/clubs/${user.club_id}/trainers`, {
+        params: { name }, headers: { Authorization: `Bearer ${user.token}` }
+      })
+      loadClub()
+    } catch (e) {
+      setTrainerError(e.response?.data?.message || e.response?.data?.detail || "Не удалось удалить тренера")
+    }
+  }
 
   const resetForm = () => setForm({
     last_name: "", first_name: "", middle_name: "", gender: "male", birth_date: "", weight: "",
@@ -1312,6 +1339,30 @@ function ClubPanel({ user, onLogout }) {
             <p style={{ color: "#4A4A48", margin: "4px 0 0" }}>{club ? (club.short_name || club.full_name) : user.name} · клуб</p>
           </div>
           <button onClick={onLogout} style={btnOutline}>Выйти</button>
+        </div>
+
+        <div style={{ ...card, marginBottom: "24px" }}>
+          <h2 style={{ margin: "0 0 16px", color: "#1A56A0" }}>Тренеры</h2>
+          {trainers.length === 0 ? (
+            <p style={{ color: "#4A4A48", fontSize: "14px", marginBottom: "16px" }}>Тренеров пока нет.</p>
+          ) : (
+            <div style={{ marginBottom: "16px" }}>
+              {trainers.map(t => (
+                <div key={t} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #f3f2ee" }}>
+                  <span>{t}</span>
+                  <button onClick={() => handleRemoveTrainer(t)} style={{ ...btnDanger, padding: "4px 10px", fontSize: "12px" }}>✗ Удалить</button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{ display: "flex", gap: "8px", alignItems: "flex-end", flexWrap: "wrap" }}>
+            <div style={{ flex: "1 1 220px" }}>
+              <label style={labelStyle}>ФИО тренера</label>
+              <input type="text" value={newTrainer} onChange={e => setNewTrainer(e.target.value)} placeholder="Иванов И.И." style={inputStyle} />
+            </div>
+            <button onClick={handleAddTrainer} style={btnGreen}>+ Добавить тренера</button>
+          </div>
+          {trainerError && <div style={{ ...errorBox, marginTop: "12px" }}>{trainerError}</div>}
         </div>
 
         <div style={card}>
