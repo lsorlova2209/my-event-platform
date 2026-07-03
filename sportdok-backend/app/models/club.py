@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime
+from sqlalchemy import Column, String, DateTime, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime
 import uuid
@@ -18,4 +18,8 @@ class Club(Base):
     password_hash = Column(String, nullable=False)
     trainers = Column(String, nullable=True)
     status = Column(String, nullable=False, default="pending")
+    # ТЗ 3.2, шаг 2-3: подтверждение email по ссылке из письма, раньше
+    # одобрения администратором.
+    email_verified = Column(Boolean, nullable=False, default=False)
+    email_verification_token = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

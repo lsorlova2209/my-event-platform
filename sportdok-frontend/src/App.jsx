@@ -46,7 +46,7 @@ const successBox = {
 }
 
 // ─── СТРАНИЦА ВХОДА ───────────────────────────────────────────────────────────
-function LoginPage({ onLogin, onRegister }) {
+function LoginPage({ onLogin, onRegister, emailConfirmMessage }) {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [error, setError] = useState("")
@@ -64,6 +64,8 @@ function LoginPage({ onLogin, onRegister }) {
       <div style={{ background: "white", padding: "48px", borderRadius: "16px", width: "420px", boxShadow: "0 4px 24px rgba(0,0,0,0.08)" }}>
         <h1 style={{ color: "#1A56A0", marginBottom: "8px" }}>СпортДок</h1>
         <p style={{ color: "#4A4A48", marginBottom: "32px" }}>Войдите в систему</p>
+
+        {emailConfirmMessage && <div style={{ ...successBox, marginBottom: "16px" }}>{emailConfirmMessage}</div>}
 
         <div style={{ marginBottom: "16px" }}>
           <label style={labelStyle}>Email</label>
@@ -366,6 +368,7 @@ function AdminPanel({ user, onLogout }) {
                       {c.responsible_name} · {c.email}
                     </div>
                     {c.trainers && <div style={{ color: "#4A4A48", fontSize: "13px", marginTop: "4px" }}>Тренеры: {c.trainers}</div>}
+                    {!c.email_verified && <div style={{ color: "#A32D2D", fontSize: "13px", marginTop: "4px" }}>Email ещё не подтверждён клубом</div>}
                   </div>
                   <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
                     {c.status === "pending" && (
@@ -2103,6 +2106,16 @@ function BoutResultForm({ a, b, roundLabel, existingBout, tournamentId, user, on
 export default function App() {
   const [page, setPage] = useState("login")
   const [user, setUser] = useState(null)
+  const [emailConfirmMessage, setEmailConfirmMessage] = useState(null)
+
+  useEffect(() => {
+    const token = new URLSearchParams(window.location.search).get("confirm_email")
+    if (!token) return
+    axios.post(`${API}/api/v1/clubs/confirm-email`, null, { params: { token } })
+      .then(r => setEmailConfirmMessage(r.data.message))
+      .catch(() => setEmailConfirmMessage("Не удалось подтвердить email - ссылка недействительна или устарела"))
+    window.history.replaceState({}, "", window.location.pathname)
+  }, [])
 
   const handleLogin = (userData) => {
     setUser(userData)
@@ -2121,5 +2134,5 @@ export default function App() {
       return <SecretaryPanel user={user} onLogout={() => { setUser(null); setPage("login") }} />
     }
   }
-  return <LoginPage onLogin={handleLogin} onRegister={() => setPage("register")} />
+  return <LoginPage onLogin={handleLogin} onRegister={() => setPage("register")} emailConfirmMessage={emailConfirmMessage} />
 }

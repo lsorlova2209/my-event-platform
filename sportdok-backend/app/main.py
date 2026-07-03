@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from datetime import date, datetime
 from typing import Optional, List
 from io import BytesIO
+import secrets
 from app.database import get_db, engine, Base
 from app.models.user import User
 from app.models.tournament import Tournament
@@ -22,6 +23,7 @@ from app.kata_protocol import ROUND_SCALES, validate_scores, compute_total, dete
 from app.documents import build_workbook, build_pdf, team_standings
 from app.kata_registry import KATA_TYPES, KATA_STYLE_ORDER, kata_style
 from app.age_group import compute_age_group
+from app.notifications import send_email
 
 Base.metadata.create_all(bind=engine)
 
@@ -34,6 +36,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+FRONTEND_URL = "http://localhost:5173"
 
 # ─── СХЕМЫ ────────────────────────────────────────────────────────────────────
 
@@ -216,6 +220,8 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
     # проверяем в clubs
     club = db.query(Club).filter(Club.email == data.email).first()
     if club and verify_password(data.password, club.password_hash):
+        if not club.email_verified:
+            return {"success": False, "message": "Подтвердите email - проверьте почту со ссылкой для подтверждения регистрации"}
         if club.status == "pending":
             return {"success": False, "message": "Ваша заявка ещё не одобрена администратором"}
         if club.status == "rejected":
@@ -239,6 +245,7 @@ def register_club(data: ClubRegister, db: Session = Depends(get_db)):
     existing = db.query(Club).filter(Club.email == data.email).first()
     if existing:
         return {"success": False, "message": "Клуб с таким email уже зарегистрирован"}
+    token = secrets.token_urlsafe(32)
     club = Club(
         responsible_name=data.responsible_name,
         responsible_position=data.responsible_position,
@@ -249,11 +256,38 @@ def register_club(data: ClubRegister, db: Session = Depends(get_db)):
         email=data.email,
         password_hash=hash_password(data.password),
         trainers=data.trainers,
-        status="pending"
+        status="pending",
+        email_verified=False,
+        email_verification_token=token
     )
     db.add(club)
     db.commit()
-    return {"success": True, "message": "Заявка подана. Ожидайте одобрения администратора."}
+
+    confirm_link = f"{FRONTEND_URL}/?confirm_email={token}"
+    send_email(club.email, "Подтвердите email — СпортДок",
+               f"Здравствуйте, {club.responsible_name}!\n\n"
+               f"Для завершения регистрации клуба «{club.full_name}» подтвердите email, перейдя по ссылке:\n{confirm_link}\n\n"
+               f"После подтверждения заявка будет передана администратору соревнования на одобрение.")
+
+    return {"success": True, "message": "Заявка подана. Проверьте email для подтверждения регистрации."}
+
+@app.post("/api/v1/clubs/confirm-email")
+def confirm_club_email(token: str, db: Session = Depends(get_db)):
+    club = db.query(Club).filter(Club.email_verification_token == token).first()
+    if not club:
+        return {"success": False, "message": "Ссылка недействительна или уже использована"}
+    club.email_verified = True
+    club.email_verification_token = None
+    db.commit()
+
+    # ТЗ 3.2, шаг 3: администратору приходит уведомление о новой заявке
+    # только после подтверждения email клубом, а не сразу при регистрации.
+    admins = db.query(User).filter(User.role.in_(["admin", "owner"])).all()
+    for admin in admins:
+        send_email(admin.email, "Новая заявка клуба — требует одобрения",
+                   f"Клуб «{club.full_name}» ({club.email}) подтвердил email и ожидает одобрения регистрации.")
+
+    return {"success": True, "message": "Email подтверждён. Ожидайте одобрения администратора."}
 
 @app.get("/api/v1/clubs/")
 def list_clubs(db: Session = Depends(get_db)):
@@ -268,6 +302,7 @@ def list_clubs(db: Session = Depends(get_db)):
             "responsible_name": c.responsible_name,
             "status": c.status,
             "trainers": c.trainers,
+            "email_verified": c.email_verified,
         }
         for c in clubs
     ]
@@ -280,6 +315,8 @@ def approve_club(club_id: str, current_user=Depends(get_current_user), db: Sessi
         return {"success": False, "message": "Клуб не найден"}
     club.status = "approved"
     db.commit()
+    send_email(club.email, "Заявка одобрена — СпортДок",
+               f"Здравствуйте, {club.responsible_name}!\n\nВаш клуб «{club.full_name}» одобрен. Теперь вы можете регистрировать участников соревнований.")
     return {"success": True, "message": f"Клуб {club.full_name} одобрен"}
 
 @app.post("/api/v1/clubs/{club_id}/reject")
@@ -550,6 +587,7 @@ def lookup_athlete(tournament_id: str, last_name: str, first_name: str, birth_da
 def create_athlete(data: AthleteCreate, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     require_roles(current_user, {"admin", "owner", "club"})
     club_name = data.club_name
+    own_club = None
     if current_user["role"] == "club":
         # Не доверяем club_name из тела запроса для роли "клуб" - иначе клуб
         # может подать заявку от имени другого клуба. Берём имя из
@@ -596,6 +634,11 @@ def create_athlete(data: AthleteCreate, current_user=Depends(get_current_user), 
     )
     db.add(registration)
     db.commit()
+
+    if own_club:
+        full_name = f"{athlete.last_name} {athlete.first_name} {athlete.middle_name or ''}".strip()
+        send_email(own_club.email, "Участник зарегистрирован — СпортДок",
+                   f"Участник {full_name} ({data.discipline}, категория «{data.category_name}») успешно зарегистрирован на соревнование.")
 
     return {"success": True, "athlete_id": str(athlete.id)}
 
