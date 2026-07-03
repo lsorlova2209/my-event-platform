@@ -1476,6 +1476,7 @@ function KataTable({ grant, user, participants }) {
           <thead>
             <tr>
               <th style={KATA_TH} rowSpan={2}>№</th>
+              <th style={{ ...KATA_TH, textAlign: "left" }} rowSpan={2}>Ката</th>
               <th style={{ ...KATA_TH, textAlign: "left" }} rowSpan={2}>Фамилия Имя</th>
               {rounds.map(r => <th key={r} style={KATA_TH} colSpan={6}>{KATA_ROUND_LABELS[r]}</th>)}
               <th style={KATA_TH} rowSpan={2}>Место</th>
@@ -1488,6 +1489,7 @@ function KataTable({ grant, user, participants }) {
             {sorted.map((p, i) => (
               <tr key={p.registration_id}>
                 <td style={KATA_TD}>{i + 1}</td>
+                <td style={{ ...KATA_TD, textAlign: "left" }}>{p.category_name}</td>
                 <td style={{ ...KATA_TD, textAlign: "left" }}>{p.full_name}</td>
                 {rounds.map(r => {
                   const s = byRegRound[`${p.registration_id}|${r}`]
