@@ -29,6 +29,10 @@ class Registration(Base):
     tournament_id = Column(UUID(as_uuid=True), nullable=False)
     discipline = Column(String, nullable=False)
     category_name = Column(String, nullable=True)
+    # Для ката category_name - это стиль (Ашихара/Годзю-рю/...), выбранный
+    # клубом при заявке. Конкретную ката внутри стиля выбирает секретарь в
+    # сетке ката при вводе результатов - см. kata_name.
+    kata_name = Column(String, nullable=True)
     team_number = Column(String, nullable=True)
     admission_status = Column(String, nullable=True)
     seed = Column(Integer, nullable=True)

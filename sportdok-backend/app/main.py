@@ -119,6 +119,9 @@ class KataScoreSubmit(BaseModel):
     round_label: str
     scores: List[float]
 
+class KataNameSet(BaseModel):
+    kata_name: str
+
 class KataSessionStart(BaseModel):
     category_name: Optional[str] = None
     gender: Optional[str] = None
@@ -663,6 +666,7 @@ def list_athletes(tournament_id: str, db: Session = Depends(get_db)):
                 "club_name": athlete.club_name,
                 "discipline": reg.discipline,
                 "category_name": reg.category_name,
+                "kata_name": reg.kata_name,
                 "team_number": reg.team_number,
                 "admission_status": reg.admission_status,
                 "age_group": compute_age_group(athlete.birth_date, tournament.event_date if tournament else None, athlete.gender, reg.discipline),
@@ -870,6 +874,25 @@ def list_bouts(tournament_id: str, db: Session = Depends(get_db)):
     ]
 
 # ─── ПРОТОКОЛ КАТА ────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/registrations/{registration_id}/kata-name")
+def set_kata_name(registration_id: str, data: KataNameSet, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    # Стиль (Registration.category_name) клуб выбирает при заявке; конкретную
+    # ката внутри стиля выбирает секретарь здесь, в сетке ката, перед вводом
+    # первой оценки - см. обсуждение и решение пользователя 2026-07-03.
+    require_roles(current_user, {"admin", "owner", "secretary"})
+    reg = db.query(Registration).filter(Registration.id == registration_id).first()
+    if not reg:
+        return {"success": False, "message": "Участник не найден"}
+    if reg.discipline != "kata":
+        return {"success": False, "message": "Доступно только для дисциплины «ката»"}
+    athlete = db.query(Athlete).filter(Athlete.id == reg.athlete_id).first()
+    style = kata_style(reg.category_name)
+    if not secretary_has_access(db, current_user, str(reg.tournament_id), "kata", athlete.gender if athlete else None, style):
+        raise HTTPException(status_code=403, detail="Нет доступа к этой сетке")
+    reg.kata_name = data.kata_name
+    db.commit()
+    return {"success": True, "kata_name": reg.kata_name}
 
 @app.post("/api/v1/kata-scores/")
 def submit_kata_score(data: KataScoreSubmit, current_user=Depends(get_current_user), db: Session = Depends(get_db)):

@@ -858,22 +858,17 @@ function CategoryMultiSelect({ kataGroups, weightCategories, selectedKata, selec
   return (
     <div style={{ display: "flex", gap: "12px", marginBottom: "16px", flexWrap: "wrap" }}>
       <div style={{ flex: "1 1 260px" }}>
-        <label style={labelStyle}>Категории ката</label>
+        <label style={labelStyle}>Категории ката (стиль)</label>
         <div style={boxStyle}>
-          {Object.entries(kataGroups).map(([group, types]) => (
-            <div key={group} style={{ marginBottom: "4px" }}>
-              <div style={{ fontWeight: "bold", fontSize: "12px", color: "#4A4A48", margin: "6px 0 2px" }}>{group}</div>
-              {types.map(k => {
-                const disabled = disabledKeys.has(`kata|${k.name}`)
-                return (
-                  <label key={k.id} style={rowStyle(disabled)}>
-                    <input type="checkbox" checked={selectedKata.includes(k.name)} disabled={disabled} onChange={() => onToggleKata(k.name)} />
-                    {k.name}{disabled ? " (уже заявлен)" : ""}
-                  </label>
-                )
-              })}
-            </div>
-          ))}
+          {Object.keys(kataGroups).map(style => {
+            const disabled = disabledKeys.has(`kata|${style}`)
+            return (
+              <label key={style} style={rowStyle(disabled)}>
+                <input type="checkbox" checked={selectedKata.includes(style)} disabled={disabled} onChange={() => onToggleKata(style)} />
+                {style}{disabled ? " (уже заявлен)" : ""}
+              </label>
+            )
+          })}
         </div>
       </div>
       <div style={{ flex: "1 1 260px" }}>
@@ -1245,7 +1240,7 @@ function TournamentDetail({ tournament, user, onBack }) {
                         <>
                           <SeedSwapControl tournamentId={tournament.id} athletes={group.athletes} user={user} onChanged={loadAthletes} />
                           <KataTable grant={{ tournament_id: tournament.id, category_name: group.category_name, gender: group.gender }}
-                            user={user} participants={group.athletes} />
+                            user={user} participants={group.athletes} kataTypes={kataTypes} onChanged={loadAthletes} />
                         </>
                       )}
                     </div>
@@ -1743,7 +1738,7 @@ function SecretaryTable({ user, grant, tournament, onBack }) {
         </div>
 
         {isKata ? (
-          <KataTable grant={grant} user={user} participants={participants} />
+          <KataTable grant={grant} user={user} participants={participants} kataTypes={kataTypes} onChanged={load} />
         ) : (
           <KumiteBracket grant={grant} user={user} participants={participants} bouts={bouts} onChanged={load} />
         )}
@@ -1808,11 +1803,26 @@ const KATA_TD = { border: "1px solid #D3D1C7", padding: "6px 8px", fontSize: "13
 // Протокол ката как в официальном образце - все круги видны сразу одной
 // таблицей (ФИО + 5 оценок судей + итог на круг + место), а не по одному
 // кругу за раз с карточками на каждого участника.
-function KataTable({ grant, user, participants }) {
+function KataTable({ grant, user, participants, kataTypes = [], onChanged }) {
   const [scores, setScores] = useState([])
   const [places, setPlaces] = useState({})
   const [tiesAtCutoff, setTiesAtCutoff] = useState([])
   const [activeCell, setActiveCell] = useState(null)
+
+  // Стиль (grant.category_name / p.category_name) выбирает клуб при заявке;
+  // конкретную ката внутри стиля - секретарь здесь, до ввода первой оценки
+  // (см. обсуждение и решение пользователя 2026-07-03).
+  const kataOptionsByStyle = kataTypes.reduce((groups, k) => {
+    (groups[k.group] = groups[k.group] || []).push(k)
+    return groups
+  }, {})
+  const handleSetKataName = async (registrationId, kataName) => {
+    if (!kataName) return
+    await axios.post(`${API}/api/v1/registrations/${registrationId}/kata-name`, { kata_name: kataName }, {
+      headers: { Authorization: `Bearer ${user.token}` }
+    })
+    if (onChanged) onChanged()
+  }
 
   const load = async () => {
     const params = { category_name: grant.category_name }
@@ -1875,7 +1885,12 @@ function KataTable({ grant, user, participants }) {
             {sorted.map((p, i) => (
               <tr key={p.registration_id}>
                 <td style={KATA_TD}>{i + 1}</td>
-                <td style={{ ...KATA_TD, textAlign: "left" }}>{p.category_name}</td>
+                <td style={{ ...KATA_TD, textAlign: "left", padding: "4px" }}>
+                  <select value={p.kata_name || ""} onChange={e => handleSetKataName(p.registration_id, e.target.value)} style={{ ...inputStyle, padding: "4px", fontSize: "12px" }}>
+                    <option value="">— выбрать —</option>
+                    {(kataOptionsByStyle[p.category_name] || []).map(k => <option key={k.id} value={k.name}>{k.name}</option>)}
+                  </select>
+                </td>
                 <td style={{ ...KATA_TD, textAlign: "left" }}>{p.full_name}</td>
                 {rounds.map(r => {
                   const s = byRegRound[`${p.registration_id}|${r}`]
