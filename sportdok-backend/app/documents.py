@@ -113,6 +113,39 @@ def _short_name(p):
     return f"{last} {first[0]}."
 
 
+def _competition_level(tournament):
+    return (tournament or {}).get("competition_level") or "club"
+
+
+def _participant_org(p, competition_level="club"):
+    if competition_level == "region":
+        return (p.get("region") or p.get("club_name") or "").strip()
+    return (p.get("club_name") or p.get("region") or "").strip()
+
+
+def _participant_label(p, competition_level="club", short=False):
+    if not p:
+        return {"seed": "", "name": "", "text": ""}
+    base_name = _short_name(p) if short else (p.get("full_name") or _short_name(p))
+    org = _participant_org(p, competition_level)
+    name = f"{base_name} ({org})" if org else base_name
+    seed = str(p.get("seed") or "")
+    text = f"{seed} {name}".strip() if seed else name
+    return {"seed": seed, "name": name, "text": text}
+
+
+def _clip_text(canv, text, max_width):
+    if not text:
+        return ""
+    if canv.stringWidth(text, canv._fontname, canv._fontsize) <= max_width:
+        return text
+    ellipsis = "..."
+    clipped = text
+    while clipped and canv.stringWidth(clipped + ellipsis, canv._fontname, canv._fontsize) > max_width:
+        clipped = clipped[:-1]
+    return (clipped + ellipsis) if clipped else ellipsis
+
+
 def team_standings(placements):
     """placements: [{club_name, place}, ...] across all categories.
     Returns [{club_name, points}, ...] sorted best-first."""
@@ -159,6 +192,7 @@ def build_workbook(tournament, summary, categories, team_ranking):
     team_ranking: [{club_name, points}, ...]
     """
     wb = Workbook()
+    competition_level = _competition_level(tournament)
 
     # ─── СВОДНАЯ СПРАВКА ────────────────────────────────────────────────
     # Формат сверен с реальным образцом (docs/samples/СВОДНАЯ_СПРАВКА...
@@ -275,7 +309,10 @@ def build_workbook(tournament, summary, categories, team_ranking):
         reg_ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=15)
         row += 1
 
-        _header_row(reg_ws, row, REGISTRATION_PROTOCOL_HEADERS)
+        reg_headers = REGISTRATION_PROTOCOL_HEADERS.copy()
+        reg_headers[11] = "Клуб"
+        reg_headers[12] = "Регион"
+        _header_row(reg_ws, row, reg_headers)
         for col in range(1, 16):
             reg_ws.cell(row=row, column=col).alignment = Alignment(horizontal="center", wrap_text=True)
         row += 1
@@ -420,14 +457,15 @@ def _signature_block(styles):
 
 _FULL_PROTOCOL_HEADER = [
     "№<br/>п/п", "№<br/>квал", "пол", "Фамилия", "Имя", "Отчество", "Дата<br/>рождения",
-    "Полных<br/>лет", "Разряд,<br/>звание", "Вид<br/>программы", "Регион", "Тренер", "Занятое<br/>место",
+    "Полных<br/>лет", "Разряд,<br/>звание", "Вид<br/>программы", "Клуб /<br/>регион", "Тренер", "Занятое<br/>место",
 ]
 _FULL_PROTOCOL_WIDTHS = [0.9, 1.0, 0.8, 2.8, 2.4, 2.6, 2.0, 1.3, 2.0, 2.2, 3.85, 3.85, 1.5]
 
 
-def _full_protocol_table(cat):
+def _full_protocol_table(cat, tournament):
     place_by_reg = {p["registration_id"]: p["place"] for p in cat["placements"] if p.get("registration_id")}
     header_style = ParagraphStyle("ProtoHeader", fontName="DejaVuSans-Bold", fontSize=7.5, alignment=1, leading=9)
+    competition_level = _competition_level(tournament)
 
     def sort_key(p):
         place = place_by_reg.get(p["registration_id"])
@@ -448,7 +486,7 @@ def _full_protocol_table(cat):
             str(p.get("age_years") or ""),
             p.get("rank") or "",
             cat["category_name"] or "",
-            p.get("club_name") or "",
+            _participant_org(p, competition_level),
             p.get("trainer_name") or "",
             str(place) if place is not None else "",
         ])
@@ -573,20 +611,20 @@ def _resolve_match(a, b, bouts_by_pair):
 
 
 def _bracket_rounds(participants, bouts_by_pair):
-    """participants: entries with a 1-based 'seed' *within this group*.
-    Returns a list of rounds; round 0 holds the round-1 matches
-    ({"a", "b", "winner"}), each following round pairs up the previous
-    round's winners in bracket order."""
-    by_seed = {p["seed"]: p for p in participants if p.get("seed")}
-    n = len(by_seed)
+    """participants: entries with global draw numbers (№ жреб.).
+  Within a subgroup, local bracket positions 1..k map to sorted global seeds
+  (same logic as federation Excel templates and app/draw.py::subgroup_round1)."""
+    sorted_p = sorted((p for p in participants if p.get("seed")), key=lambda p: p["seed"])
+    n = len(sorted_p)
     if n == 0:
         return []
+    by_local = {i + 1: p for i, p in enumerate(sorted_p)}
     size = next_power_of_two(n)
     pairs = round1_pairs_by_seed(size)
 
     current = []
-    for seed_a, seed_b in pairs:
-        pa, pb = by_seed.get(seed_a), by_seed.get(seed_b)
+    for la, lb in pairs:
+        pa, pb = by_local.get(la), by_local.get(lb)
         winner, bout = _resolve_match(pa, pb, bouts_by_pair)
         current.append({"a": pa, "b": pb, "winner": winner, "bout": bout})
 
@@ -618,12 +656,14 @@ class _BracketDiagram(Flowable):
     MAX_ROW_H = 0.85 * cm
     MIN_ROW_H = 0.4 * cm
     GROUP_GAP = 0.6 * cm
+    SEED_W = 0.42 * cm
 
-    def __init__(self, rounds_per_group, final_match, bronze_match, avail_width, avail_height, font_name="DejaVuSans"):
+    def __init__(self, rounds_per_group, final_match, bronze_match, avail_width, avail_height, competition_level="club", font_name="DejaVuSans"):
         super().__init__()
         self.rounds_per_group = rounds_per_group
         self.final_match = final_match
         self.bronze_match = bronze_match
+        self.competition_level = competition_level
         self.font_name = font_name
 
         self.leaf_counts = [2 * len(r[0]) for r in rounds_per_group]
@@ -659,15 +699,24 @@ class _BracketDiagram(Flowable):
     def wrap(self, avail_width, avail_height):
         return self.width, self.height
 
-    def _box(self, c, y_center, text, bold=False):
+    def _box(self, c, y_center, label, bold=False):
         x = c * (self.box_w + self.h_gap)
         y = y_center - self.row_h / 2
         canv = self.canv
         canv.setLineWidth(1.1 if bold else 0.6)
         canv.rect(x, y, self.box_w, self.row_h, stroke=1, fill=0)
+        text = label.get("text") if isinstance(label, dict) else str(label or "")
         if text:
+            seed = label.get("seed", "") if isinstance(label, dict) else ""
+            name = label.get("name", text) if isinstance(label, dict) else text
+            seed_w = min(self.SEED_W, self.box_w * 0.22)
+            name_x = x + seed_w + 0.08 * cm
+            name_w = self.box_w - seed_w - 0.16 * cm
+            canv.line(x + seed_w, y, x + seed_w, y + self.row_h)
             canv.setFont(f"{self.font_name}-Bold" if bold else self.font_name, self.font_size)
-            canv.drawCentredString(x + self.box_w / 2, y_center - self.font_size / 3, text)
+            if seed:
+                canv.drawCentredString(x + seed_w / 2, y_center - self.font_size / 3, seed)
+            canv.drawString(name_x, y_center - self.font_size / 3, _clip_text(canv, name, name_w))
         return x, x + self.box_w
 
     def draw(self):
@@ -685,7 +734,7 @@ class _BracketDiagram(Flowable):
                 slot = match["a"] if i % 2 == 0 else match["b"]
                 present0.append(slot is not None)
                 if slot is not None:
-                    self._box(0, ys0[-1], _short_name(slot))
+                    self._box(0, ys0[-1], _participant_label(slot, self.competition_level, short=True))
             if gi < len(self.rounds_per_group) - 1:
                 y_cursor -= self.GROUP_GAP
 
@@ -716,14 +765,14 @@ class _BracketDiagram(Flowable):
                         canv = self.canv
                         canv.setLineWidth(0.6)
                         canv.line(x_from, py, x_to, py)
-                    label = _short_name(match["winner"]) if match["winner"] else ""
+                    label = _participant_label(match["winner"], self.competition_level, short=True) if match["winner"] else ""
                     self._box(c, py, label)
                 col_ys, col_present = next_ys, [True] * len(next_ys)
 
             # carry the group champion forward (straight passthrough) if the
             # other group's tree is taller, so the two line up for the final.
             champ_y = col_ys[0] if col_ys else ys0[0]
-            champ_label = _short_name(rounds[-1][0]["winner"]) if rounds and rounds[-1][0]["winner"] else ""
+            champ_label = _participant_label(rounds[-1][0]["winner"], self.competition_level, short=True) if rounds and rounds[-1][0]["winner"] else ""
             for c in range(len(rounds) + 1, self.max_rounds + 1):
                 x_from = c * (self.box_w + self.h_gap) - self.h_gap
                 x_to = c * (self.box_w + self.h_gap)
@@ -745,7 +794,7 @@ class _BracketDiagram(Flowable):
             canv.line(x_from, y1, mid_x, y1)
             canv.line(mid_x, y0, mid_x, y1)
             canv.line(mid_x, py, x_to, py)
-            label = _short_name(self.final_match["winner"]) if self.final_match["winner"] else ""
+            label = _participant_label(self.final_match["winner"], self.competition_level, short=True) if self.final_match["winner"] else ""
             self._box(c, py, label, bold=True)
 
         if self.bronze_match:
@@ -756,8 +805,8 @@ class _BracketDiagram(Flowable):
             ya = label_y - 0.25 * cm - row_h / 2
             yb = ya - row_h - 0.1 * cm
             a, b, winner = self.bronze_match["a"], self.bronze_match["b"], self.bronze_match["winner"]
-            self._box(0, ya, _short_name(a) if a else "")
-            self._box(0, yb, _short_name(b) if b else "")
+            self._box(0, ya, _participant_label(a, self.competition_level, short=True) if a else "")
+            self._box(0, yb, _participant_label(b, self.competition_level, short=True) if b else "")
             py = (ya + yb) / 2
             x_from = 1 * (self.box_w + self.h_gap) - self.h_gap
             x_to = 1 * (self.box_w + self.h_gap)
@@ -767,7 +816,7 @@ class _BracketDiagram(Flowable):
             canv.line(x_from, yb, mid_x, yb)
             canv.line(mid_x, ya, mid_x, yb)
             canv.line(mid_x, py, x_to, py)
-            self._box(1, py, _short_name(winner) if winner else "")
+            self._box(1, py, _participant_label(winner, self.competition_level, short=True) if winner else "")
 
 
 def _build_bracket_diagram(cat, avail_width, avail_height):
@@ -788,8 +837,8 @@ def _build_bracket_diagram(cat, avail_width, avail_height):
     final_match = None
     if len(rounds_per_group) > 1:
         champs = [r[-1][0]["winner"] for r in rounds_per_group]
+        final_match = {"a": champs[0], "b": champs[-1], "winner": None}
         if all(champs):
-            final_match = {"a": champs[0], "b": champs[-1]}
             final_match["winner"], _ = _resolve_match(champs[0], champs[-1], bouts_by_pair)
 
     by_reg_id = {p["registration_id"]: p for p in participants}
@@ -804,14 +853,18 @@ def _build_bracket_diagram(cat, avail_width, avail_height):
             winner = a if a and a["registration_id"] == winner_id else b
         bronze_match = {"a": a, "b": b, "winner": winner}
 
-    return _BracketDiagram(rounds_per_group, final_match, bronze_match, avail_width, avail_height)
+    return _BracketDiagram(
+        rounds_per_group, final_match, bronze_match, avail_width, avail_height,
+        competition_level=cat.get("competition_level") or "club"
+    )
 
 
 def _results_table(cat, styles):
     if not cat["placements"]:
         return [Paragraph("Результаты пока не определены.", styles["Normal"])]
-    rows = [["Место", "Фамилия Имя Отчество", "Регион"]] + [
-        [str(p["place"]), p["full_name"], p["club_name"] or ""] for p in cat["placements"]
+    org_header = "Регион" if cat.get("competition_level") == "region" else "Клуб"
+    rows = [[ "Место", "Фамилия Имя Отчество", org_header ]] + [
+        [str(p["place"]), p["full_name"], _participant_org(p, cat.get("competition_level") or "club")] for p in cat["placements"]
     ]
     table = Table(rows, colWidths=[2 * cm, 8 * cm, 6 * cm])
     table.setStyle(TableStyle([
@@ -863,7 +916,7 @@ def build_pdf(tournament, summary, categories, team_ranking):
         story.append(PageBreak())
         story += _official_header(styles, tournament, program_label, "ИТОГОВЫЙ ПРОТОКОЛ")
         if cat["participants"]:
-            story.append(_full_protocol_table(cat))
+            story.append(_full_protocol_table(cat, tournament))
         else:
             story.append(Paragraph("Участники не заявлены.", styles["Normal"]))
         story.append(Spacer(1, 1 * cm))

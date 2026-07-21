@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from datetime import date, datetime
 from typing import Optional, List
 from io import BytesIO
@@ -17,7 +18,7 @@ from app.models.bout import Bout
 from app.models.kata_score import KataScore, KataSession
 from app.models.secretary_access import SecretaryAccess
 from app.auth import hash_password, verify_password, create_token, get_current_user, require_roles
-from app.draw import build_category_draw
+from app.draw import build_category_draw, subgroup_for_draw_number
 from app.kumite_protocol import determine_winner
 from app.kata_protocol import ROUND_SCALES, validate_scores, compute_total, determine_round_result
 from app.documents import build_workbook, build_pdf, team_standings
@@ -65,6 +66,7 @@ class TournamentCreate(BaseModel):
     event_date: date
     registration_closes_at: Optional[date] = None
     admin_user_id: str
+    competition_level: Optional[str] = "club"
 
 class AthleteCreate(BaseModel):
     last_name: str
@@ -142,7 +144,17 @@ class SeedSwapRequest(BaseModel):
     registration_id_a: str
     registration_id_b: str
 
+class DrawRequest(BaseModel):
+    force: bool = False
+
 # ─── STARTUP ──────────────────────────────────────────────────────────────────
+
+@app.on_event("startup")
+def apply_schema_patches():
+    with engine.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS competition_level VARCHAR DEFAULT 'club' NOT NULL"
+        ))
 
 @app.on_event("startup")
 def create_admin():
@@ -387,6 +399,7 @@ def create_tournament(data: TournamentCreate, current_user=Depends(get_current_u
         event_date=data.event_date,
         registration_closes_at=data.registration_closes_at,
         admin_user_id=data.admin_user_id,
+        competition_level=data.competition_level or "club",
         status="draft"
     )
     db.add(tournament)
@@ -398,7 +411,8 @@ def create_tournament(data: TournamentCreate, current_user=Depends(get_current_u
         "name": tournament.name,
         "location": tournament.location,
         "event_date": str(tournament.event_date),
-        "status": tournament.status
+        "status": tournament.status,
+        "competition_level": tournament.competition_level or "club"
     }
 
 @app.get("/api/v1/tournaments/")
@@ -410,7 +424,8 @@ def list_tournaments(db: Session = Depends(get_db)):
             "name": t.name,
             "location": t.location,
             "event_date": str(t.event_date),
-            "status": t.status
+            "status": t.status,
+            "competition_level": t.competition_level or "club"
         }
         for t in tournaments
     ]
@@ -448,21 +463,95 @@ def category_sort_key(cat):
     return (1, 0, "")
 
 
-@app.post("/api/v1/tournaments/{tournament_id}/draw")
-def draw_tournament(tournament_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
-    require_roles(current_user, {"admin", "owner"})
-    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
-    if not tournament:
-        return {"success": False, "message": "Турнир не найден"}
+def _draw_needs_repair(participants, discipline):
+    """Old draw assigned seeds 1..k per subgroup (duplicate № жребья in category)."""
+    if discipline == "kata":
+        return False
+    n = len(participants)
+    if n == 0:
+        return False
+    regs = [p["_reg"] for p in participants]
+    seeds = [r.seed for r in regs if r.seed is not None]
+    if len(seeds) != n:
+        return False
+    if len(set(seeds)) != n:
+        return True
+    if n >= 5:
+        if set(seeds) != set(range(1, n + 1)):
+            return True
+        for reg in regs:
+            expected = subgroup_for_draw_number(reg.seed, n)
+            if reg.subgroup != expected:
+                return True
+    return False
 
+
+def _renumber_category_seeds(participants):
+    """Fix duplicate № жребья (1,2,3 per half) → global 1..N without touching bouts."""
+    n = len(participants)
+    if n < 5:
+        return False
+    by_sg = {1: [], 2: []}
+    for p in participants:
+        reg = p["_reg"]
+        sg = reg.subgroup if reg.subgroup in (1, 2) else (1 if (reg.seed or 0) % 2 == 1 else 2)
+        by_sg[sg].append(p)
+    changed = False
+    for sg, group in by_sg.items():
+        group.sort(key=lambda p: (p["_reg"].seed or 999, str(p["_reg"].id)))
+        for i, p in enumerate(group):
+            new_seed = 2 * i + sg
+            if p["_reg"].seed != new_seed or p["_reg"].subgroup != sg:
+                p["_reg"].seed = new_seed
+                p["_reg"].subgroup = sg
+                changed = True
+    return changed
+
+
+def _category_has_completed_bouts(db, tournament_id, discipline, gender, category_name):
+    return db.query(Bout).filter(
+        Bout.tournament_id == tournament_id,
+        Bout.discipline == discipline,
+        Bout.gender == gender,
+        Bout.category_name == category_name,
+        Bout.status == "completed",
+    ).first() is not None
+
+
+def _clear_category_draw(db, tournament_id, discipline, gender, category_name, participants):
+    db.query(Bout).filter(
+        Bout.tournament_id == tournament_id,
+        Bout.discipline == discipline,
+        Bout.gender == gender,
+        Bout.category_name == category_name,
+        Bout.status != "completed",
+    ).delete(synchronize_session=False)
+    for p in participants:
+        p["_reg"].seed = None
+        p["_reg"].subgroup = None
+
+
+def _apply_category_draw(db, tournament_id, discipline, gender, category_name, participants):
+    result = build_category_draw(discipline, participants)
+    flat = result.get("participants") or [p for sub in result["subgroups"] for p in sub["participants"]]
+    for p in flat:
+        p["_reg"].seed = p["seed"]
+        p["_reg"].subgroup = p.get("subgroup")
+        del p["_reg"]
+    return {
+        "discipline": discipline,
+        "gender": gender,
+        "category_name": category_name,
+        "participant_count": len(participants),
+        **result,
+    }
+
+
+def _build_tournament_groups(db, tournament_id):
     rank_order = {r.name: r.sort_order for r in db.query(Rank).all()}
-    # Deterministic order matters here: re-running the draw after a late
-    # entrant joins a different category must not reshuffle a category
-    # that's already been drawn (or worse, already has results) - an
-    # unordered query lets Postgres return rows in a different order
-    # across calls, which silently corrupts an already-decided bracket.
-    regs = db.query(Registration).filter(Registration.tournament_id == tournament_id).order_by(Registration.created_at, Registration.id).all()
-
+    regs = db.query(Registration).filter(
+        Registration.tournament_id == tournament_id
+    ).order_by(Registration.created_at, Registration.id).all()
     groups = {}
     for reg in regs:
         athlete = db.query(Athlete).filter(Athlete.id == reg.athlete_id).first()
@@ -476,20 +565,87 @@ def draw_tournament(tournament_id: str, current_user=Depends(get_current_user), 
             "rank_sort_order": rank_order.get(athlete.rank),
             "_reg": reg
         })
+    return groups
+
+
+def _repair_stale_draws(db, tournament_id):
+    """Fix categories that still have duplicate № жребья (old per-subgroup draw). Returns count repaired."""
+    groups = _build_tournament_groups(db, tournament_id)
+    repaired = 0
+    for (discipline, gender, category_name), participants in groups.items():
+        if not _draw_needs_repair(participants, discipline):
+            for p in participants:
+                del p["_reg"]
+            continue
+        if _category_has_completed_bouts(db, tournament_id, discipline, gender, category_name):
+            if _renumber_category_seeds(participants):
+                repaired += 1
+            for p in participants:
+                del p["_reg"]
+            continue
+        _clear_category_draw(db, tournament_id, discipline, gender, category_name, participants)
+        _apply_category_draw(db, tournament_id, discipline, gender, category_name, participants)
+        repaired += 1
+    if repaired:
+        db.commit()
+    return repaired
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/draw/repair")
+def repair_draw(tournament_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Re-draw categories that still use the old per-subgroup numbering (1,2,3 in each half)."""
+    require_roles(current_user, {"admin", "owner"})
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        return {"success": False, "message": "Турнир не найден"}
+
+    groups = _build_tournament_groups(db, tournament_id)
+    repaired, skipped = [], []
+    for (discipline, gender, category_name), participants in groups.items():
+        if not _draw_needs_repair(participants, discipline):
+            for p in participants:
+                del p["_reg"]
+            continue
+        if _category_has_completed_bouts(db, tournament_id, discipline, gender, category_name):
+            if _renumber_category_seeds(participants):
+                repaired.append({
+                    "discipline": discipline, "gender": gender, "category_name": category_name,
+                    "renumbered": True,
+                    "message": "Номера жребья исправлены (1…N), бои не тронуты",
+                })
+            else:
+                skipped.append({
+                    "discipline": discipline, "gender": gender, "category_name": category_name,
+                    "message": "Есть завершённые бои — пережеребить нельзя",
+                })
+            for p in participants:
+                del p["_reg"]
+            continue
+        _clear_category_draw(db, tournament_id, discipline, gender, category_name, participants)
+        repaired.append(_apply_category_draw(db, tournament_id, discipline, gender, category_name, participants))
+
+    if repaired or skipped:
+        db.commit()
+    return {"success": True, "repaired": repaired, "skipped": skipped}
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/draw")
+def draw_tournament(tournament_id: str, body: DrawRequest = DrawRequest(), current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        return {"success": False, "message": "Турнир не найден"}
+
+    groups = _build_tournament_groups(db, tournament_id)
 
     if not groups:
         return {"success": False, "message": "В турнире нет заявленных участников"}
 
     categories = []
     for (discipline, gender, category_name), participants in groups.items():
-        # A category that's already fully seeded is left untouched - drawing
-        # is meant to be safe to re-run after a late entrant joins a
-        # *different* category. Redrawing an already-decided bracket doesn't
-        # just reshuffle cosmetically: any bouts already recorded reference
-        # specific registrations, and changing who's paired with whom orphans
-        # them (a completed round-1 match no longer matches any seed pairing,
-        # so the bracket view shows it as undecided even though it happened).
-        if all(p["_reg"].seed is not None for p in participants):
+        already_seeded = all(p["_reg"].seed is not None for p in participants)
+
+        if already_seeded and not body.force and not _draw_needs_repair(participants, discipline):
             for p in participants:
                 del p["_reg"]
             categories.append({
@@ -501,19 +657,34 @@ def draw_tournament(tournament_id: str, current_user=Depends(get_current_user), 
             })
             continue
 
-        result = build_category_draw(discipline, participants)
-        flat = result["participants"] if "participants" in result else [p for sub in result["subgroups"] for p in sub["participants"]]
-        for p in flat:
-            p["_reg"].seed = p["seed"]
-            p["_reg"].subgroup = p.get("subgroup")
-            del p["_reg"]
-        categories.append({
-            "discipline": discipline,
-            "gender": gender,
-            "category_name": category_name,
-            "participant_count": len(participants),
-            **result
-        })
+        if already_seeded and (body.force or _draw_needs_repair(participants, discipline)):
+            if _category_has_completed_bouts(db, tournament_id, discipline, gender, category_name):
+                if not body.force and _draw_needs_repair(participants, discipline) and _renumber_category_seeds(participants):
+                    categories.append({
+                        "discipline": discipline,
+                        "gender": gender,
+                        "category_name": category_name,
+                        "participant_count": len(participants),
+                        "renumbered": True,
+                        "message": "Номера жребья исправлены (1…N), бои не тронуты",
+                    })
+                    for p in participants:
+                        del p["_reg"]
+                    continue
+                for p in participants:
+                    del p["_reg"]
+                categories.append({
+                    "discipline": discipline,
+                    "gender": gender,
+                    "category_name": category_name,
+                    "participant_count": len(participants),
+                    "skipped": True,
+                    "message": "Есть завершённые бои — пережеребить нельзя",
+                })
+                continue
+            _clear_category_draw(db, tournament_id, discipline, gender, category_name, participants)
+
+        categories.append(_apply_category_draw(db, tournament_id, discipline, gender, category_name, participants))
 
     categories.sort(key=category_sort_key)
     db.commit()
@@ -544,10 +715,18 @@ def swap_draw_seed(tournament_id: str, data: SeedSwapRequest, current_user=Depen
     )
     if not same_category:
         return {"success": False, "message": "Участники из разных категорий"}
-    if reg_a.subgroup != reg_b.subgroup:
-        return {"success": False, "message": "Участники из разных подгрупп сетки"}
-
     reg_a.seed, reg_b.seed = reg_b.seed, reg_a.seed
+
+    category_regs = db.query(Registration).join(Athlete, Registration.athlete_id == Athlete.id).filter(
+        Registration.tournament_id == tournament_id,
+        Registration.discipline == reg_a.discipline,
+        Registration.category_name == reg_a.category_name,
+        Athlete.gender == (athlete_a.gender if athlete_a else None),
+    ).all()
+    n_in_category = len(category_regs)
+    for reg in category_regs:
+        reg.subgroup = subgroup_for_draw_number(reg.seed, n_in_category)
+
     db.commit()
     return {
         "success": True,
@@ -646,9 +825,21 @@ def create_athlete(data: AthleteCreate, current_user=Depends(get_current_user), 
 
     return {"success": True, "athlete_id": str(athlete.id)}
 
+def _region_by_club_name(db):
+    region_by_club_name = {}
+    for club in db.query(Club).all():
+        if club.short_name:
+            region_by_club_name[club.short_name] = club.region
+        if club.full_name:
+            region_by_club_name.setdefault(club.full_name, club.region)
+    return region_by_club_name
+
+
 @app.get("/api/v1/tournaments/{tournament_id}/athletes")
 def list_athletes(tournament_id: str, db: Session = Depends(get_db)):
+    _repair_stale_draws(db, tournament_id)
     tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    region_lookup = _region_by_club_name(db)
     regs = db.query(Registration).filter(
         Registration.tournament_id == tournament_id
     ).all()
@@ -665,6 +856,7 @@ def list_athletes(tournament_id: str, db: Session = Depends(get_db)):
                 "weight": float(athlete.weight) if athlete.weight else None,
                 "rank": athlete.rank,
                 "club_name": athlete.club_name,
+                "region": region_lookup.get(athlete.club_name),
                 "discipline": reg.discipline,
                 "category_name": reg.category_name,
                 "kata_name": reg.kata_name,
@@ -695,6 +887,16 @@ def reject_admission(registration_id: str, current_user=Depends(get_current_user
     reg.admission_status = "rejected"
     db.commit()
     return {"success": True, "admission_status": reg.admission_status}
+
+@app.post("/api/v1/registrations/{registration_id}/reset-admission")
+def reset_admission(registration_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
+    reg = db.query(Registration).filter(Registration.id == registration_id).first()
+    if not reg:
+        return {"success": False, "message": "Заявка не найдена"}
+    reg.admission_status = None
+    db.commit()
+    return {"success": True, "admission_status": None}
 
 @app.get("/api/v1/athletes/{athlete_id}")
 def get_athlete(athlete_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
@@ -1147,16 +1349,7 @@ def _assemble_tournament_documents(tournament_id, db):
     if not tournament:
         return None
 
-    # "Регион" не хранится на Athlete/Registration (клуб указывает его один
-    # раз при регистрации клуба, не на каждую заявку участника) - для
-    # официального протокола регистрации сопоставляем club_name участника
-    # с зарегистрированным клубом по имени, чтобы подтянуть регион оттуда.
-    region_by_club_name = {}
-    for club in db.query(Club).all():
-        if club.short_name:
-            region_by_club_name[club.short_name] = club.region
-        if club.full_name:
-            region_by_club_name.setdefault(club.full_name, club.region)
+    region_by_club_name = _region_by_club_name(db)
 
     regs = db.query(Registration).filter(Registration.tournament_id == tournament_id).all()
     groups = {}
@@ -1169,6 +1362,14 @@ def _assemble_tournament_documents(tournament_id, db):
 
     def full_name(athlete):
         return f"{athlete.last_name} {athlete.first_name} {athlete.middle_name or ''}".strip()
+
+    def doc_label(reg, athlete):
+        org = region_by_club_name.get(athlete.club_name) if (tournament.competition_level or "club") == "region" else athlete.club_name
+        if not org:
+            org = athlete.club_name or region_by_club_name.get(athlete.club_name)
+        suffix = f" ({org})" if org else ""
+        prefix = f"{reg.seed} " if reg.seed is not None else ""
+        return f"{prefix}{full_name(athlete)}{suffix}"
 
     all_placements = []
     categories_payload = []
@@ -1224,7 +1425,7 @@ def _assemble_tournament_documents(tournament_id, db):
             ]
             for s in scores:
                 pair = reg_by_id.get(str(s.registration_id))
-                name = full_name(pair[1]) if pair else "?"
+                name = doc_label(pair[0], pair[1]) if pair else "?"
                 progress.append(f"{s.round_label}: {name} — {float(s.total_score)} (мин. зачётная {float(s.lowest_counted_score)}, макс. зачётная {float(s.highest_counted_score)})")
 
             final_scores = [s for s in scores if s.round_label == "final"]
@@ -1240,7 +1441,13 @@ def _assemble_tournament_documents(tournament_id, db):
                 for r in result["ranked"][:4]:
                     pair = reg_by_id.get(r["registration_id"])
                     if pair:
-                        placements.append({"place": r["place"], "full_name": full_name(pair[1]), "club_name": pair[1].club_name, "registration_id": r["registration_id"]})
+                        placements.append({
+                            "place": r["place"],
+                            "full_name": full_name(pair[1]),
+                            "club_name": pair[1].club_name,
+                            "region": region_by_club_name.get(pair[1].club_name),
+                            "registration_id": r["registration_id"]
+                        })
         else:
             bouts = db.query(Bout).filter(
                 Bout.tournament_id == tournament_id,
@@ -1261,8 +1468,8 @@ def _assemble_tournament_documents(tournament_id, db):
             for b in bouts:
                 pair_a = reg_by_id.get(str(b.registration_id_a))
                 pair_b = reg_by_id.get(str(b.registration_id_b))
-                name_a = full_name(pair_a[1]) if pair_a else "?"
-                name_b = full_name(pair_b[1]) if pair_b else "?"
+                name_a = doc_label(pair_a[0], pair_a[1]) if pair_a else "?"
+                name_b = doc_label(pair_b[0], pair_b[1]) if pair_b else "?"
                 if b.status == "completed":
                     winner_name = name_a if str(b.winner_registration_id) == str(b.registration_id_a) else name_b
                     progress.append(f"{b.round_label}: {name_a} vs {name_b} — победитель {winner_name} ({b.win_method})")
@@ -1278,14 +1485,26 @@ def _assemble_tournament_documents(tournament_id, db):
                 for place, reg_id in ((1, winner_id), (2, loser_id)):
                     pair = reg_by_id.get(reg_id)
                     if pair:
-                        placements.append({"place": place, "full_name": full_name(pair[1]), "club_name": pair[1].club_name, "registration_id": reg_id})
+                        placements.append({
+                            "place": place,
+                            "full_name": full_name(pair[1]),
+                            "club_name": pair[1].club_name,
+                            "region": region_by_club_name.get(pair[1].club_name),
+                            "registration_id": reg_id
+                        })
             if bronze_bout:
                 winner_id = str(bronze_bout.winner_registration_id)
                 loser_id = str(bronze_bout.registration_id_b) if winner_id == str(bronze_bout.registration_id_a) else str(bronze_bout.registration_id_a)
                 for place, reg_id in ((3, winner_id), (4, loser_id)):
                     pair = reg_by_id.get(reg_id)
                     if pair:
-                        placements.append({"place": place, "full_name": full_name(pair[1]), "club_name": pair[1].club_name, "registration_id": reg_id})
+                        placements.append({
+                            "place": place,
+                            "full_name": full_name(pair[1]),
+                            "club_name": pair[1].club_name,
+                            "region": region_by_club_name.get(pair[1].club_name),
+                            "registration_id": reg_id
+                        })
 
             # Round-robin (exactly 3 participants, no final/bronze bouts): rank by win count.
             if not final_bout and len(members) == 3 and bouts:
@@ -1302,7 +1521,13 @@ def _assemble_tournament_documents(tournament_id, db):
                         prev_count = count
                     pair = reg_by_id.get(reg_id)
                     if pair:
-                        placements.append({"place": place, "full_name": full_name(pair[1]), "club_name": pair[1].club_name, "registration_id": reg_id})
+                        placements.append({
+                            "place": place,
+                            "full_name": full_name(pair[1]),
+                            "club_name": pair[1].club_name,
+                            "region": region_by_club_name.get(pair[1].club_name),
+                            "registration_id": reg_id
+                        })
 
         placements.sort(key=lambda p: p["place"])
         all_placements.extend(placements)
@@ -1310,6 +1535,7 @@ def _assemble_tournament_documents(tournament_id, db):
             "discipline": discipline,
             "gender": gender,
             "category_name": category_name,
+            "competition_level": tournament.competition_level or "club",
             "placements": placements,
             "progress": progress,
             "participants": participants_payload,
@@ -1333,7 +1559,8 @@ def _assemble_tournament_documents(tournament_id, db):
         "location": tournament.location,
         "event_date": str(tournament.event_date),
         "registration_closes_at": str(tournament.registration_closes_at) if tournament.registration_closes_at else None,
-        "status": tournament.status
+        "status": tournament.status,
+        "competition_level": tournament.competition_level or "club"
     }
 
     return tournament_info, summary, categories_payload, all_placements

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, Fragment } from "react"
+import { useState, useEffect, useRef, useCallback, Fragment } from "react"
 import axios from "axios"
 
 const API = "http://127.0.0.1:8000"
@@ -188,6 +188,7 @@ function AdminPanel({ user, onLogout }) {
   const [location, setLocation] = useState("")
   const [eventDate, setEventDate] = useState("")
   const [closesDate, setClosesDate] = useState("")
+  const [competitionLevel, setCompetitionLevel] = useState("club")
   const [error, setError] = useState("")
   const [secretaries, setSecretaries] = useState([])
   const [showSecretaryForm, setShowSecretaryForm] = useState(false)
@@ -195,19 +196,39 @@ function AdminPanel({ user, onLogout }) {
   const [secretaryError, setSecretaryError] = useState("")
 
   const loadTournaments = async () => {
-    try { const r = await axios.get(`${API}/api/v1/tournaments/`); setTournaments(r.data) } catch {}
+    try { const r = await axios.get(`${API}/api/v1/tournaments/`); setTournaments(r.data) } catch { setTournaments([]) }
   }
   const loadClubs = async () => {
-    try { const r = await axios.get(`${API}/api/v1/clubs/`); setClubs(r.data) } catch {}
+    try { const r = await axios.get(`${API}/api/v1/clubs/`); setClubs(r.data) } catch { setClubs([]) }
   }
   const loadSecretaries = async () => {
     try {
       const r = await axios.get(`${API}/api/v1/secretaries/`, { headers: { Authorization: `Bearer ${user.token}` } })
       setSecretaries(r.data)
-    } catch {}
+    } catch {
+      setSecretaries([])
+    }
   }
 
-  useEffect(() => { loadTournaments(); loadClubs(); loadSecretaries() }, [])
+  useEffect(() => {
+    const timeoutId = setTimeout(async () => {
+      try {
+        const [tournamentsResponse, clubsResponse, secretariesResponse] = await Promise.all([
+          axios.get(`${API}/api/v1/tournaments/`),
+          axios.get(`${API}/api/v1/clubs/`),
+          axios.get(`${API}/api/v1/secretaries/`, { headers: { Authorization: `Bearer ${user.token}` } })
+        ])
+        setTournaments(tournamentsResponse.data)
+        setClubs(clubsResponse.data)
+        setSecretaries(secretariesResponse.data)
+      } catch {
+        setTournaments([])
+        setClubs([])
+        setSecretaries([])
+      }
+    }, 0)
+    return () => clearTimeout(timeoutId)
+  }, [user.token])
 
   const handleCreateSecretary = async () => {
     if (!secretaryForm.name || !secretaryForm.email || !secretaryForm.password) {
@@ -229,9 +250,10 @@ function AdminPanel({ user, onLogout }) {
       await axios.post(`${API}/api/v1/tournaments/`, {
         name, location, event_date: eventDate,
         registration_closes_at: closesDate || null,
-        admin_user_id: user.user_id
+        admin_user_id: user.user_id,
+        competition_level: competitionLevel
       }, { headers: { Authorization: `Bearer ${user.token}` } })
-      setName(""); setLocation(""); setEventDate(""); setClosesDate("")
+      setName(""); setLocation(""); setEventDate(""); setClosesDate(""); setCompetitionLevel("club")
       setShowForm(false); setError(""); loadTournaments()
     } catch { setError("Ошибка при создании") }
   }
@@ -322,6 +344,14 @@ function AdminPanel({ user, onLogout }) {
                       <label style={labelStyle}>Закрытие заявок</label>
                       <input type="date" value={closesDate} onChange={e => setClosesDate(e.target.value)} style={inputStyle} />
                     </div>
+                  </div>
+                  <div style={{ marginBottom: "16px" }}>
+                    <label style={labelStyle}>Уровень соревнований</label>
+                    <select value={competitionLevel} onChange={e => setCompetitionLevel(e.target.value)} style={inputStyle}>
+                      {COMPETITION_LEVELS.map(level => (
+                        <option key={level.value} value={level.value}>{level.label}</option>
+                      ))}
+                    </select>
                   </div>
                   {error && <div style={errorBox}>{error}</div>}
                   <button onClick={handleCreate} style={btnGreen}>Создать турнир</button>
@@ -432,6 +462,56 @@ const DRAW_SYSTEM_LABELS = {
   single_elimination_repechage: "Олимпийская с утешительной сеткой",
   kata_order: "Порядок выступлений"
 }
+const COMPETITION_LEVELS = [
+  { value: "club", label: "Городской / клубный — в скобках клуб" },
+  { value: "region", label: "Региональный и выше — в скобках регион" },
+]
+function bracketParticipantParts(p, competitionLevel = "club") {
+  if (!p) return { seed: "", name: "", text: "" }
+  const seedPart = p.seed != null && p.seed !== "" ? String(p.seed) : ""
+  const org = competitionLevel === "region"
+    ? (p.region || p.club_name || "")
+    : (p.club_name || p.region || "")
+  const orgPart = org ? ` (${org})` : ""
+  const namePart = `${p.full_name}${orgPart}`
+  return { seed: seedPart, name: namePart, text: `${seedPart ? `${seedPart} ` : ""}${namePart}` }
+}
+
+function bracketParticipantNameOnly(p, competitionLevel = "club") {
+  if (!p) return { seed: "", name: "", text: "" }
+  const org = competitionLevel === "region"
+    ? (p.region || p.club_name || "")
+    : (p.club_name || p.region || "")
+  const orgPart = org ? ` (${org})` : ""
+  const namePart = `${p.full_name}${orgPart}`
+  return { seed: "", name: namePart, text: namePart }
+}
+
+// Старая жеребьёвка давала 1,2,3 в каждой подгруппе — пересчитываем в 1..N (нечёт/чёт), как в Excel.
+function normalizeGlobalDrawNumbers(participants) {
+  const n = participants.length
+  if (n < 5) return participants
+  const seeds = participants.map(p => p.seed).filter(s => s != null)
+  if (seeds.length !== n) return participants
+  if (new Set(seeds).size === n && Math.max(...seeds) === n) return participants
+
+  const bySg = { 1: [], 2: [] }
+  participants.forEach(p => {
+    const sg = p.subgroup ?? (p.seed % 2 === 1 ? 1 : 2)
+    bySg[sg].push(p)
+  })
+  bySg[1].sort((a, b) => (a.seed ?? 0) - (b.seed ?? 0))
+  bySg[2].sort((a, b) => (a.seed ?? 0) - (b.seed ?? 0))
+  const idToSeed = {}
+  bySg[1].forEach((p, i) => { idToSeed[p.registration_id] = 2 * i + 1 })
+  bySg[2].forEach((p, i) => { idToSeed[p.registration_id] = 2 * i + 2 })
+  return participants.map(p => ({
+    ...p,
+    seed: idToSeed[p.registration_id] ?? p.seed,
+    subgroup: idToSeed[p.registration_id] % 2 === 1 ? 1 : 2,
+  }))
+}
+
 const categoryLabel = (discipline, gender, category_name) =>
   [DISCIPLINE_LABELS[discipline] || discipline, GENDER_LABELS[gender] || gender, category_name].filter(Boolean).join(" / ")
 const nameInList = (participants, id) => (participants.find(p => p.registration_id === id) || {}).full_name || "?"
@@ -478,13 +558,14 @@ function resolveMatch(a, b, boutsByPair) {
   return { winner: null, bout }
 }
 function buildBracketRounds(participants, boutsByPair) {
-  const bySeed = {}
-  participants.forEach(p => { if (p.seed) bySeed[p.seed] = p })
-  const n = Object.keys(bySeed).length
+  const sorted = [...participants].filter(p => p.seed).sort((a, b) => a.seed - b.seed)
+  const n = sorted.length
   if (n === 0) return []
+  const byLocal = {}
+  sorted.forEach((p, i) => { byLocal[i + 1] = p })
   const size = nextPowerOfTwo(n)
-  let current = round1PairsBySeed(size).map(([sa, sb]) => {
-    const pa = bySeed[sa] || null, pb = bySeed[sb] || null
+  let current = round1PairsBySeed(size).map(([la, lb]) => {
+    const pa = byLocal[la] || null, pb = byLocal[lb] || null
     const { winner, bout } = resolveMatch(pa, pb, boutsByPair)
     return { a: pa, b: pb, winner, bout }
   })
@@ -555,13 +636,21 @@ function computeKumiteBracketData(participants, bouts) {
   if (!participants.some(p => p.seed)) return { roundRobin: false, drawn: false }
 
   const bySubgroup = {}
-  participants.forEach(p => { const k = p.subgroup || 1; (bySubgroup[k] = bySubgroup[k] || []).push(p) })
+  const useParityGroups = participants.length >= 5
+  participants.forEach(p => {
+    const k = useParityGroups ? (p.seed % 2 === 1 ? 1 : 2) : (p.subgroup || 1)
+    ;(bySubgroup[k] = bySubgroup[k] || []).push(p)
+  })
   const subgroupKeys = Object.keys(bySubgroup).sort()
   const roundsPerGroup = subgroupKeys.map(k => buildBracketRounds(bySubgroup[k], boutsByPair))
   const twoGroups = subgroupKeys.length > 1
 
   const champs = roundsPerGroup.map(r => (r.length ? r[r.length - 1][0].winner : null))
-  const rawFinal = twoGroups && champs[0] && champs[1] ? resolveMatch(champs[0], champs[1], boutsByPair) : null
+  let finalMatch = null
+  if (twoGroups) {
+    const rawFinal = champs[0] && champs[1] ? resolveMatch(champs[0], champs[1], boutsByPair) : { winner: null, bout: null }
+    finalMatch = { a: champs[0], b: champs[1], winner: rawFinal.winner, bout: rawFinal.bout }
+  }
 
   let bronzeCandidates = null
   let repechagePerGroup = []
@@ -583,7 +672,7 @@ function computeKumiteBracketData(participants, bouts) {
 
   return {
     roundRobin: false, drawn: true, subgroupKeys, roundsPerGroup, twoGroups, repechagePerGroup,
-    finalMatch: rawFinal ? { a: champs[0], b: champs[1], winner: rawFinal.winner, bout: rawFinal.bout } : null,
+    finalMatch,
     bronzeMatch: bronzeCandidates ? { a: bronzeCandidates[0], b: bronzeCandidates[1], winner: rawBronze.winner, bout: rawBronze.bout } : null
   }
 }
@@ -592,13 +681,28 @@ function computeKumiteBracketData(participants, bouts) {
 // Тот же макет, что и в app/documents.py::_BracketDiagram для PDF, только в
 // пикселях: колонка листьев, колонки кругов на подгруппу, финал сшивает две
 // подгруппы, матч за 3-е место - отдельный мини-блок снизу.
-const BR_BOX_W = 190
+const BR_BOX_W = 260
 const BR_BOX_H = 40
 const BR_H_GAP = 34
 const BR_ROW_H = 50
 const BR_GROUP_GAP = 30
+const BR_SEED_COL_W = 50
+const seedSelectStyle = {
+  flex: 1,
+  minWidth: 0,
+  border: "none",
+  background: "transparent",
+  textAlign: "center",
+  fontSize: "12px",
+  fontFamily: "Arial",
+  padding: 0,
+  margin: 0,
+  appearance: "none",
+  WebkitAppearance: "none",
+  MozAppearance: "none",
+}
 
-function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGroup = []) {
+function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGroup = [], formatLabel = p => ({ seed: "", name: p?.full_name || "", text: p?.full_name || "" }), formatNameOnly = formatLabel) {
   const boxes = []
   const lines = []
   const labels = []
@@ -611,7 +715,6 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
   const champYs = []
 
   roundsPerGroup.forEach((rounds, gi) => {
-    if (nGroups > 1) labels.push({ x: 0, y: y - 8, text: `Подгруппа ${gi + 1}`, bold: true })
     const leafN = leafCounts[gi]
     const ys0 = [], present0 = []
     for (let i = 0; i < leafN; i++) {
@@ -626,18 +729,16 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
         // must render as a plain box, not a "won" highlight - otherwise a
         // freshly-drawn bracket looks like fights already happened.
         const realWin = !!(match.a && match.b && match.winner && match.winner.registration_id === slot.registration_id)
-        boxes.push({ x: 0, y, text: slot.full_name, win: realWin })
+        boxes.push({ x: 0, y, ...formatLabel(slot), win: realWin, participant: slot, seedEditable: true })
       }
       y += BR_ROW_H
     }
-    if (rounds.length) labels.push({ x: 0, y: ys0[0] - BR_BOX_H / 2 - 18, text: "Круг 1" })
     if (gi < nGroups - 1) y += BR_GROUP_GAP
 
     let colYs = ys0, colPresent = present0
     for (let c = 1; c <= rounds.length; c++) {
       const isLastRound = c === rounds.length
       const roundLabel = isLastRound ? (nGroups > 1 ? "semifinal" : "final") : `round${c}`
-      if (c > 1) labels.push({ x: colX(c), y: colYs[0] - BR_BOX_H / 2 - 18, text: isLastRound ? (nGroups > 1 ? "Финал подгруппы" : "Финал") : `Круг ${c}` })
       const nextYs = []
       for (let j = 0; j < rounds[c - 1].length; j++) {
         const match = rounds[c - 1][j]
@@ -654,7 +755,7 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
           lines.push({ x1: xFrom, y1: py, x2: xTo, y2: py })
         }
         boxes.push({
-          x: xTo, y: py - BR_BOX_H / 2, text: match.winner ? match.winner.full_name : "",
+          x: xTo, y: py - BR_BOX_H / 2, ...(match.winner ? formatNameOnly(match.winner) : { seed: "", name: "", text: "" }),
           // Same bye rule as the leaf boxes above - only highlight a name
           // here as "won" if it came from an actual decided bout, not from
           // a bye chain propagating with nobody on the other side yet.
@@ -673,7 +774,7 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
     for (let c = rounds.length + 1; c <= maxRounds; c++) {
       const xFrom = colX(c) - BR_H_GAP, xTo = colX(c)
       lines.push({ x1: xFrom, y1: champY, x2: xTo, y2: champY })
-      boxes.push({ x: xTo, y: champY - BR_BOX_H / 2, text: champion ? champion.full_name : "" })
+      boxes.push({ x: xTo, y: champY - BR_BOX_H / 2, ...(champion ? formatNameOnly(champion) : { seed: "", name: "", text: "" }) })
     }
     champYs.push(champY)
   })
@@ -691,8 +792,8 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
       { x1: midX, y1: y0, x2: midX, y2: y1 }, { x1: midX, y1: py, x2: xTo, y2: py })
     labels.push({ x: xTo, y: py - BR_BOX_H / 2 - 18, text: "Финал", bold: true })
     boxes.push({
-      x: xTo, y: py - BR_BOX_H / 2, text: finalMatch.winner ? finalMatch.winner.full_name : "",
-      win: true, big: true, pending: !finalMatch.winner && finalMatch.a && finalMatch.b, editable: true,
+      x: xTo, y: py - BR_BOX_H / 2, ...(finalMatch.winner ? formatNameOnly(finalMatch.winner) : { seed: "", name: "", text: "" }),
+      win: !!finalMatch.winner, big: true, pending: !finalMatch.winner && finalMatch.a && finalMatch.b, editable: !!(finalMatch.a && finalMatch.b),
       match: finalMatch, roundLabel: "final"
     })
     width = Math.max(width, (c + 1) * (BR_BOX_W + BR_H_GAP) - BR_H_GAP)
@@ -708,15 +809,15 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
     const ya = labelY + 18 + BR_BOX_H / 2
     const yb = ya + BR_ROW_H
     labels.push({ x: 0, y: labelY, text: "Матч за 3-е место", bold: true })
-    boxes.push({ x: 0, y: ya - BR_BOX_H / 2, text: bronzeMatch.a ? bronzeMatch.a.full_name : "", win: !!(bronzeMatch.winner && bronzeMatch.a && bronzeMatch.winner.registration_id === bronzeMatch.a.registration_id) })
-    boxes.push({ x: 0, y: yb - BR_BOX_H / 2, text: bronzeMatch.b ? bronzeMatch.b.full_name : "", win: !!(bronzeMatch.winner && bronzeMatch.b && bronzeMatch.winner.registration_id === bronzeMatch.b.registration_id) })
+    boxes.push({ x: 0, y: ya - BR_BOX_H / 2, ...(bronzeMatch.a ? formatNameOnly(bronzeMatch.a) : { seed: "", name: "", text: "" }), win: !!(bronzeMatch.winner && bronzeMatch.a && bronzeMatch.winner.registration_id === bronzeMatch.a.registration_id) })
+    boxes.push({ x: 0, y: yb - BR_BOX_H / 2, ...(bronzeMatch.b ? formatNameOnly(bronzeMatch.b) : { seed: "", name: "", text: "" }), win: !!(bronzeMatch.winner && bronzeMatch.b && bronzeMatch.winner.registration_id === bronzeMatch.b.registration_id) })
     const xFrom = colX(1) - BR_H_GAP, xTo = colX(1)
     const midX = xFrom + BR_H_GAP / 2
     const py = (ya + yb) / 2
     lines.push({ x1: xFrom, y1: ya, x2: midX, y2: ya }, { x1: xFrom, y1: yb, x2: midX, y2: yb },
       { x1: midX, y1: ya, x2: midX, y2: yb }, { x1: midX, y1: py, x2: xTo, y2: py })
     boxes.push({
-      x: xTo, y: py - BR_BOX_H / 2, text: bronzeMatch.winner ? bronzeMatch.winner.full_name : "",
+      x: xTo, y: py - BR_BOX_H / 2, ...(bronzeMatch.winner ? formatNameOnly(bronzeMatch.winner) : { seed: "", name: "", text: "" }),
       win: !!bronzeMatch.winner, pending: !bronzeMatch.winner && bronzeMatch.a && bronzeMatch.b, editable: true,
       match: bronzeMatch, roundLabel: "bronze"
     })
@@ -736,10 +837,9 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
 
     repechagePerGroup.forEach((group, gi) => {
       const rounds = group.rounds
-      if (nRepGroups > 1) labels.push({ x: 0, y: y2 - 8, text: `Подгруппа ${gi + 1}` })
       if (rounds.length === 0) {
         const champ = group.champion
-        if (champ) boxes.push({ x: 0, y: y2, text: champ.full_name })
+        if (champ) boxes.push({ x: 0, y: y2, ...formatNameOnly(champ) })
         champYs2.push(y2 + BR_BOX_H / 2)
         y2 += BR_ROW_H
         if (gi < nRepGroups - 1) y2 += BR_GROUP_GAP
@@ -755,7 +855,7 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
         present0.push(!!slot)
         if (slot) {
           const realWin = !!(match.a && match.b && match.winner && match.winner.registration_id === slot.registration_id)
-          boxes.push({ x: 0, y: y2, text: slot.full_name, win: realWin })
+          boxes.push({ x: 0, y: y2, ...formatNameOnly(slot), win: realWin })
         }
         y2 += BR_ROW_H
       }
@@ -779,7 +879,7 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
             lines.push({ x1: xFrom, y1: py, x2: xTo, y2: py })
           }
           boxes.push({
-            x: xTo, y: py - BR_BOX_H / 2, text: match.winner ? match.winner.full_name : "",
+            x: xTo, y: py - BR_BOX_H / 2, ...(match.winner ? formatNameOnly(match.winner) : { seed: "", name: "", text: "" }),
             win: !!(match.a && match.b && match.winner), pending: !match.winner && match.a && match.b,
             editable: !!(match.a && match.b),
             match, roundLabel: `repechage_r${c}`
@@ -803,7 +903,7 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
     }
     labels.push({ x: xTo, y: py - BR_BOX_H / 2 - 18, text: "Матч за 3-е место", bold: true })
     boxes.push({
-      x: xTo, y: py - BR_BOX_H / 2, text: bronzeMatch.winner ? bronzeMatch.winner.full_name : "",
+      x: xTo, y: py - BR_BOX_H / 2, ...(bronzeMatch.winner ? formatNameOnly(bronzeMatch.winner) : { seed: "", name: "", text: "" }),
       win: !!bronzeMatch.winner, pending: !bronzeMatch.winner && bronzeMatch.a && bronzeMatch.b, editable: true,
       match: bronzeMatch, roundLabel: "bronze"
     })
@@ -819,7 +919,7 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
 // олимпийская: та же геометрия "два листа сходятся в один бокс", что и у
 // одного матча в layoutBracket (тот же приём уже используется для матча за
 // 3-е место), просто три таких блока подряд, без общего дерева.
-function layoutRoundRobin(pairs) {
+function layoutRoundRobin(pairs, formatLabel = p => ({ seed: "", name: p?.full_name || "", text: p?.full_name || "" }), formatNameOnly = formatLabel) {
   const boxes = [], lines = [], labels = []
   let y = 0, bottom = 0
   const xFrom = BR_BOX_W, xTo = BR_BOX_W + BR_H_GAP, midX = xFrom + BR_H_GAP / 2
@@ -827,12 +927,12 @@ function layoutRoundRobin(pairs) {
     const ya = y + BR_BOX_H / 2
     const yb = ya + BR_ROW_H
     const py = (ya + yb) / 2
-    boxes.push({ x: 0, y: ya - BR_BOX_H / 2, text: m.a.full_name, win: !!(m.winner && m.winner.registration_id === m.a.registration_id) })
-    boxes.push({ x: 0, y: yb - BR_BOX_H / 2, text: m.b.full_name, win: !!(m.winner && m.winner.registration_id === m.b.registration_id) })
+    boxes.push({ x: 0, y: ya - BR_BOX_H / 2, ...formatLabel(m.a), win: !!(m.winner && m.winner.registration_id === m.a.registration_id), participant: m.a, seedEditable: true })
+    boxes.push({ x: 0, y: yb - BR_BOX_H / 2, ...formatLabel(m.b), win: !!(m.winner && m.winner.registration_id === m.b.registration_id), participant: m.b, seedEditable: true })
     lines.push({ x1: xFrom, y1: ya, x2: midX, y2: ya }, { x1: xFrom, y1: yb, x2: midX, y2: yb },
       { x1: midX, y1: ya, x2: midX, y2: yb }, { x1: midX, y1: py, x2: xTo, y2: py })
     boxes.push({
-      x: xTo, y: py - BR_BOX_H / 2, text: m.winner ? m.winner.full_name : "",
+      x: xTo, y: py - BR_BOX_H / 2, ...(m.winner ? formatNameOnly(m.winner) : { seed: "", name: "", text: "" }),
       win: !!m.winner, pending: !m.winner, editable: true, match: m, roundLabel: "round1"
     })
     bottom = yb + BR_BOX_H / 2
@@ -958,34 +1058,60 @@ function TournamentDetail({ tournament, user, onBack }) {
   const duplicateKeys = new Set((duplicateInfo?.existing_registrations || []).map(r => `${r.discipline}|${r.category_name}`))
 
   const loadAthletes = async () => {
-    try { const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/athletes`); setAthletes(r.data) } catch {}
+    try { const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/athletes`); setAthletes(r.data) } catch { setAthletes([]) }
   }
   const loadBouts = async () => {
-    try { const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/bouts`); setBouts(r.data) } catch {}
-  }
-  const loadRanks = async () => {
-    try { const r = await axios.get(`${API}/api/v1/ranks/`); setRanks(r.data) } catch {}
-  }
-  const loadWeightCategories = async () => {
-    try { const r = await axios.get(`${API}/api/v1/weight-categories/`); setWeightCategories(r.data) } catch {}
-  }
-  const loadKataTypes = async () => {
-    try { const r = await axios.get(`${API}/api/v1/kata-types/`); setKataTypes(r.data) } catch {}
-  }
-  const loadSecretaries = async () => {
-    try {
-      const r = await axios.get(`${API}/api/v1/secretaries/`, { headers: { Authorization: `Bearer ${user.token}` } })
-      setSecretaries(r.data)
-    } catch {}
+    try { const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/bouts`); setBouts(r.data) } catch { setBouts([]) }
   }
   const loadGrants = async () => {
     try {
       const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/secretary-access`, { headers: { Authorization: `Bearer ${user.token}` } })
       setGrants(r.data)
-    } catch {}
+    } catch {
+      setGrants([])
+    }
   }
 
-  useEffect(() => { loadAthletes(); loadBouts(); loadRanks(); loadWeightCategories(); loadKataTypes(); loadSecretaries(); loadGrants() }, [])
+  useEffect(() => {
+    const timeoutId = setTimeout(async () => {
+      try {
+        const headers = { Authorization: `Bearer ${user.token}` }
+        if (user?.role === "admin" || user?.role === "owner") {
+          try {
+            const repair = await axios.post(`${API}/api/v1/tournaments/${tournament.id}/draw/repair`, {}, { headers })
+            if (repair.data.repaired?.length) {
+              setDrawError("Жеребьёвка обновлена: № жребья 1…N на всю категорию (как в Excel).")
+            }
+          } catch { /* repair is best-effort */ }
+        }
+        const [athletesResponse, boutsResponse, ranksResponse, weightCategoriesResponse, kataTypesResponse, secretariesResponse, grantsResponse] = await Promise.all([
+          axios.get(`${API}/api/v1/tournaments/${tournament.id}/athletes`),
+          axios.get(`${API}/api/v1/tournaments/${tournament.id}/bouts`),
+          axios.get(`${API}/api/v1/ranks/`),
+          axios.get(`${API}/api/v1/weight-categories/`),
+          axios.get(`${API}/api/v1/kata-types/`),
+          axios.get(`${API}/api/v1/secretaries/`, { headers }),
+          axios.get(`${API}/api/v1/tournaments/${tournament.id}/secretary-access`, { headers })
+        ])
+        setAthletes(athletesResponse.data)
+        setBouts(boutsResponse.data)
+        setRanks(ranksResponse.data)
+        setWeightCategories(weightCategoriesResponse.data)
+        setKataTypes(kataTypesResponse.data)
+        setSecretaries(secretariesResponse.data)
+        setGrants(grantsResponse.data)
+      } catch {
+        setAthletes([])
+        setBouts([])
+        setRanks([])
+        setWeightCategories([])
+        setKataTypes([])
+        setSecretaries([])
+        setGrants([])
+      }
+    }, 0)
+    return () => clearTimeout(timeoutId)
+  }, [tournament.id, user.token, user?.role])
 
   const setGrantField = (k, v) => setGrantForm(f => ({ ...f, [k]: v }))
 
@@ -1030,13 +1156,25 @@ function TournamentDetail({ tournament, user, onBack }) {
     return groups
   }, {})
 
-  const handleRunDraw = async () => {
+  const handleRunDraw = async (force = false) => {
+    if (force && !window.confirm("Пережеребить все категории заново? Незавершённые бои будут удалены. Категории с уже введёнными результатами не изменятся.")) return
     setDrawLoading(true); setDrawError("")
     try {
-      const r = await axios.post(`${API}/api/v1/tournaments/${tournament.id}/draw`, {}, {
+      const r = await axios.post(`${API}/api/v1/tournaments/${tournament.id}/draw`, { force }, {
         headers: { Authorization: `Bearer ${user.token}` }
       })
-      if (r.data.success) { setDrawResult(r.data); loadAthletes() }
+      if (r.data.success) {
+        setDrawResult(r.data)
+        loadAthletes()
+        loadBouts()
+        const skipped = (r.data.categories || []).filter(c => c.skipped)
+        const untouched = (r.data.categories || []).filter(c => c.already_drawn)
+        if (force && skipped.length) {
+          setDrawError(skipped.map(c => `${c.category_name}: ${c.message}`).join("; "))
+        } else if (!force && untouched.length && !(r.data.categories || []).some(c => !c.already_drawn && !c.skipped)) {
+          setDrawError("Жеребьёвка уже проведена. Нажмите «Пережеребить заново», чтобы применить новую логику.")
+        }
+      }
       else setDrawError(r.data.message || "Ошибка при жеребьёвке")
     } catch (e) {
       setDrawError(e.response?.data?.message || e.response?.data?.detail || "Ошибка при жеребьёвке")
@@ -1056,6 +1194,10 @@ function TournamentDetail({ tournament, user, onBack }) {
   }
   const handleRejectAdmission = async (registrationId) => {
     await axios.post(`${API}/api/v1/registrations/${registrationId}/reject-admission`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
+    loadAthletes()
+  }
+  const handleResetAdmission = async (registrationId) => {
+    await axios.post(`${API}/api/v1/registrations/${registrationId}/reset-admission`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
     loadAthletes()
   }
 
@@ -1183,12 +1325,22 @@ function TournamentDetail({ tournament, user, onBack }) {
                 <div style={{ padding: "10px 4px", background: "#f3f2ee", fontWeight: "bold", color: "#1A56A0", fontSize: "14px" }}>
                   {label} ({group.athletes.length})
                 </div>
-                {group.athletes.map(a => (
+                {[...group.athletes]
+                  .sort((a, b) => (a.seed ?? 999) - (b.seed ?? 999) || (a.full_name || "").localeCompare(b.full_name || "", "ru"))
+                  .map((a, i) => (
                   <div key={a.registration_id} style={{ padding: "16px 4px", borderBottom: "1px solid #f3f2ee", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
-                    <div>
-                      <div style={{ fontWeight: "bold", color: "#1A56A0" }}>{a.full_name}</div>
-                      <div style={{ color: "#4A4A48", fontSize: "14px" }}>
-                        {[a.club_name, a.weight && `${a.weight} кг`, a.rank, a.age_group].filter(Boolean).join(" · ")}
+                    <div style={{ display: "flex", alignItems: "center", gap: "12px", minWidth: 0 }}>
+                      <div style={{
+                        flexShrink: 0, width: "28px", textAlign: "center", fontWeight: "bold",
+                        color: "#1A56A0", fontSize: "15px"
+                      }}>
+                        {i + 1}
+                      </div>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: "bold", color: "#1A56A0" }}>{a.full_name}</div>
+                        <div style={{ color: "#4A4A48", fontSize: "14px" }}>
+                          {[a.club_name, a.weight && `${a.weight} кг`, a.rank, a.age_group].filter(Boolean).join(" · ")}
+                        </div>
                       </div>
                     </div>
                     <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
@@ -1198,8 +1350,18 @@ function TournamentDetail({ tournament, user, onBack }) {
                           <button onClick={() => handleRejectAdmission(a.registration_id)} style={{ ...btnDanger, padding: "6px 10px", fontSize: "12px" }}>✗ Не допустить</button>
                         </>
                       )}
-                      {a.admission_status === "approved" && <span style={{ color: "#0F6E56", fontWeight: "bold", fontSize: "12px" }}>✓ Допущен</span>}
-                      {a.admission_status === "rejected" && <span style={{ color: "#A32D2D", fontSize: "12px" }}>✗ Не допущен</span>}
+                      {a.admission_status === "approved" && (
+                        <button type="button" onClick={() => handleResetAdmission(a.registration_id)} title="Изменить решение о допуске"
+                          style={{ ...btnOutline, padding: "6px 10px", fontSize: "12px", color: "#0F6E56", fontWeight: "bold", borderColor: "#0F6E56" }}>
+                          ✓ Допущен
+                        </button>
+                      )}
+                      {a.admission_status === "rejected" && (
+                        <button type="button" onClick={() => handleResetAdmission(a.registration_id)} title="Изменить решение о допуске"
+                          style={{ ...btnOutline, padding: "6px 10px", fontSize: "12px", color: "#A32D2D", borderColor: "#A32D2D" }}>
+                          ✗ Не допущен
+                        </button>
+                      )}
                       <button onClick={() => setEditingAthleteId(a.id)} style={{ ...btnOutline, padding: "6px 12px", fontSize: "13px" }}>✎ Изменить</button>
                       <button onClick={() => handleDeleteAthlete(a.id)} style={{ ...btnDanger, padding: "6px 12px", fontSize: "13px" }}>✗ Удалить</button>
                     </div>
@@ -1220,11 +1382,16 @@ function TournamentDetail({ tournament, user, onBack }) {
         )}
 
         <div style={card}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
             <h2 style={{ margin: 0, color: "#1A56A0" }}>Жеребьёвка</h2>
-            <button onClick={handleRunDraw} disabled={drawLoading} style={btnPrimary}>
-              {drawLoading ? "Жеребьёвка..." : "Провести жеребьёвку"}
-            </button>
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              <button onClick={() => handleRunDraw(false)} disabled={drawLoading} style={btnPrimary}>
+                {drawLoading ? "Жеребьёвка..." : "Провести жеребьёвку"}
+              </button>
+              <button onClick={() => handleRunDraw(true)} disabled={drawLoading} style={btnOutline}>
+                Пережеребить заново
+              </button>
+            </div>
           </div>
 
           {drawError && <div style={{ ...errorBox, marginTop: "16px" }}>{drawError}</div>}
@@ -1245,7 +1412,7 @@ function TournamentDetail({ tournament, user, onBack }) {
                         <p style={{ color: "#4A4A48", fontSize: "14px" }}>Жеребьёвка не проведена</p>
                       ) : (
                         <>
-                          <SeedSwapControl tournamentId={tournament.id} athletes={group.athletes} user={user} onChanged={loadAthletes} />
+                          <SeedRenumberList tournamentId={tournament.id} athletes={group.athletes} user={user} onChanged={loadAthletes} />
                           <KataTable grant={{ tournament_id: tournament.id, category_name: group.category_name, gender: group.gender }}
                             user={user} participants={group.athletes} kataTypes={kataTypes} />
                         </>
@@ -1261,8 +1428,8 @@ function TournamentDetail({ tournament, user, onBack }) {
                 return (
                   <div key={label} style={{ marginBottom: "24px" }}>
                     <div style={{ fontWeight: "bold", color: "#1A56A0", marginBottom: "8px" }}>{label}</div>
-                    <SeedSwapControl tournamentId={tournament.id} athletes={group.athletes} user={user} onChanged={loadAthletes} />
                     <KumiteBracket grant={{ tournament_id: tournament.id }} user={user} participants={group.athletes} bouts={bouts}
+                      competitionLevel={tournament.competition_level || "club"}
                       onChanged={() => { loadAthletes(); loadBouts() }} />
                   </div>
                 )
@@ -1277,7 +1444,7 @@ function TournamentDetail({ tournament, user, onBack }) {
                 <div key={i} style={{ marginBottom: "16px" }}>
                   <div style={{ fontWeight: "bold" }}>{categoryLabel(cat.discipline, cat.gender, cat.category_name)}</div>
                   <div style={{ fontSize: "13px", color: "#4A4A48", marginBottom: "6px" }}>
-                    {cat.already_drawn ? "Уже проведена ранее — не тронута" : (DRAW_SYSTEM_LABELS[cat.system] || cat.system)}
+                    {cat.already_drawn ? "Уже проведена ранее — не тронута (нажмите «Пережеребить заново»)" : cat.skipped ? cat.message : (DRAW_SYSTEM_LABELS[cat.system] || cat.system)}
                   </div>
 
                   {cat.system === "kata_order" && cat.participants.map(p => (
@@ -1391,23 +1558,36 @@ function ClubPanel({ user, onLogout }) {
   }
   const duplicateKeys = new Set((duplicateInfo?.existing_registrations || []).map(r => `${r.discipline}|${r.category_name}`))
 
-  const loadTournaments = async () => {
-    try { const r = await axios.get(`${API}/api/v1/tournaments/`); setTournaments(r.data) } catch {}
-  }
   const loadClub = async () => {
     try {
       const r = await axios.get(`${API}/api/v1/clubs/`)
       setClub(r.data.find(c => c.id === user.club_id) || null)
-    } catch {}
+    } catch {
+      setClub(null)
+    }
   }
-  const loadRanks = async () => {
-    try { const r = await axios.get(`${API}/api/v1/ranks/`); setRanks(r.data) } catch {}
-  }
-  const loadWeightCategories = async () => {
-    try { const r = await axios.get(`${API}/api/v1/weight-categories/`); setWeightCategories(r.data) } catch {}
-  }
-
-  useEffect(() => { loadTournaments(); loadClub(); loadRanks(); loadWeightCategories() }, [])
+  useEffect(() => {
+    const timeoutId = setTimeout(async () => {
+      try {
+        const [tournamentsResponse, clubsResponse, ranksResponse, weightCategoriesResponse] = await Promise.all([
+          axios.get(`${API}/api/v1/tournaments/`),
+          axios.get(`${API}/api/v1/clubs/`),
+          axios.get(`${API}/api/v1/ranks/`),
+          axios.get(`${API}/api/v1/weight-categories/`)
+        ])
+        setTournaments(tournamentsResponse.data)
+        setClub(clubsResponse.data.find(c => c.id === user.club_id) || null)
+        setRanks(ranksResponse.data)
+        setWeightCategories(weightCategoriesResponse.data)
+      } catch {
+        setTournaments([])
+        setClub(null)
+        setRanks([])
+        setWeightCategories([])
+      }
+    }, 0)
+    return () => clearTimeout(timeoutId)
+  }, [user.club_id])
 
   const trainers = (club?.trainers || "").split(",").map(t => t.trim()).filter(Boolean)
 
@@ -1629,16 +1809,22 @@ function SecretaryPanel({ user, onLogout }) {
   const [selected, setSelected] = useState(null)
   const [error, setError] = useState("")
 
-  const load = async () => {
-    try {
-      const [g, t] = await Promise.all([
-        axios.get(`${API}/api/v1/secretaries/me/access`, { headers: { Authorization: `Bearer ${user.token}` } }),
-        axios.get(`${API}/api/v1/tournaments/`)
-      ])
-      setGrants(g.data); setTournaments(t.data); setError("")
-    } catch { setError("Не удалось загрузить список столов") }
-  }
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    const timeoutId = setTimeout(async () => {
+      try {
+        const [g, t] = await Promise.all([
+          axios.get(`${API}/api/v1/secretaries/me/access`, { headers: { Authorization: `Bearer ${user.token}` } }),
+          axios.get(`${API}/api/v1/tournaments/`)
+        ])
+        setGrants(g.data)
+        setTournaments(t.data)
+        setError("")
+      } catch {
+        setError("Не удалось загрузить список столов")
+      }
+    }, 0)
+    return () => clearTimeout(timeoutId)
+  }, [user.token])
 
   if (selected) {
     const tournament = tournaments.find(t => t.id === selected.tournament_id)
@@ -1688,20 +1874,28 @@ function SecretaryTable({ user, grant, tournament, onBack }) {
   const [kataTypes, setKataTypes] = useState([])
   const isKata = grant.discipline === "kata"
 
-  const load = async () => {
-    try {
-      const a = await axios.get(`${API}/api/v1/tournaments/${grant.tournament_id}/athletes`)
-      setAthletes(a.data)
-      if (!isKata) {
-        const b = await axios.get(`${API}/api/v1/tournaments/${grant.tournament_id}/bouts`)
-        setBouts(b.data)
-      } else {
-        const k = await axios.get(`${API}/api/v1/kata-types/`)
-        setKataTypes(k.data)
+  useEffect(() => {
+    const timeoutId = setTimeout(async () => {
+      try {
+        const athletesResponse = await axios.get(`${API}/api/v1/tournaments/${grant.tournament_id}/athletes`)
+        setAthletes(athletesResponse.data)
+        if (!isKata) {
+          const boutsResponse = await axios.get(`${API}/api/v1/tournaments/${grant.tournament_id}/bouts`)
+          setBouts(boutsResponse.data)
+          setKataTypes([])
+        } else {
+          const kataTypesResponse = await axios.get(`${API}/api/v1/kata-types/`)
+          setKataTypes(kataTypesResponse.data)
+          setBouts([])
+        }
+      } catch {
+        setAthletes([])
+        setBouts([])
+        setKataTypes([])
       }
-    } catch {}
-  }
-  useEffect(() => { load() }, [])
+    }, 0)
+    return () => clearTimeout(timeoutId)
+  }, [grant.tournament_id, isKata])
 
   // grant.category_name — это стиль ката (см. app/main.py::draw_category_key),
   // а a.category_name у спортсмена — конкретная ката, которую он выбрал при
@@ -1737,59 +1931,77 @@ function SecretaryTable({ user, grant, tournament, onBack }) {
         {isKata ? (
           <KataTable grant={grant} user={user} participants={participants} kataTypes={kataTypes} />
         ) : (
-          <KumiteBracket grant={grant} user={user} participants={participants} bouts={bouts} onChanged={load} />
+          <KumiteBracket
+            grant={grant}
+            user={user}
+            participants={participants}
+            bouts={bouts}
+            competitionLevel={tournament?.competition_level || "club"}
+            onChanged={async () => {
+              const [athletesResponse, boutsResponse] = await Promise.all([
+                axios.get(`${API}/api/v1/tournaments/${grant.tournament_id}/athletes`),
+                axios.get(`${API}/api/v1/tournaments/${grant.tournament_id}/bouts`)
+              ])
+              setAthletes(athletesResponse.data)
+              setBouts(boutsResponse.data)
+            }}
+          />
         )}
       </div>
     </div>
   )
 }
 
-// ТЗ 5.3.4: ручная перестановка номеров жеребьёвки - админ/владелец может
-// поменять местами посевные номера двух участников одной категории (и
-// подгруппы, если она есть), не перезапуская жеребьёвку целиком.
-function SeedSwapControl({ tournamentId, athletes, user, onChanged }) {
-  const [a, setA] = useState("")
-  const [b, setB] = useState("")
+// ТЗ 5.3.4: ручная перестановка номеров жеребьёвки - админ/владелец меняет
+// номер в выпадающем списке, участники автоматически меняются местами.
+function SeedRenumberList({ tournamentId, athletes, user, onChanged }) {
+  const [busyId, setBusyId] = useState("")
   const [error, setError] = useState("")
-  const [success, setSuccess] = useState("")
 
   const seeded = [...athletes].filter(x => x.seed != null).sort((x, y) => x.seed - y.seed)
-  if (seeded.length < 2) return null
+  const canEdit = user?.role === "admin" || user?.role === "owner"
+  if (!canEdit || seeded.length < 2) return null
 
-  const handleSwap = async () => {
-    setError(""); setSuccess("")
-    if (!a || !b) { setError("Выберите двух участников"); return }
+  const displayOptions = seeded.map((_, i) => i + 1)
+
+  const handleDisplayChange = async (participant, newDisplay) => {
+    if (busyId || participant.seed === newDisplay) return
+    const other = seeded.find(x => x.seed === newDisplay)
+    if (!other) return
+    setBusyId(participant.registration_id)
+    setError("")
     try {
       const r = await axios.post(`${API}/api/v1/tournaments/${tournamentId}/draw/swap-seed`, {
-        registration_id_a: a, registration_id_b: b
+        registration_id_a: participant.registration_id,
+        registration_id_b: other.registration_id
       }, { headers: { Authorization: `Bearer ${user.token}` } })
-      if (r.data.success) {
-        setSuccess("Номера поменяны местами"); setA(""); setB(""); onChanged()
-      } else setError(r.data.message || "Не удалось поменять номера")
+      if (r.data.success) onChanged()
+      else setError(r.data.message || "Не удалось поменять номера")
     } catch (e) {
       setError(e.response?.data?.message || e.response?.data?.detail || "Не удалось поменять номера")
     }
+    setBusyId("")
   }
 
   return (
-    <div style={{ display: "flex", gap: "8px", alignItems: "flex-end", flexWrap: "wrap", marginTop: "8px", marginBottom: "8px" }}>
-      <div style={{ flex: "1 1 180px" }}>
-        <label style={labelStyle}>Участник А</label>
-        <select value={a} onChange={e => setA(e.target.value)} style={inputStyle}>
-          <option value="">— выберите —</option>
-          {seeded.map(x => <option key={x.registration_id} value={x.registration_id}>№{x.seed} {x.full_name}</option>)}
-        </select>
+    <div style={{ marginTop: "8px", marginBottom: "8px" }}>
+      <div style={{ fontSize: "13px", color: "#4A4A48", marginBottom: "8px" }}>
+        Номера жребья от 1 до {seeded.length} без повторов — измените № жребья, спортсмен поменяется автоматически
       </div>
-      <div style={{ flex: "1 1 180px" }}>
-        <label style={labelStyle}>Участник Б</label>
-        <select value={b} onChange={e => setB(e.target.value)} style={inputStyle}>
-          <option value="">— выберите —</option>
-          {seeded.map(x => <option key={x.registration_id} value={x.registration_id}>№{x.seed} {x.full_name}</option>)}
-        </select>
-      </div>
-      <button onClick={handleSwap} style={{ ...btnOutline, padding: "8px 14px", fontSize: "13px" }}>Поменять номера местами</button>
-      {error && <div style={{ ...errorBox, flexBasis: "100%", margin: 0 }}>{error}</div>}
-      {success && <div style={{ ...successBox, flexBasis: "100%", margin: 0 }}>{success}</div>}
+      {seeded.map(p => (
+        <div key={p.registration_id} style={{ display: "flex", gap: "8px", alignItems: "center", marginBottom: "6px" }}>
+          <select
+            value={p.seed}
+            disabled={!!busyId}
+            onChange={e => handleDisplayChange(p, Number(e.target.value))}
+            style={{ ...inputStyle, width: "72px", padding: "6px 8px" }}
+          >
+            {displayOptions.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <span style={{ fontSize: "13px", color: "#1A1A1A" }}>{p.full_name}</span>
+        </div>
+      ))}
+      {error && <div style={{ ...errorBox, margin: 0 }}>{error}</div>}
     </div>
   )
 }
@@ -1806,7 +2018,7 @@ function KataTable({ grant, user, participants, kataTypes = [] }) {
   const [tiesAtCutoff, setTiesAtCutoff] = useState([])
   const [activeCell, setActiveCell] = useState(null)
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const params = { category_name: grant.category_name }
     if (grant.gender) params.gender = grant.gender
     try {
@@ -1830,8 +2042,13 @@ function KataTable({ grant, user, participants, kataTypes = [] }) {
       ))
       setTiesAtCutoff(results.map((r, i) => r.data.tie_at_cutoff ? ["round1", "round2"][i] : null).filter(Boolean))
     } catch { setTiesAtCutoff([]) }
-  }
-  useEffect(() => { load() }, [grant.tournament_id, grant.category_name, grant.gender])
+  }, [grant.category_name, grant.gender, grant.tournament_id])
+  useEffect(() => {
+    const timeoutId = setTimeout(async () => {
+      await load()
+    }, 0)
+    return () => clearTimeout(timeoutId)
+  }, [load])
 
   if (participants.length === 0) {
     return <div style={card}><p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Участников в этой категории нет.</p></div>
@@ -2009,7 +2226,7 @@ function AthleteEditForm({ athleteId, user, ranks, onDone, onCancel }) {
         } else setError(r.data.message || "Не удалось загрузить участника")
       })
       .catch(() => setError("Не удалось загрузить участника"))
-  }, [athleteId])
+  }, [athleteId, user.token])
 
   if (!form) return <p style={{ color: "#4A4A48" }}>Загрузка...</p>
 
@@ -2095,7 +2312,7 @@ function Modal({ children, onClose }) {
 // Линии - через <svg>, боксы - через позиционированные HTML-блоки поверх
 // (чтобы форма ввода результата оставалась обычной интерактивной вёрсткой,
 // а не жила внутри svg). Геометрия общая с PDF (app/documents.py).
-function BracketSvgView({ layout, interactive, onOpenMatch }) {
+function BracketSvgView({ layout, interactive, onOpenMatch, canEditSeeds, displayOptions, onSeedChange, seedBusy }) {
   return (
     <div style={{ position: "relative", width: layout.width, height: layout.height }}>
       <svg width={layout.width} height={layout.height} style={{ position: "absolute", top: 0, left: 0 }}>
@@ -2118,16 +2335,55 @@ function BracketSvgView({ layout, interactive, onOpenMatch }) {
             style={{
               position: "absolute", left: b.x, top: b.y, width: BR_BOX_W, height: BR_BOX_H,
               boxSizing: "border-box", border: `${b.big ? 2 : 1}px ${b.pending ? "dashed" : "solid"} ${b.big ? "#1A56A0" : "#D3D1C7"}`,
-              borderRadius: "6px", background: "white",
-              display: "flex", alignItems: "center", justifyContent: b.text ? "flex-start" : "center",
-              padding: "0 10px", fontSize: "13px", fontFamily: "Arial",
+              borderRadius: "2px", background: "white",
+              display: "flex", alignItems: "stretch", justifyContent: b.text ? "flex-start" : "center",
+              fontSize: "12px", fontFamily: "Arial",
               fontWeight: b.text && b.win ? "bold" : "normal",
               color: b.text && b.win ? "#0F6E56" : (b.pending ? "#4A4A48" : "#1A1A1A"),
               overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
               cursor: clickable ? "pointer" : "default"
             }}
           >
-            {b.text || (b.pending ? (interactive ? "Ввести результат" : "—") : "")}
+            {b.text ? (
+              b.seed || (canEditSeeds && b.seedEditable && b.participant && displayOptions?.length) ? (
+                <>
+                  <div style={{
+                    width: BR_SEED_COL_W, minWidth: BR_SEED_COL_W, borderRight: "1px solid #E5E2D8",
+                    display: "flex", alignItems: "center", justifyContent: "space-between", gap: "2px",
+                    padding: "0 3px", boxSizing: "border-box"
+                  }}
+                    onClick={e => e.stopPropagation()}
+                  >
+                  {canEditSeeds && b.seedEditable && b.participant && displayOptions?.length ? (
+                    <>
+                      <select
+                        value={b.participant.seed ?? ""}
+                        disabled={seedBusy}
+                        onChange={e => onSeedChange?.(b.participant, Number(e.target.value))}
+                        style={{ ...seedSelectStyle, cursor: seedBusy ? "wait" : "pointer" }}
+                      >
+                        {displayOptions.map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                      <span style={{ fontSize: "9px", lineHeight: 1, color: "#666", flexShrink: 0, pointerEvents: "none", userSelect: "none" }} aria-hidden>▼</span>
+                    </>
+                  ) : (b.seed || "")}
+                  </div>
+                  <div style={{
+                    flex: 1, minWidth: 0, display: "flex", alignItems: "center",
+                    padding: "0 8px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"
+                  }}>
+                    {b.name}
+                  </div>
+                </>
+              ) : (
+                <div style={{
+                  flex: 1, minWidth: 0, display: "flex", alignItems: "center",
+                  padding: "0 8px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"
+                }}>
+                  {b.name}
+                </div>
+              )
+            ) : (b.pending ? (interactive ? "Ввести результат" : "—") : "")}
           </div>
         )
       })}
@@ -2135,17 +2391,40 @@ function BracketSvgView({ layout, interactive, onOpenMatch }) {
   )
 }
 
-function KumiteBracket({ grant, user, participants, bouts, onChanged }) {
+function KumiteBracket({ grant, user, participants, bouts, onChanged, competitionLevel = "club" }) {
   const [activeMatch, setActiveMatch] = useState(null)
+  const [seedBusy, setSeedBusy] = useState(false)
+  const canEditSeeds = user?.role === "admin" || user?.role === "owner"
 
   if (participants.length === 0) {
     return <div style={card}><p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Участников в этой категории нет.</p></div>
   }
 
-  const data = computeKumiteBracketData(participants, bouts)
+  const bracketParticipants = normalizeGlobalDrawNumbers(participants)
+  const data = computeKumiteBracketData(bracketParticipants, bouts)
 
   if (!data.drawn) {
     return <div style={card}><p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Жеребьёвка ещё не проведена администратором.</p></div>
+  }
+
+  const formatLabel = (p) => bracketParticipantParts(p, competitionLevel)
+  const formatNameOnly = (p) => bracketParticipantNameOnly(p, competitionLevel)
+  const displayOptions = [...bracketParticipants].filter(p => p.seed != null).map(p => p.seed).sort((a, b) => a - b)
+
+  const handleSeedChange = async (participant, newSeed) => {
+    if (!canEditSeeds || seedBusy) return
+    if (participant.seed === newSeed) return
+    const other = bracketParticipants.find(p => p.seed === newSeed)
+    if (!other) return
+    setSeedBusy(true)
+    try {
+      const r = await axios.post(`${API}/api/v1/tournaments/${grant.tournament_id}/draw/swap-seed`, {
+        registration_id_a: participant.registration_id,
+        registration_id_b: other.registration_id
+      }, { headers: { Authorization: `Bearer ${user.token}` } })
+      if (r.data.success) onChanged()
+    } catch { /* bracket stays as-is until reload */ }
+    setSeedBusy(false)
   }
 
   // Круговая система (ровно 3 участника, ТЗ 5.3.2) не имеет игровой сетки -
@@ -2153,14 +2432,21 @@ function KumiteBracket({ grant, user, participants, bouts, onChanged }) {
   // (layoutRoundRobin) и тот же интерактивный BracketSvgView/модалку, что и
   // олимпийская сетка ниже, чтобы визуально они не отличались.
   const layout = data.roundRobin
-    ? layoutRoundRobin(data.pairs)
-    : layoutBracket(data.roundsPerGroup, data.finalMatch, data.bronzeMatch, data.repechagePerGroup)
+    ? layoutRoundRobin(data.pairs, formatLabel, formatNameOnly)
+    : layoutBracket(data.roundsPerGroup, data.finalMatch, data.bronzeMatch, data.repechagePerGroup, formatLabel, formatNameOnly)
 
   return (
     <div style={card}>
+      {canEditSeeds && (
+        <div style={{ fontSize: "13px", color: "#4A4A48", marginBottom: "8px" }}>
+          Измените № жребья в первом круге — спортсмен поменяется автоматически
+        </div>
+      )}
       {data.roundRobin && <div style={{ fontSize: "13px", color: "#4A4A48", marginBottom: "12px" }}>Круговая система — каждый с каждым</div>}
       <div style={{ overflowX: "auto", paddingBottom: "8px" }}>
-        <BracketSvgView layout={layout} interactive onOpenMatch={setActiveMatch} />
+        <BracketSvgView layout={layout} interactive onOpenMatch={setActiveMatch}
+          canEditSeeds={canEditSeeds} displayOptions={displayOptions}
+          onSeedChange={handleSeedChange} seedBusy={seedBusy} />
       </div>
       {activeMatch && (
         <Modal onClose={() => setActiveMatch(null)}>

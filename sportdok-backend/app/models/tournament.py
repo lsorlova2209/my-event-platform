@@ -14,4 +14,6 @@ class Tournament(Base):
     event_date = Column(Date, nullable=False)
     registration_closes_at = Column(Date, nullable=True)
     status = Column(String, nullable=False, default="draft")
+    # club — в сетке показываем клуб; region — регион (региональные и выше)
+    competition_level = Column(String, nullable=False, default="club")
     created_at = Column(DateTime, default=datetime.utcnow)
