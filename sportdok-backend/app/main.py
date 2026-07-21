@@ -1625,12 +1625,12 @@ def export_documents_excel(tournament_id: str, db: Session = Depends(get_db)):
         return {"success": False, "message": "Турнир не найден"}
     tournament_info, summary, categories_payload, all_placements = assembled
 
-    # Одна категория = один .xlsx (как в образцах «сетка …»), всё пакуется в ZIP.
+    # Одна категория = один .xlsx + сводная справка отдельным файлом, всё в ZIP.
     cats_with_people = [c for c in categories_payload if c.get("participants")]
     if not cats_with_people:
         return {"success": False, "message": "Нет категорий с участниками для выгрузки"}
 
-    buffer = build_category_excel_zip(tournament_info, cats_with_people)
+    buffer = build_category_excel_zip(tournament_info, cats_with_people, summary=summary)
     return StreamingResponse(
         buffer,
         media_type="application/zip",

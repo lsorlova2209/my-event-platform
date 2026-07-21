@@ -257,18 +257,35 @@ def _safe_filename(name):
     return cleaned[:120] or "category"
 
 
-def _category_excel_filename(tournament, cat):
-    gender_letter = {"male": "М", "female": "Ж"}.get(cat.get("gender"), "X")
+def _filename_age_part(cat):
+    """Возрастная группа для имени файла: «18 +», «18-20», «16-17»…"""
     age = _dominant_age_group(cat.get("participants") or []) or ""
-    if age in ("Мужчины", "Женщины"):
-        age_part = "18 +"
-    else:
-        age_part = (age.replace("Мужчины", "").replace("Женщины", "").replace("лет", "").strip() or "18 +")
-    if cat.get("discipline") == "kata":
-        prog = cat.get("category_name") or "ката"
-    else:
-        short = DISCIPLINE_SHORT.get(cat.get("discipline"), "")
-        prog = f"{short} {cat.get('category_name') or ''}".strip()
+    if age in ("Мужчины", "Женщины") or not age:
+        return "18 +"
+    # «Юниорки 18-20» / «Девочки 10-11» → «18-20» / «10-11»
+    m = re.search(r"(\d+)\s*[-–]\s*(\d+)", age)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+    m = re.search(r"(\d+)\s*\+", age)
+    if m:
+        return f"{m.group(1)} +"
+    return "18 +"
+
+
+def _filename_category_short(cat):
+    """Сокращённое название категории: «ОК 70», «СЗ 72», «ОК-ката-соло»…"""
+    return _program_type_label(cat.get("discipline"), cat.get("category_name")) or "категория"
+
+
+def _category_excel_filename(tournament, cat):
+    """
+    Схема имени (как в docs/samples):
+    сетка Ж_18 + ОК 70_27.09.2025.xlsx
+    = сетка + Ж/М + возрастная группа + категория сокращённо + дата турнира
+    """
+    gender_letter = {"male": "М", "female": "Ж"}.get(cat.get("gender"), "X")
+    age_part = _filename_age_part(cat)
+    prog = _filename_category_short(cat)
     date_part = _fmt_date(tournament.get("event_date")) or "date"
     return _safe_filename(f"сетка {gender_letter}_{age_part} {prog}_{date_part}.xlsx")
 
@@ -289,9 +306,51 @@ def _category_template_path():
     return preferred
 
 
+def _clear_bracket_winner_inputs(wb):
+    """Убирает заполненные в образце номера победителей; формулы и листья сетки не трогает.
+
+    Ввод результата в сетке — числа в колонках C… (F12, D14, H16…);
+    колонка A = № жребия на листьях, B = места 1–4 в таблице результатов.
+    Формулы проверяют пустой ввод как 0: IF(F12=0,\" \",…).
+    """
+    for name in wb.sheetnames:
+        if not name.isdigit():
+            continue
+        ws = wb[name]
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row or 1, max_col=min(ws.max_column or 1, 20)):
+            for cell in row:
+                if cell.column < 3:
+                    continue
+                value = cell.value
+                if isinstance(value, str) and value.startswith("="):
+                    continue
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    cell.value = 0
+
+
+def _select_bracket_sheet(wb, participant_count):
+    """Как в образце: виден лист «Регистрация» + лист сетки = числу участников."""
+    target_name = str(participant_count) if participant_count >= 3 else None
+    for name in wb.sheetnames:
+        if name == "Регистрация":
+            wb[name].sheet_state = "visible"
+            continue
+        if name.isdigit():
+            wb[name].sheet_state = "visible" if name == target_name else "hidden"
+            continue
+        # Ката/командные шаблоны — скрыты, пока не понадобятся отдельно.
+        wb[name].sheet_state = "hidden"
+
+    if target_name and target_name in wb.sheetnames:
+        wb.active = wb[target_name]
+    else:
+        wb.active = wb["Регистрация"]
+
+
 def build_category_workbook(tournament, cat):
-    """Один файл Excel на категорию: лист «Регистрация» + шаблоны сеток из образца."""
+    """Один файл Excel на категорию: шаблон ФВКР с формулами + данные категории."""
     template = _category_template_path()
+    # keep_vba=False; формулы VLOOKUP/DCOUNTA на листах сетки сохраняются as-is.
     wb = load_workbook(template)
     if "Регистрация" not in wb.sheetnames:
         raise ValueError("В шаблоне нет листа «Регистрация»")
@@ -309,7 +368,7 @@ def build_category_workbook(tournament, cat):
     ws["G3"] = location
     ws["L3"] = date_long or date_short
     ws["A6"] = _category_short_label(cat)
-    # D6 остаётся формулой DCOUNTA из шаблона — считает заполненные фамилии.
+    # D6 = DCOUNTA(...) из шаблона — не перезаписываем.
 
     for row in range(_REG_DATA_START, _REG_DATA_END + 1):
         for col in range(1, 16):
@@ -347,7 +406,7 @@ def build_category_workbook(tournament, cat):
         for col, value in enumerate(values, start=1):
             ws.cell(row=row, column=col, value=value)
 
-    # Пустые строки с номерами жребия > N — как в образце, чтобы VLOOKUP-диапазон жил.
+    # Пустые строки с № жребия > N — как в образце, диапазон VLOOKUP остаётся валидным.
     for i in range(n + 1, _REG_DATA_END - _REG_DATA_START + 2):
         row = _REG_DATA_START + i - 1
         if row > _REG_DATA_END:
@@ -358,22 +417,28 @@ def build_category_workbook(tournament, cat):
     ws["N73"] = tournament.get("chief_judge") or ""
     ws["N74"] = tournament.get("chief_secretary") or ""
 
-    sheet_name = str(n) if n >= 3 else None
-    if sheet_name and sheet_name in wb.sheetnames:
-        target = wb[sheet_name]
-        target.sheet_state = "visible"
-        wb.active = target
-    else:
-        wb.active = ws
+    _clear_bracket_winner_inputs(wb)
+    _select_bracket_sheet(wb, n)
 
     return wb
 
 
-def build_category_excel_zip(tournament, categories):
-    """ZIP: отдельный .xlsx на каждую категорию с участниками."""
+def build_category_excel_zip(tournament, categories, summary=None):
+    """ZIP: сводная справка + отдельный .xlsx на каждую категорию."""
     buffer = BytesIO()
     used_names = set()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        # Сводная справка — отдельный файл, как в пакете протоколов ФВКР.
+        if summary is not None and categories:
+            summary_wb = build_summary_workbook(tournament, summary, categories)
+            summary_name = _safe_filename(
+                f"СВОДНАЯ_СПРАВКА_{_fmt_date(tournament.get('event_date')) or 'date'}.xlsx"
+            )
+            used_names.add(summary_name.lower())
+            bio = BytesIO()
+            summary_wb.save(bio)
+            zf.writestr(summary_name, bio.getvalue())
+
         for cat in categories:
             if not cat.get("participants"):
                 continue
@@ -391,6 +456,141 @@ def build_category_excel_zip(tournament, categories):
             zf.writestr(candidate, bio.getvalue())
     buffer.seek(0)
     return buffer
+
+
+_SUMMARY_GROUP_ORDER = ("Ограниченный контакт", "Полный контакт", "Средства защиты")
+
+
+def _summary_program_label(discipline, category_name):
+    """Подпись дисциплины в сводной: «ОК-70», «ПК-60», «ОК-ката-соло»."""
+    if discipline == "kata":
+        return category_name or ""
+    short = DISCIPLINE_SHORT.get(discipline, discipline or "")
+    name = (category_name or "").strip()
+    return f"{short}-{name}" if name else short
+
+
+def _summary_section_sort_key(cat):
+    gender = cat.get("gender") or ""
+    gender_rank = 0 if gender == "male" else 1 if gender == "female" else 2
+    group = _discipline_group(cat.get("discipline"), cat.get("category_name"))
+    try:
+        group_rank = _SUMMARY_GROUP_ORDER.index(group)
+    except ValueError:
+        group_rank = len(_SUMMARY_GROUP_ORDER)
+    age = _section_age_label(gender, _dominant_age_group(cat.get("participants") or []))
+    prog = _summary_program_label(cat.get("discipline"), cat.get("category_name"))
+    return (gender_rank, group_rank, age, prog)
+
+
+def build_summary_workbook(tournament, summary, categories):
+    """
+    Отдельный файл «СВОДНАЯ_СПРАВКА_….xlsx» по образцу ФВКР:
+    шапка, участники/команды, список клубов, призёры 1–4 по группам дисциплин.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Лист1"
+
+    bold12 = Font(bold=True, size=12)
+    bold11 = Font(bold=True, size=11)
+    normal12 = Font(size=12)
+    normal11 = Font(size=11)
+    normal9 = Font(size=9)
+
+    ws.cell(row=4, column=2, value=f'вид спорта "{SPORT_NAME.lower()}"').font = normal12
+    ws.merge_cells(start_row=4, start_column=2, end_row=5, end_column=5)
+
+    location = (tournament.get("location") or "").strip()
+    date_part = _fmt_date(tournament.get("event_date"))
+    loc_line = f"{location}{' ' * 85}{date_part} г." if date_part else location
+    ws.cell(row=6, column=2, value=loc_line).font = normal11
+    ws.merge_cells(start_row=6, start_column=2, end_row=6, end_column=5)
+
+    club_names = sorted({
+        (p.get("club_name") or "").strip()
+        for cat in categories
+        for p in cat.get("participants") or []
+        if (p.get("club_name") or "").strip()
+    })
+    participant_count = summary.get("participant_count")
+    if participant_count is None:
+        participant_count = sum(len(cat.get("participants") or []) for cat in categories)
+
+    ws.cell(row=8, column=1, value="Участники").font = bold11
+    ws.cell(row=8, column=2, value=participant_count).font = normal11
+    ws.cell(row=9, column=1, value="Команды").font = bold11
+    ws.cell(row=9, column=2, value=len(club_names)).font = normal11
+
+    ws.cell(row=11, column=1, value="Команды:").font = bold12
+    row, col = 11, 2
+    for name in club_names:
+        ws.cell(row=row, column=col, value=name).font = normal11
+        col += 1
+        if col > 5:
+            col = 2
+            row += 1
+
+    row = max(row + 2, 17)
+    ws.cell(row=row, column=1, value="призёры").font = bold12
+    for c, label in zip((2, 3, 4, 5), ("1 место", "2 место", "3 место", "4 место")):
+        ws.cell(row=row, column=c, value=label).font = bold12
+    row += 1
+    ws.cell(row=row, column=1, value="Наименование группы дисциплин").font = normal11
+    row += 1
+    ws.cell(row=row, column=1, value="Возрастная категория").font = normal11
+    row += 1
+    ws.cell(row=row, column=1, value="спортивная дисциплина").font = normal11
+    for c in (2, 3, 4, 5):
+        ws.cell(row=row, column=c, value="ФИО").font = normal11
+    row += 1
+    for c in (2, 3, 4, 5):
+        ws.cell(row=row, column=c, value="(Команда)").font = normal11
+    # колонка A строк «спортивная дисциплина»/(Команда) — как в образце, объединены
+    ws.merge_cells(start_row=row - 1, start_column=1, end_row=row, end_column=1)
+    row += 1
+
+    ordered = sorted(
+        [c for c in categories if c.get("participants")],
+        key=_summary_section_sort_key,
+    )
+    sections = []
+    section_index = {}
+    for cat in ordered:
+        group = _discipline_group(cat.get("discipline"), cat.get("category_name"))
+        age = _section_age_label(cat.get("gender"), _dominant_age_group(cat.get("participants") or []))
+        key = (group, age)
+        if key not in section_index:
+            section_index[key] = len(sections)
+            sections.append((key, []))
+        sections[section_index[key]][1].append(cat)
+
+    for (group_label, age_label), cats in sections:
+        ws.cell(row=row, column=1, value=f"Группа дисциплин: {group_label}").font = bold12
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=5)
+        row += 1
+        ws.cell(row=row, column=1, value=age_label).font = bold12
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=5)
+        row += 1
+        for cat in cats:
+            prog = _summary_program_label(cat.get("discipline"), cat.get("category_name"))
+            cell = ws.cell(row=row, column=1, value=prog)
+            cell.font = normal9
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+            ws.merge_cells(start_row=row, start_column=1, end_row=row + 1, end_column=1)
+            placements_by_place = {p["place"]: p for p in cat.get("placements") or []}
+            for place in (1, 2, 3, 4):
+                p = placements_by_place.get(place)
+                if not p:
+                    continue
+                ws.cell(row=row, column=1 + place, value=p.get("full_name") or "").font = normal9
+                ws.cell(row=row + 1, column=1 + place, value=p.get("club_name") or "").font = normal9
+            row += 2
+
+    for col_letter, width in zip("ABCDE", (17.2, 29.2, 28.8, 28.3, 29.8)):
+        ws.column_dimensions[col_letter].width = width
+
+    return wb
 
 
 def build_workbook(tournament, summary, categories, team_ranking):
