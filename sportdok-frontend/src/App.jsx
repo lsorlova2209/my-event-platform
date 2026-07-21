@@ -189,6 +189,8 @@ function AdminPanel({ user, onLogout }) {
   const [eventDate, setEventDate] = useState("")
   const [closesDate, setClosesDate] = useState("")
   const [competitionLevel, setCompetitionLevel] = useState("club")
+  const [chiefJudge, setChiefJudge] = useState("")
+  const [chiefSecretary, setChiefSecretary] = useState("")
   const [error, setError] = useState("")
   const [secretaries, setSecretaries] = useState([])
   const [showSecretaryForm, setShowSecretaryForm] = useState(false)
@@ -251,9 +253,12 @@ function AdminPanel({ user, onLogout }) {
         name, location, event_date: eventDate,
         registration_closes_at: closesDate || null,
         admin_user_id: user.user_id,
-        competition_level: competitionLevel
+        competition_level: competitionLevel,
+        chief_judge: chiefJudge || null,
+        chief_secretary: chiefSecretary || null,
       }, { headers: { Authorization: `Bearer ${user.token}` } })
       setName(""); setLocation(""); setEventDate(""); setClosesDate(""); setCompetitionLevel("club")
+      setChiefJudge(""); setChiefSecretary("")
       setShowForm(false); setError(""); loadTournaments()
     } catch { setError("Ошибка при создании") }
   }
@@ -352,6 +357,16 @@ function AdminPanel({ user, onLogout }) {
                         <option key={level.value} value={level.value}>{level.label}</option>
                       ))}
                     </select>
+                  </div>
+                  <div style={{ display: "flex", gap: "16px", marginBottom: "16px" }}>
+                    <div style={{ flex: 1 }}>
+                      <label style={labelStyle}>Главный судья</label>
+                      <input type="text" value={chiefJudge} onChange={e => setChiefJudge(e.target.value)} placeholder="Иванов И.И., (ВК, Москва)" style={inputStyle} />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <label style={labelStyle}>Главный секретарь</label>
+                      <input type="text" value={chiefSecretary} onChange={e => setChiefSecretary(e.target.value)} placeholder="Петров П.П., (ВК, СПб)" style={inputStyle} />
+                    </div>
                   </div>
                   {error && <div style={errorBox}>{error}</div>}
                   <button onClick={handleCreate} style={btnGreen}>Создать турнир</button>
@@ -466,8 +481,12 @@ const COMPETITION_LEVELS = [
   { value: "club", label: "Городской / клубный — в скобках клуб" },
   { value: "region", label: "Региональный и выше — в скобках регион" },
 ]
+/** Пустой бокс №|ФИО — как на протоколе после соединителя, пока нет победителя. */
+function emptyBracketBox() {
+  return { seed: "", name: "", text: " " }
+}
 function bracketParticipantParts(p, competitionLevel = "club") {
-  if (!p) return { seed: "", name: "", text: "" }
+  if (!p) return emptyBracketBox()
   const seedPart = p.seed != null && p.seed !== "" ? String(p.seed) : ""
   const org = competitionLevel === "region"
     ? (p.region || p.club_name || "")
@@ -475,16 +494,6 @@ function bracketParticipantParts(p, competitionLevel = "club") {
   const orgPart = org ? ` (${org})` : ""
   const namePart = `${p.full_name}${orgPart}`
   return { seed: seedPart, name: namePart, text: `${seedPart ? `${seedPart} ` : ""}${namePart}` }
-}
-
-function bracketParticipantNameOnly(p, competitionLevel = "club") {
-  if (!p) return { seed: "", name: "", text: "" }
-  const org = competitionLevel === "region"
-    ? (p.region || p.club_name || "")
-    : (p.club_name || p.region || "")
-  const orgPart = org ? ` (${org})` : ""
-  const namePart = `${p.full_name}${orgPart}`
-  return { seed: "", name: namePart, text: namePart }
 }
 
 // Старая жеребьёвка давала 1,2,3 в каждой подгруппе — пересчитываем в 1..N (нечёт/чёт), как в Excel.
@@ -702,7 +711,7 @@ const seedSelectStyle = {
   MozAppearance: "none",
 }
 
-function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGroup = [], formatLabel = p => ({ seed: "", name: p?.full_name || "", text: p?.full_name || "" }), formatNameOnly = formatLabel) {
+function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGroup = [], formatLabel = p => ({ seed: "", name: p?.full_name || "", text: p?.full_name || "" })) {
   const boxes = []
   const lines = []
   const labels = []
@@ -742,20 +751,18 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
       const nextYs = []
       for (let j = 0; j < rounds[c - 1].length; j++) {
         const match = rounds[c - 1][j]
-        const ya = colYs[2 * j], pa = colPresent[2 * j]
-        const yb = colYs[2 * j + 1], pb = colPresent[2 * j + 1]
-        const py = pa && pb ? (ya + yb) / 2 : (pa ? ya : yb)
+        const ya = colYs[2 * j]
+        const yb = colYs[2 * j + 1]
+        // Вилка всегда — и при бае (один участник), как у полного боя
+        const py = (ya + yb) / 2
         nextYs.push(py)
         const xFrom = colX(c) - BR_H_GAP, xTo = colX(c)
-        if (pa && pb) {
-          const midX = xFrom + BR_H_GAP / 2
-          lines.push({ x1: xFrom, y1: ya, x2: midX, y2: ya }, { x1: xFrom, y1: yb, x2: midX, y2: yb },
-            { x1: midX, y1: ya, x2: midX, y2: yb }, { x1: midX, y1: py, x2: xTo, y2: py })
-        } else {
-          lines.push({ x1: xFrom, y1: py, x2: xTo, y2: py })
-        }
+        const midX = xFrom + BR_H_GAP / 2
+        lines.push({ x1: xFrom, y1: ya, x2: midX, y2: ya }, { x1: xFrom, y1: yb, x2: midX, y2: yb },
+          { x1: midX, y1: ya, x2: midX, y2: yb }, { x1: midX, y1: py, x2: xTo, y2: py })
         boxes.push({
-          x: xTo, y: py - BR_BOX_H / 2, ...(match.winner ? formatNameOnly(match.winner) : { seed: "", name: "", text: "" }),
+          // После каждого соединителя — тот же бокс №|ФИО, что в 1-м круге
+          x: xTo, y: py - BR_BOX_H / 2, ...(match.winner ? formatLabel(match.winner) : emptyBracketBox()),
           // Same bye rule as the leaf boxes above - only highlight a name
           // here as "won" if it came from an actual decided bout, not from
           // a bye chain propagating with nobody on the other side yet.
@@ -774,7 +781,7 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
     for (let c = rounds.length + 1; c <= maxRounds; c++) {
       const xFrom = colX(c) - BR_H_GAP, xTo = colX(c)
       lines.push({ x1: xFrom, y1: champY, x2: xTo, y2: champY })
-      boxes.push({ x: xTo, y: champY - BR_BOX_H / 2, ...(champion ? formatNameOnly(champion) : { seed: "", name: "", text: "" }) })
+      boxes.push({ x: xTo, y: champY - BR_BOX_H / 2, ...(champion ? formatLabel(champion) : emptyBracketBox()) })
     }
     champYs.push(champY)
   })
@@ -792,7 +799,7 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
       { x1: midX, y1: y0, x2: midX, y2: y1 }, { x1: midX, y1: py, x2: xTo, y2: py })
     labels.push({ x: xTo, y: py - BR_BOX_H / 2 - 18, text: "Финал", bold: true })
     boxes.push({
-      x: xTo, y: py - BR_BOX_H / 2, ...(finalMatch.winner ? formatNameOnly(finalMatch.winner) : { seed: "", name: "", text: "" }),
+      x: xTo, y: py - BR_BOX_H / 2, ...(finalMatch.winner ? formatLabel(finalMatch.winner) : emptyBracketBox()),
       win: !!finalMatch.winner, big: true, pending: !finalMatch.winner && finalMatch.a && finalMatch.b, editable: !!(finalMatch.a && finalMatch.b),
       match: finalMatch, roundLabel: "final"
     })
@@ -809,15 +816,15 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
     const ya = labelY + 18 + BR_BOX_H / 2
     const yb = ya + BR_ROW_H
     labels.push({ x: 0, y: labelY, text: "Матч за 3-е место", bold: true })
-    boxes.push({ x: 0, y: ya - BR_BOX_H / 2, ...(bronzeMatch.a ? formatNameOnly(bronzeMatch.a) : { seed: "", name: "", text: "" }), win: !!(bronzeMatch.winner && bronzeMatch.a && bronzeMatch.winner.registration_id === bronzeMatch.a.registration_id) })
-    boxes.push({ x: 0, y: yb - BR_BOX_H / 2, ...(bronzeMatch.b ? formatNameOnly(bronzeMatch.b) : { seed: "", name: "", text: "" }), win: !!(bronzeMatch.winner && bronzeMatch.b && bronzeMatch.winner.registration_id === bronzeMatch.b.registration_id) })
+    boxes.push({ x: 0, y: ya - BR_BOX_H / 2, ...(bronzeMatch.a ? formatLabel(bronzeMatch.a) : emptyBracketBox()), win: !!(bronzeMatch.winner && bronzeMatch.a && bronzeMatch.winner.registration_id === bronzeMatch.a.registration_id) })
+    boxes.push({ x: 0, y: yb - BR_BOX_H / 2, ...(bronzeMatch.b ? formatLabel(bronzeMatch.b) : emptyBracketBox()), win: !!(bronzeMatch.winner && bronzeMatch.b && bronzeMatch.winner.registration_id === bronzeMatch.b.registration_id) })
     const xFrom = colX(1) - BR_H_GAP, xTo = colX(1)
     const midX = xFrom + BR_H_GAP / 2
     const py = (ya + yb) / 2
     lines.push({ x1: xFrom, y1: ya, x2: midX, y2: ya }, { x1: xFrom, y1: yb, x2: midX, y2: yb },
       { x1: midX, y1: ya, x2: midX, y2: yb }, { x1: midX, y1: py, x2: xTo, y2: py })
     boxes.push({
-      x: xTo, y: py - BR_BOX_H / 2, ...(bronzeMatch.winner ? formatNameOnly(bronzeMatch.winner) : { seed: "", name: "", text: "" }),
+      x: xTo, y: py - BR_BOX_H / 2, ...(bronzeMatch.winner ? formatLabel(bronzeMatch.winner) : emptyBracketBox()),
       win: !!bronzeMatch.winner, pending: !bronzeMatch.winner && bronzeMatch.a && bronzeMatch.b, editable: true,
       match: bronzeMatch, roundLabel: "bronze"
     })
@@ -839,7 +846,7 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
       const rounds = group.rounds
       if (rounds.length === 0) {
         const champ = group.champion
-        if (champ) boxes.push({ x: 0, y: y2, ...formatNameOnly(champ) })
+        if (champ) boxes.push({ x: 0, y: y2, ...formatLabel(champ) })
         champYs2.push(y2 + BR_BOX_H / 2)
         y2 += BR_ROW_H
         if (gi < nRepGroups - 1) y2 += BR_GROUP_GAP
@@ -855,7 +862,7 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
         present0.push(!!slot)
         if (slot) {
           const realWin = !!(match.a && match.b && match.winner && match.winner.registration_id === slot.registration_id)
-          boxes.push({ x: 0, y: y2, ...formatNameOnly(slot), win: realWin })
+          boxes.push({ x: 0, y: y2, ...formatLabel(slot), win: realWin })
         }
         y2 += BR_ROW_H
       }
@@ -866,20 +873,16 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
         const nextYs = []
         for (let j = 0; j < rounds[c - 1].length; j++) {
           const match = rounds[c - 1][j]
-          const ya = colYs[2 * j], pa = colPresent[2 * j]
-          const yb = colYs[2 * j + 1], pb = colPresent[2 * j + 1]
-          const py = pa && pb ? (ya + yb) / 2 : (pa ? ya : yb)
+          const ya = colYs[2 * j]
+          const yb = colYs[2 * j + 1]
+          const py = (ya + yb) / 2
           nextYs.push(py)
           const xFrom = colX(c) - BR_H_GAP, xTo = colX(c)
-          if (pa && pb) {
-            const midX = xFrom + BR_H_GAP / 2
-            lines.push({ x1: xFrom, y1: ya, x2: midX, y2: ya }, { x1: xFrom, y1: yb, x2: midX, y2: yb },
-              { x1: midX, y1: ya, x2: midX, y2: yb }, { x1: midX, y1: py, x2: xTo, y2: py })
-          } else {
-            lines.push({ x1: xFrom, y1: py, x2: xTo, y2: py })
-          }
+          const midX = xFrom + BR_H_GAP / 2
+          lines.push({ x1: xFrom, y1: ya, x2: midX, y2: ya }, { x1: xFrom, y1: yb, x2: midX, y2: yb },
+            { x1: midX, y1: ya, x2: midX, y2: yb }, { x1: midX, y1: py, x2: xTo, y2: py })
           boxes.push({
-            x: xTo, y: py - BR_BOX_H / 2, ...(match.winner ? formatNameOnly(match.winner) : { seed: "", name: "", text: "" }),
+            x: xTo, y: py - BR_BOX_H / 2, ...(match.winner ? formatLabel(match.winner) : emptyBracketBox()),
             win: !!(match.a && match.b && match.winner), pending: !match.winner && match.a && match.b,
             editable: !!(match.a && match.b),
             match, roundLabel: `repechage_r${c}`
@@ -903,7 +906,7 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
     }
     labels.push({ x: xTo, y: py - BR_BOX_H / 2 - 18, text: "Матч за 3-е место", bold: true })
     boxes.push({
-      x: xTo, y: py - BR_BOX_H / 2, ...(bronzeMatch.winner ? formatNameOnly(bronzeMatch.winner) : { seed: "", name: "", text: "" }),
+      x: xTo, y: py - BR_BOX_H / 2, ...(bronzeMatch.winner ? formatLabel(bronzeMatch.winner) : emptyBracketBox()),
       win: !!bronzeMatch.winner, pending: !bronzeMatch.winner && bronzeMatch.a && bronzeMatch.b, editable: true,
       match: bronzeMatch, roundLabel: "bronze"
     })
@@ -919,7 +922,7 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
 // олимпийская: та же геометрия "два листа сходятся в один бокс", что и у
 // одного матча в layoutBracket (тот же приём уже используется для матча за
 // 3-е место), просто три таких блока подряд, без общего дерева.
-function layoutRoundRobin(pairs, formatLabel = p => ({ seed: "", name: p?.full_name || "", text: p?.full_name || "" }), formatNameOnly = formatLabel) {
+function layoutRoundRobin(pairs, formatLabel = p => ({ seed: "", name: p?.full_name || "", text: p?.full_name || "" })) {
   const boxes = [], lines = [], labels = []
   let y = 0, bottom = 0
   const xFrom = BR_BOX_W, xTo = BR_BOX_W + BR_H_GAP, midX = xFrom + BR_H_GAP / 2
@@ -932,7 +935,7 @@ function layoutRoundRobin(pairs, formatLabel = p => ({ seed: "", name: p?.full_n
     lines.push({ x1: xFrom, y1: ya, x2: midX, y2: ya }, { x1: xFrom, y1: yb, x2: midX, y2: yb },
       { x1: midX, y1: ya, x2: midX, y2: yb }, { x1: midX, y1: py, x2: xTo, y2: py })
     boxes.push({
-      x: xTo, y: py - BR_BOX_H / 2, ...(m.winner ? formatNameOnly(m.winner) : { seed: "", name: "", text: "" }),
+      x: xTo, y: py - BR_BOX_H / 2, ...(m.winner ? formatLabel(m.winner) : emptyBracketBox()),
       win: !!m.winner, pending: !m.winner, editable: true, match: m, roundLabel: "round1"
     })
     bottom = yb + BR_BOX_H / 2
@@ -1033,6 +1036,11 @@ function TournamentDetail({ tournament, user, onBack }) {
   const [grantForm, setGrantForm] = useState({ secretary_user_id: "", tableKey: "" })
   const [grantError, setGrantError] = useState("")
   const [editingAthleteId, setEditingAthleteId] = useState(null)
+  const [tournamentMeta, setTournamentMeta] = useState(tournament)
+  const [chiefJudge, setChiefJudge] = useState(tournament.chief_judge || "")
+  const [chiefSecretary, setChiefSecretary] = useState(tournament.chief_secretary || "")
+  const [officialsMsg, setOfficialsMsg] = useState("")
+  const [officialsSaving, setOfficialsSaving] = useState(false)
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
@@ -1069,6 +1077,27 @@ function TournamentDetail({ tournament, user, onBack }) {
       setGrants(r.data)
     } catch {
       setGrants([])
+    }
+  }
+
+  const saveOfficials = async () => {
+    setOfficialsSaving(true)
+    setOfficialsMsg("")
+    try {
+      const r = await axios.patch(`${API}/api/v1/tournaments/${tournament.id}`, {
+        chief_judge: chiefJudge || null,
+        chief_secretary: chiefSecretary || null,
+      }, { headers: { Authorization: `Bearer ${user.token}` } })
+      if (r.data.success) {
+        setTournamentMeta(m => ({ ...m, chief_judge: r.data.chief_judge, chief_secretary: r.data.chief_secretary }))
+        setOfficialsMsg("Сохранено — ФИО появятся в PDF")
+      } else {
+        setOfficialsMsg(r.data.message || "Не удалось сохранить")
+      }
+    } catch (e) {
+      setOfficialsMsg(e.response?.data?.message || "Ошибка сохранения")
+    } finally {
+      setOfficialsSaving(false)
     }
   }
 
@@ -1245,14 +1274,36 @@ function TournamentDetail({ tournament, user, onBack }) {
         <button onClick={onBack} style={{ ...btnOutline, marginBottom: "16px" }}>← Назад к турнирам</button>
         <div style={{ marginBottom: "24px", display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: "12px" }}>
           <div>
-            <h1 style={{ color: "#1A56A0", margin: 0 }}>{tournament.name}</h1>
-            <p style={{ color: "#4A4A48", margin: "4px 0 0" }}>{tournament.location && `${tournament.location} · `}{tournament.event_date}</p>
+            <h1 style={{ color: "#1A56A0", margin: 0 }}>{tournamentMeta.name}</h1>
+            <p style={{ color: "#4A4A48", margin: "4px 0 0" }}>{tournamentMeta.location && `${tournamentMeta.location} · `}{tournamentMeta.event_date}</p>
           </div>
           <div style={{ display: "flex", gap: "8px" }}>
-            <button onClick={() => window.open(`${API}/api/v1/tournaments/${tournament.id}/documents/excel`, "_blank")} style={btnOutline}>Скачать Excel</button>
+            <button onClick={() => window.open(`${API}/api/v1/tournaments/${tournament.id}/documents/excel`, "_blank")} style={btnOutline}>Скачать Excel (по категориям)</button>
             <button onClick={() => window.open(`${API}/api/v1/tournaments/${tournament.id}/documents/pdf`, "_blank")} style={btnOutline}>Скачать PDF</button>
           </div>
         </div>
+
+        {(user?.role === "admin" || user?.role === "owner") && (
+          <div style={{ ...card, marginBottom: "16px" }}>
+            <h2 style={{ margin: "0 0 16px", color: "#1A56A0" }}>Официальные лица (для PDF)</h2>
+            <div style={{ display: "flex", gap: "16px", marginBottom: "12px", flexWrap: "wrap" }}>
+              <div style={{ flex: 1, minWidth: "220px" }}>
+                <label style={labelStyle}>Главный судья</label>
+                <input type="text" value={chiefJudge} onChange={e => setChiefJudge(e.target.value)} placeholder="Иванов И.И., (ВК, Москва)" style={inputStyle} />
+              </div>
+              <div style={{ flex: 1, minWidth: "220px" }}>
+                <label style={labelStyle}>Главный секретарь</label>
+                <input type="text" value={chiefSecretary} onChange={e => setChiefSecretary(e.target.value)} placeholder="Петров П.П., (ВК, СПб)" style={inputStyle} />
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+              <button onClick={saveOfficials} disabled={officialsSaving} style={btnGreen}>
+                {officialsSaving ? "Сохранение…" : "Сохранить"}
+              </button>
+              {officialsMsg && <span style={{ color: "#4A4A48", fontSize: "14px" }}>{officialsMsg}</span>}
+            </div>
+          </div>
+        )}
 
         <div style={card}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: showForm ? "24px" : 0 }}>
@@ -1923,7 +1974,7 @@ function SecretaryTable({ user, grant, tournament, onBack }) {
             <p style={{ color: "#4A4A48", margin: "4px 0 0" }}>{label}</p>
           </div>
           <div style={{ display: "flex", gap: "8px" }}>
-            <button onClick={() => window.open(`${API}/api/v1/tournaments/${grant.tournament_id}/documents/excel`, "_blank")} style={btnOutline}>Скачать Excel</button>
+            <button onClick={() => window.open(`${API}/api/v1/tournaments/${grant.tournament_id}/documents/excel`, "_blank")} style={btnOutline}>Скачать Excel (по категориям)</button>
             <button onClick={() => window.open(`${API}/api/v1/tournaments/${grant.tournament_id}/documents/pdf`, "_blank")} style={btnOutline}>Скачать PDF</button>
           </div>
         </div>
@@ -2344,46 +2395,37 @@ function BracketSvgView({ layout, interactive, onOpenMatch, canEditSeeds, displa
               cursor: clickable ? "pointer" : "default"
             }}
           >
-            {b.text ? (
-              b.seed || (canEditSeeds && b.seedEditable && b.participant && displayOptions?.length) ? (
-                <>
-                  <div style={{
-                    width: BR_SEED_COL_W, minWidth: BR_SEED_COL_W, borderRight: "1px solid #E5E2D8",
-                    display: "flex", alignItems: "center", justifyContent: "space-between", gap: "2px",
-                    padding: "0 3px", boxSizing: "border-box"
-                  }}
-                    onClick={e => e.stopPropagation()}
-                  >
-                  {canEditSeeds && b.seedEditable && b.participant && displayOptions?.length ? (
-                    <>
-                      <select
-                        value={b.participant.seed ?? ""}
-                        disabled={seedBusy}
-                        onChange={e => onSeedChange?.(b.participant, Number(e.target.value))}
-                        style={{ ...seedSelectStyle, cursor: seedBusy ? "wait" : "pointer" }}
-                      >
-                        {displayOptions.map(s => <option key={s} value={s}>{s}</option>)}
-                      </select>
-                      <span style={{ fontSize: "9px", lineHeight: 1, color: "#666", flexShrink: 0, pointerEvents: "none", userSelect: "none" }} aria-hidden>▼</span>
-                    </>
-                  ) : (b.seed || "")}
-                  </div>
-                  <div style={{
-                    flex: 1, minWidth: 0, display: "flex", alignItems: "center",
-                    padding: "0 8px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"
-                  }}>
-                    {b.name}
-                  </div>
-                </>
-              ) : (
-                <div style={{
-                  flex: 1, minWidth: 0, display: "flex", alignItems: "center",
-                  padding: "0 8px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"
-                }}>
-                  {b.name}
-                </div>
-              )
-            ) : (b.pending ? (interactive ? "Ввести результат" : "—") : "")}
+            {/* Всегда №|ФИО — как на протоколе после соединителя */}
+            <>
+              <div style={{
+                width: BR_SEED_COL_W, minWidth: BR_SEED_COL_W, borderRight: "1px solid #E5E2D8",
+                display: "flex", alignItems: "center", justifyContent: "space-between", gap: "2px",
+                padding: "0 3px", boxSizing: "border-box"
+              }}
+                onClick={e => e.stopPropagation()}
+              >
+                {canEditSeeds && b.seedEditable && b.participant && displayOptions?.length ? (
+                  <>
+                    <select
+                      value={b.participant.seed ?? ""}
+                      disabled={seedBusy}
+                      onChange={e => onSeedChange?.(b.participant, Number(e.target.value))}
+                      style={{ ...seedSelectStyle, cursor: seedBusy ? "wait" : "pointer" }}
+                    >
+                      {displayOptions.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                    <span style={{ fontSize: "9px", lineHeight: 1, color: "#666", flexShrink: 0, pointerEvents: "none", userSelect: "none" }} aria-hidden>▼</span>
+                  </>
+                ) : (b.seed || "")}
+              </div>
+              <div style={{
+                flex: 1, minWidth: 0, display: "flex", alignItems: "center",
+                padding: "0 8px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"
+              }}>
+                {b.name
+                  || (b.pending ? (interactive ? "Ввести результат" : "—") : "")}
+              </div>
+            </>
           </div>
         )
       })}
@@ -2408,7 +2450,6 @@ function KumiteBracket({ grant, user, participants, bouts, onChanged, competitio
   }
 
   const formatLabel = (p) => bracketParticipantParts(p, competitionLevel)
-  const formatNameOnly = (p) => bracketParticipantNameOnly(p, competitionLevel)
   const displayOptions = [...bracketParticipants].filter(p => p.seed != null).map(p => p.seed).sort((a, b) => a - b)
 
   const handleSeedChange = async (participant, newSeed) => {
@@ -2432,8 +2473,8 @@ function KumiteBracket({ grant, user, participants, bouts, onChanged, competitio
   // (layoutRoundRobin) и тот же интерактивный BracketSvgView/модалку, что и
   // олимпийская сетка ниже, чтобы визуально они не отличались.
   const layout = data.roundRobin
-    ? layoutRoundRobin(data.pairs, formatLabel, formatNameOnly)
-    : layoutBracket(data.roundsPerGroup, data.finalMatch, data.bronzeMatch, data.repechagePerGroup, formatLabel, formatNameOnly)
+    ? layoutRoundRobin(data.pairs, formatLabel)
+    : layoutBracket(data.roundsPerGroup, data.finalMatch, data.bronzeMatch, data.repechagePerGroup, formatLabel)
 
   return (
     <div style={card}>

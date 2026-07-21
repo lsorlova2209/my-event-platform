@@ -21,7 +21,7 @@ from app.auth import hash_password, verify_password, create_token, get_current_u
 from app.draw import build_category_draw, subgroup_for_draw_number
 from app.kumite_protocol import determine_winner
 from app.kata_protocol import ROUND_SCALES, validate_scores, compute_total, determine_round_result
-from app.documents import build_workbook, build_pdf, team_standings
+from app.documents import build_category_excel_zip, build_pdf, team_standings
 from app.kata_registry import KATA_TYPES, KATA_STYLE_ORDER, kata_style
 from app.age_group import compute_age_group
 from app.notifications import send_email
@@ -67,6 +67,18 @@ class TournamentCreate(BaseModel):
     registration_closes_at: Optional[date] = None
     admin_user_id: str
     competition_level: Optional[str] = "club"
+    chief_judge: Optional[str] = None
+    chief_secretary: Optional[str] = None
+
+
+class TournamentUpdate(BaseModel):
+    name: Optional[str] = None
+    location: Optional[str] = None
+    event_date: Optional[date] = None
+    registration_closes_at: Optional[date] = None
+    competition_level: Optional[str] = None
+    chief_judge: Optional[str] = None
+    chief_secretary: Optional[str] = None
 
 class AthleteCreate(BaseModel):
     last_name: str
@@ -154,6 +166,12 @@ def apply_schema_patches():
     with engine.begin() as conn:
         conn.execute(text(
             "ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS competition_level VARCHAR DEFAULT 'club' NOT NULL"
+        ))
+        conn.execute(text(
+            "ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS chief_judge VARCHAR"
+        ))
+        conn.execute(text(
+            "ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS chief_secretary VARCHAR"
         ))
 
 @app.on_event("startup")
@@ -400,6 +418,8 @@ def create_tournament(data: TournamentCreate, current_user=Depends(get_current_u
         registration_closes_at=data.registration_closes_at,
         admin_user_id=data.admin_user_id,
         competition_level=data.competition_level or "club",
+        chief_judge=(data.chief_judge or "").strip() or None,
+        chief_secretary=(data.chief_secretary or "").strip() or None,
         status="draft"
     )
     db.add(tournament)
@@ -412,7 +432,9 @@ def create_tournament(data: TournamentCreate, current_user=Depends(get_current_u
         "location": tournament.location,
         "event_date": str(tournament.event_date),
         "status": tournament.status,
-        "competition_level": tournament.competition_level or "club"
+        "competition_level": tournament.competition_level or "club",
+        "chief_judge": tournament.chief_judge,
+        "chief_secretary": tournament.chief_secretary,
     }
 
 @app.get("/api/v1/tournaments/")
@@ -425,10 +447,38 @@ def list_tournaments(db: Session = Depends(get_db)):
             "location": t.location,
             "event_date": str(t.event_date),
             "status": t.status,
-            "competition_level": t.competition_level or "club"
+            "competition_level": t.competition_level or "club",
+            "chief_judge": t.chief_judge,
+            "chief_secretary": t.chief_secretary,
         }
         for t in tournaments
     ]
+
+
+@app.patch("/api/v1/tournaments/{tournament_id}")
+def update_tournament(tournament_id: str, data: TournamentUpdate, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        return {"success": False, "message": "Турнир не найден"}
+    payload = data.model_dump(exclude_unset=True)
+    for key, value in payload.items():
+        if key in ("chief_judge", "chief_secretary", "location", "name") and isinstance(value, str):
+            value = value.strip() or None
+        setattr(tournament, key, value)
+    db.commit()
+    db.refresh(tournament)
+    return {
+        "success": True,
+        "id": str(tournament.id),
+        "name": tournament.name,
+        "location": tournament.location,
+        "event_date": str(tournament.event_date),
+        "status": tournament.status,
+        "competition_level": tournament.competition_level or "club",
+        "chief_judge": tournament.chief_judge,
+        "chief_secretary": tournament.chief_secretary,
+    }
 
 @app.delete("/api/v1/tournaments/{tournament_id}")
 def delete_tournament(tournament_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
@@ -1414,6 +1464,7 @@ def _assemble_tournament_documents(tournament_id, db):
                 {
                     "registration_id": str(s.registration_id),
                     "round_label": s.round_label,
+                    "kata_name": s.kata_name,
                     "score_1": float(s.score_1),
                     "score_2": float(s.score_2),
                     "score_3": float(s.score_3),
@@ -1560,7 +1611,9 @@ def _assemble_tournament_documents(tournament_id, db):
         "event_date": str(tournament.event_date),
         "registration_closes_at": str(tournament.registration_closes_at) if tournament.registration_closes_at else None,
         "status": tournament.status,
-        "competition_level": tournament.competition_level or "club"
+        "competition_level": tournament.competition_level or "club",
+        "chief_judge": tournament.chief_judge,
+        "chief_secretary": tournament.chief_secretary,
     }
 
     return tournament_info, summary, categories_payload, all_placements
@@ -1572,15 +1625,16 @@ def export_documents_excel(tournament_id: str, db: Session = Depends(get_db)):
         return {"success": False, "message": "Турнир не найден"}
     tournament_info, summary, categories_payload, all_placements = assembled
 
-    wb = build_workbook(tournament_info, summary, categories_payload, team_standings(all_placements))
-    buffer = BytesIO()
-    wb.save(buffer)
-    buffer.seek(0)
+    # Одна категория = один .xlsx (как в образцах «сетка …»), всё пакуется в ZIP.
+    cats_with_people = [c for c in categories_payload if c.get("participants")]
+    if not cats_with_people:
+        return {"success": False, "message": "Нет категорий с участниками для выгрузки"}
 
+    buffer = build_category_excel_zip(tournament_info, cats_with_people)
     return StreamingResponse(
         buffer,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename=sportdok_export_{tournament_id[:8]}.xlsx"}
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=sportdok_excel_{tournament_id[:8]}.zip"}
     )
 
 @app.get("/api/v1/tournaments/{tournament_id}/documents/pdf")

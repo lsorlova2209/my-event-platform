@@ -1,7 +1,10 @@
 import os
-from datetime import date
+import re
+import zipfile
+from datetime import date, datetime
 from io import BytesIO
-from openpyxl import Workbook
+from pathlib import Path
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, Alignment
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
@@ -11,7 +14,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-from app.draw import next_power_of_two, round1_pairs_by_seed
+from app.draw import next_power_of_two, round1_pairs_by_seed, seed_position_order
 
 # Base14 PDF fonts (Helvetica etc.) have no Cyrillic glyphs. DejaVu Sans is
 # bundled under app/fonts/ (freely licensed, same font matplotlib ships) so
@@ -20,6 +23,28 @@ from app.draw import next_power_of_two, round1_pairs_by_seed
 _FONT_DIR = os.path.join(os.path.dirname(__file__), "fonts")
 pdfmetrics.registerFont(TTFont("DejaVuSans", os.path.join(_FONT_DIR, "DejaVuSans.ttf")))
 pdfmetrics.registerFont(TTFont("DejaVuSans-Bold", os.path.join(_FONT_DIR, "DejaVuSans-Bold.ttf")))
+
+_NA = "#Н/Д"
+
+
+def _register_times_new_roman():
+    """Times New Roman для протокола сетки (эталон ФВКР); иначе DejaVuSans."""
+    pairs = [
+        (os.path.join(_FONT_DIR, "times.ttf"), os.path.join(_FONT_DIR, "timesbd.ttf")),
+        (r"C:\Windows\Fonts\times.ttf", r"C:\Windows\Fonts\timesbd.ttf"),
+        (r"C:\Windows\Fonts\timesnr.ttf", r"C:\Windows\Fonts\timesbd.ttf"),
+    ]
+    for reg, bold in pairs:
+        if os.path.isfile(reg):
+            pdfmetrics.registerFont(TTFont("TimesNewRoman", reg))
+            if os.path.isfile(bold):
+                pdfmetrics.registerFont(TTFont("TimesNewRoman-Bold", bold))
+            return "TimesNewRoman"
+    return "DejaVuSans"
+
+
+BRACKET_FONT = _register_times_new_roman()
+BRACKET_FONT_BOLD = "TimesNewRoman-Bold" if BRACKET_FONT == "TimesNewRoman" else "DejaVuSans-Bold"
 
 # Командный зачёт points scale - the ТЗ names "Командный зачёт" as a
 # required document but doesn't specify a scoring formula (see Приложение
@@ -175,6 +200,197 @@ REGISTRATION_PROTOCOL_HEADERS = [
     "Полных лет", "Разряд, звание", "Точный вес", "Вид программы",
     "Команда", "Регион", "Тренер", "Занятое место"
 ]
+
+# Official per-category bracket workbook (Регистрация + листы сетки 3…64).
+_SAMPLES_DIR = Path(__file__).resolve().parents[2] / "docs" / "samples"
+_REG_DATA_START = 8
+_REG_DATA_END = 71
+_MONTHS_RU = (
+    "", "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+)
+
+
+def _parse_date(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day)
+    text = str(value)[:10]
+    try:
+        d = date.fromisoformat(text)
+        return datetime(d.year, d.month, d.day)
+    except ValueError:
+        return None
+
+
+def _fmt_date_ru_long(value):
+    d = _parse_date(value)
+    if not d:
+        return _fmt_date(value)
+    return f"{d.day} {_MONTHS_RU[d.month]} {d.year}"
+
+
+def _category_program_desc(cat):
+    age_label = _section_age_label(cat.get("gender"), _dominant_age_group(cat.get("participants") or []))
+    if cat.get("discipline") == "kata":
+        return f"{age_label}  {cat.get('category_name') or ''}".strip()
+    short = DISCIPLINE_SHORT.get(cat.get("discipline"), cat.get("discipline") or "")
+    return f"{age_label}  {short}-весовая категория {cat.get('category_name') or ''} кг".strip()
+
+
+def _category_short_label(cat):
+    age = _dominant_age_group(cat.get("participants") or []) or ""
+    gender_letter = {"male": "М", "female": "Ж"}.get(cat.get("gender"), "")
+    age_bit = age.replace("Мужчины", "").replace("Женщины", "").strip() or "18+"
+    if cat.get("discipline") == "kata":
+        return f"{gender_letter} {age_bit} {cat.get('category_name') or ''}".strip()
+    short = DISCIPLINE_SHORT.get(cat.get("discipline"), "")
+    return f"{gender_letter} {age_bit}{short}-{cat.get('category_name') or ''}".strip()
+
+
+def _safe_filename(name):
+    cleaned = re.sub(r'[<>:"/\\|?*]', "_", name)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    return cleaned[:120] or "category"
+
+
+def _category_excel_filename(tournament, cat):
+    gender_letter = {"male": "М", "female": "Ж"}.get(cat.get("gender"), "X")
+    age = _dominant_age_group(cat.get("participants") or []) or ""
+    if age in ("Мужчины", "Женщины"):
+        age_part = "18 +"
+    else:
+        age_part = (age.replace("Мужчины", "").replace("Женщины", "").replace("лет", "").strip() or "18 +")
+    if cat.get("discipline") == "kata":
+        prog = cat.get("category_name") or "ката"
+    else:
+        short = DISCIPLINE_SHORT.get(cat.get("discipline"), "")
+        prog = f"{short} {cat.get('category_name') or ''}".strip()
+    date_part = _fmt_date(tournament.get("event_date")) or "date"
+    return _safe_filename(f"сетка {gender_letter}_{age_part} {prog}_{date_part}.xlsx")
+
+
+def _category_template_path():
+    if not _SAMPLES_DIR.is_dir():
+        raise FileNotFoundError(f"Нет папки шаблонов: {_SAMPLES_DIR}")
+    preferred = None
+    for p in sorted(_SAMPLES_DIR.glob("*.xlsx")):
+        if "СВОДНАЯ" in p.name.upper() or p.name.startswith("~$"):
+            continue
+        if preferred is None:
+            preferred = p
+        if "70" in p.name:
+            return p
+    if preferred is None:
+        raise FileNotFoundError(f"Нет xlsx-шаблона категории в {_SAMPLES_DIR}")
+    return preferred
+
+
+def build_category_workbook(tournament, cat):
+    """Один файл Excel на категорию: лист «Регистрация» + шаблоны сеток из образца."""
+    template = _category_template_path()
+    wb = load_workbook(template)
+    if "Регистрация" not in wb.sheetnames:
+        raise ValueError("В шаблоне нет листа «Регистрация»")
+    ws = wb["Регистрация"]
+
+    event_date = tournament.get("event_date")
+    date_long = _fmt_date_ru_long(event_date)
+    date_short = _fmt_date(event_date)
+    name = (tournament.get("name") or "").strip()
+    location = (tournament.get("location") or "").strip()
+
+    ws["A1"] = f" {name} {date_long} г." if date_long else f" {name}"
+    ws["A2"] = f"Вид спорта: {SPORT_NAME} (номер-код вида спорта - {SPORT_CODE})"
+    ws["A3"] = _category_program_desc(cat)
+    ws["G3"] = location
+    ws["L3"] = date_long or date_short
+    ws["A6"] = _category_short_label(cat)
+    # D6 остаётся формулой DCOUNTA из шаблона — считает заполненные фамилии.
+
+    for row in range(_REG_DATA_START, _REG_DATA_END + 1):
+        for col in range(1, 16):
+            ws.cell(row=row, column=col).value = None
+
+    participants = sorted(
+        cat.get("participants") or [],
+        key=lambda p: (p.get("seed") is None, p.get("seed") if p.get("seed") is not None else 10**9),
+    )
+    place_by_reg = {p["registration_id"]: p["place"] for p in cat.get("placements") or []}
+    n = len(participants)
+
+    for i, p in enumerate(participants, start=1):
+        row = _REG_DATA_START + i - 1
+        if row > _REG_DATA_END:
+            break
+        seed = p.get("seed") if p.get("seed") is not None else i
+        values = [
+            i,
+            seed,
+            GENDER_SHORT.get(p.get("gender"), p.get("gender")),
+            p.get("last_name"),
+            p.get("first_name"),
+            p.get("middle_name"),
+            _parse_date(p.get("birth_date")),
+            p.get("age_years"),
+            p.get("rank"),
+            p.get("weight"),
+            _program_type_label(p.get("discipline"), p.get("category_name")),
+            p.get("club_name"),
+            p.get("region"),
+            p.get("trainer_name"),
+            place_by_reg.get(p.get("registration_id")),
+        ]
+        for col, value in enumerate(values, start=1):
+            ws.cell(row=row, column=col, value=value)
+
+    # Пустые строки с номерами жребия > N — как в образце, чтобы VLOOKUP-диапазон жил.
+    for i in range(n + 1, _REG_DATA_END - _REG_DATA_START + 2):
+        row = _REG_DATA_START + i - 1
+        if row > _REG_DATA_END:
+            break
+        ws.cell(row=row, column=1, value=i)
+        ws.cell(row=row, column=2, value=i)
+
+    ws["N73"] = tournament.get("chief_judge") or ""
+    ws["N74"] = tournament.get("chief_secretary") or ""
+
+    sheet_name = str(n) if n >= 3 else None
+    if sheet_name and sheet_name in wb.sheetnames:
+        target = wb[sheet_name]
+        target.sheet_state = "visible"
+        wb.active = target
+    else:
+        wb.active = ws
+
+    return wb
+
+
+def build_category_excel_zip(tournament, categories):
+    """ZIP: отдельный .xlsx на каждую категорию с участниками."""
+    buffer = BytesIO()
+    used_names = set()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for cat in categories:
+            if not cat.get("participants"):
+                continue
+            wb = build_category_workbook(tournament, cat)
+            name = _category_excel_filename(tournament, cat)
+            base, ext = os.path.splitext(name)
+            candidate = name
+            i = 2
+            while candidate.lower() in used_names:
+                candidate = f"{base}_{i}{ext}"
+                i += 1
+            used_names.add(candidate.lower())
+            bio = BytesIO()
+            wb.save(bio)
+            zf.writestr(candidate, bio.getvalue())
+    buffer.seek(0)
+    return buffer
 
 
 def build_workbook(tournament, summary, categories, team_ranking):
@@ -335,9 +551,11 @@ def build_workbook(tournament, summary, categories, team_ranking):
         row += 1
         reg_ws.cell(row=row, column=6, value="Главный судья:")
         reg_ws.merge_cells(start_row=row, start_column=6, end_row=row, end_column=7)
+        reg_ws.cell(row=row, column=8, value=tournament.get("chief_judge") or "")
         row += 1
         reg_ws.cell(row=row, column=6, value="Главный секретарь:")
         reg_ws.merge_cells(start_row=row, start_column=6, end_row=row, end_column=7)
+        reg_ws.cell(row=row, column=8, value=tournament.get("chief_secretary") or "")
         row += 3
     for col, width in zip("ABCDEFGHIJKLMNO", (4, 9, 5, 14, 14, 14, 12, 8, 12, 9, 14, 22, 16, 20, 8)):
         reg_ws.column_dimensions[col].width = width
@@ -406,49 +624,110 @@ def _make_table(rows, header=False):
 # tournament name, sport line, a 3-column info strip (программа / место /
 # дата), the document title, then (after the body) a judge signature block.
 
-def _official_header(styles, tournament, program_label, doc_title):
-    info_cell = lambda value, caption: Paragraph(
-        f"{value or '—'}<br/><font size=7 color='grey'>{caption}</font>", styles["Center"]
+def _spaced_caps(text):
+    """«ПРОТОКОЛ ХОДА» → «П Р О Т О К О Л   Х О Д А» (как на бланке ФВКР)."""
+    words = (text or "").upper().split()
+    return "   ".join(" ".join(ch for ch in word) for word in words)
+
+
+def _protocol_page_header(styles, tournament, program_label, doc_title, compact=False):
+    """Единая шапка всех PDF-протоколов:
+    название+дата · вид спорта · категория|место|дата · заголовок вразрядку.
+    """
+    t_name = tournament.get("name") or "Турнир"
+    t_date = _fmt_date(tournament.get("event_date"))
+    title = f"{t_name} {t_date} г." if t_date else t_name
+    location = tournament.get("location") or ""
+    date_str = t_date or ""
+    program = program_label or ""
+
+    title_fs = 11 if compact else 14
+    sport_fs = 9 if compact else 12
+    info_fs = 8 if compact else 11
+    proto_fs = 11 if compact else 14
+    gap1 = 0.15 * cm if compact else 0.35 * cm
+    gap2 = 0.12 * cm if compact else 0.25 * cm
+    gap3 = 0.15 * cm if compact else 0.35 * cm
+    gap4 = 0.2 * cm if compact else 0.45 * cm
+
+    title_style = ParagraphStyle(
+        "ProtoMainTitle", parent=styles["Normal"],
+        fontName=BRACKET_FONT_BOLD, fontSize=title_fs, alignment=1, leading=title_fs + 2,
+    )
+    sport_style = ParagraphStyle(
+        "ProtoSport", parent=styles["Normal"],
+        fontName=BRACKET_FONT, fontSize=sport_fs, alignment=1, leading=sport_fs + 2,
+    )
+    info_l = ParagraphStyle(
+        "ProtoInfoL", parent=styles["Normal"],
+        fontName=BRACKET_FONT, fontSize=info_fs, alignment=0, leading=info_fs + 2,
+    )
+    info_c = ParagraphStyle(
+        "ProtoInfoC", parent=styles["Normal"],
+        fontName=BRACKET_FONT, fontSize=info_fs, alignment=1, leading=info_fs + 2,
+    )
+    info_r = ParagraphStyle(
+        "ProtoInfoR", parent=styles["Normal"],
+        fontName=BRACKET_FONT, fontSize=info_fs, alignment=2, leading=info_fs + 2,
     )
     info_table = Table(
         [[
-            info_cell(program_label, "вид программы"),
-            info_cell(tournament.get("location"), "место проведения соревнований"),
-            info_cell(_fmt_date(tournament.get("event_date")), "дата проведения соревнований"),
+            Paragraph(program, info_l),
+            Paragraph(location, info_c),
+            Paragraph(date_str, info_r),
         ]],
-        colWidths=["34%", "33%", "33%"],
+        colWidths=["40%", "35%", "25%"],
     )
     info_table.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LINEBELOW", (0, 0), (-1, 0), 0.5, colors.grey),
-        ("TOPPADDING", (0, 0), (-1, -1), 2),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
     ]))
+    proto_style = ParagraphStyle(
+        "ProtoDocTitle", parent=styles["Normal"],
+        fontName=BRACKET_FONT, fontSize=proto_fs, alignment=1, leading=proto_fs + 2,
+    )
     return [
-        Paragraph(tournament.get("name") or "Турнир", styles["Title"]),
-        Paragraph(f"Вид спорта: {SPORT_NAME} (номер-код вида спорта {SPORT_CODE})", styles["Center"]),
-        Spacer(1, 0.25 * cm),
+        Paragraph(title, title_style),
+        Spacer(1, gap1),
+        Paragraph(
+            f"Вид спорта: {SPORT_NAME} (номер-код вида спорта - {SPORT_CODE})",
+            sport_style,
+        ),
+        Spacer(1, gap2),
         info_table,
-        Spacer(1, 0.3 * cm),
-        Paragraph(doc_title, styles["DocTitle"]),
-        Spacer(1, 0.3 * cm),
+        Spacer(1, gap3),
+        Paragraph(_spaced_caps(doc_title), proto_style),
+        Spacer(1, gap4),
     ]
 
 
-def _signature_block(styles):
+def _official_header(styles, tournament, program_label, doc_title):
+    """Шапка итогового / ката-протокола — тот же вид, что у сетки кумитэ."""
+    return _protocol_page_header(styles, tournament, program_label, doc_title, compact=False)
+
+
+def _signature_block(styles, tournament=None):
+    judge = (tournament or {}).get("chief_judge") or ""
+    secretary = (tournament or {}).get("chief_secretary") or ""
     table = Table(
         [
-            ["Главный судья:", "", "Главный секретарь:", ""],
+            ["Главный судья:", "", judge],
+            ["Главный секретарь:", "", secretary],
         ],
-        colWidths=[3.2 * cm, 7 * cm, 3.6 * cm, 7 * cm],
+        colWidths=[4.0 * cm, 8 * cm, 8 * cm],
+        hAlign="LEFT",
     )
     table.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), "DejaVuSans"),
+        ("FONTNAME", (0, 0), (-1, -1), BRACKET_FONT),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
         ("LINEBELOW", (1, 0), (1, 0), 0.5, colors.black),
-        ("LINEBELOW", (3, 0), (3, 0), 0.5, colors.black),
+        ("LINEBELOW", (1, 1), (1, 1), 0.5, colors.black),
         ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
         ("TOPPADDING", (0, 0), (-1, -1), 14),
+        ("ALIGN", (2, 0), (2, -1), "LEFT"),
     ]))
     return table
 
@@ -517,73 +796,194 @@ _KATA_ROUND_ORDER = ["round1", "round2", "final"]
 
 
 def _kata_rounds_table(cat):
-    rounds_present = [r for r in _KATA_ROUND_ORDER if any(s["round_label"] == r for s in cat["kata_scores"])]
-    if not rounds_present:
-        return None
-
-    score_by_reg_round = {(s["registration_id"], s["round_label"]): s for s in cat["kata_scores"]}
-    place_by_reg = {p["registration_id"]: p["place"] for p in cat["placements"] if p.get("registration_id")}
+    """Всегда три круга (1-й / 2-й / Финал): Ката | 1–5 | Итог."""
+    rounds = list(_KATA_ROUND_ORDER)
+    score_by_reg_round = {(s["registration_id"], s["round_label"]): s for s in (cat.get("kata_scores") or [])}
+    place_by_reg = {p["registration_id"]: p["place"] for p in cat.get("placements") or [] if p.get("registration_id")}
+    competition_level = cat.get("competition_level") or "club"
+    org_label = "Регион" if competition_level == "region" else "Команда"
+    cols_per_round = 7  # Ката + 5 оценок + Итог
 
     participants = sorted(
-        cat["participants"],
+        cat.get("participants") or [],
         key=lambda p: (
             place_by_reg.get(p["registration_id"]) is None,
             place_by_reg.get(p["registration_id"], 9999),
             p.get("seed") or 9999,
+            p.get("last_name") or "",
         ),
     )
-    participants = [p for p in participants if any((p["registration_id"], r) in score_by_reg_round for r in rounds_present)]
+    if not participants:
+        return None
 
-    header_top = ["№", "Фамилия Имя"]
+    header_top = ["№", f"Фамилия Имя ({org_label})"]
     header_sub = ["", ""]
-    for r in rounds_present:
-        header_top += [_KATA_ROUND_TITLES[r], "", "", "", "", ""]
-        header_sub += ["1", "2", "3", "4", "5", "Итог"]
+    for r in rounds:
+        header_top += [_KATA_ROUND_TITLES[r]] + [""] * (cols_per_round - 1)
+        header_sub += ["Ката", "1", "2", "3", "4", "5", "Итог"]
     header_top.append("Место")
     header_sub.append("")
 
     rows = [header_top, header_sub]
     for i, p in enumerate(participants, start=1):
-        row = [str(i), _short_name(p)]
-        for r in rounds_present:
+        row = [str(i), _full_name_with_org(p, competition_level)]
+        for r in rounds:
             s = score_by_reg_round.get((p["registration_id"], r))
             if s:
                 row += [
+                    s.get("kata_name") or "—",
                     f'{s["score_1"]:g}', f'{s["score_2"]:g}', f'{s["score_3"]:g}',
                     f'{s["score_4"]:g}', f'{s["score_5"]:g}', f'{s["total_score"]:g}',
                 ]
             else:
-                row += ["", "", "", "", "", ""]
+                row += ["—", "", "", "", "", "", ""]
         place = place_by_reg.get(p["registration_id"])
         row.append(str(place) if place is not None else "")
         rows.append(row)
 
-    n_round_cols = 6 * len(rounds_present)
-    col_widths = [0.8 * cm, 3.6 * cm] + [1.55 * cm] * n_round_cols + [1.2 * cm]
+    # Три круга × 7 колонок — уместить в landscape A4
+    kata_w = 1.55 * cm
+    score_w = 0.82 * cm
+    total_w = 0.95 * cm
+    round_widths = [kata_w] + [score_w] * 5 + [total_w]
+    col_widths = [0.65 * cm, 3.4 * cm] + round_widths * len(rounds) + [1.0 * cm]
     table = Table(rows, colWidths=col_widths, repeatRows=2)
 
     style = [
         ("FONTNAME", (0, 0), (-1, -1), "DejaVuSans"),
         ("FONTNAME", (0, 0), (-1, 1), "DejaVuSans-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+        ("FONTSIZE", (0, 0), (-1, -1), 6.0),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
         ("BACKGROUND", (0, 0), (-1, 1), colors.whitesmoke),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("ALIGN", (2, 0), (-1, -1), "CENTER"),
         ("ALIGN", (0, 0), (0, -1), "CENTER"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 1),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 1),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
         ("SPAN", (0, 0), (0, 1)),
         ("SPAN", (1, 0), (1, 1)),
         ("SPAN", (-1, 0), (-1, 1)),
     ]
     col = 2
-    for _ in rounds_present:
-        style.append(("SPAN", (col, 0), (col + 5, 0)))
-        col += 6
+    for _ in rounds:
+        style.append(("SPAN", (col, 0), (col + cols_per_round - 1, 0)))
+        col += cols_per_round
     table.setStyle(TableStyle(style))
     return table
 
 
-# ─── ПРОТОКОЛ ХОДА СОРЕВНОВАНИЯ — кумитэ (bracket tree) ────────────────────
+# ─── ПРОТОКОЛ ХОДА СОРЕВНОВАНИЙ — кумитэ (официальная сетка) ─────────────────
+
+def _bracket_program_desc(cat):
+    age_label = _section_age_label(cat["gender"], _dominant_age_group(cat["participants"]))
+    if cat["discipline"] == "kata":
+        return f"{age_label}  {cat['category_name']}"
+    short = DISCIPLINE_SHORT.get(cat["discipline"], cat["discipline"])
+    return f"{age_label}  {short}-весовая категория {cat['category_name']} кг"
+
+
+def _bracket_protocol_header(styles, tournament, cat, compact=False):
+    """Шапка протокола сетки — единый вид всех протоколов."""
+    return _protocol_page_header(
+        styles,
+        tournament,
+        _bracket_program_desc(cat),
+        "ПРОТОКОЛ ХОДА СОРЕВНОВАНИЙ",
+        compact=compact,
+    )
+
+
+def _full_name_with_org(p, competition_level="club"):
+    if not p:
+        return ""
+    fio = p.get("full_name") or _short_name(p)
+    org = _participant_org(p, competition_level)
+    return f"{fio} ({org})" if org else fio
+
+
+def _official_bracket_results_table(cat, avail_width=None, compact=False):
+    """Таблица «Результаты»: Место | ФИО (команда) — компактно слева, не на всю ширину."""
+    competition_level = cat.get("competition_level") or "club"
+    org_label = "Регион" if competition_level == "region" else "Команда"
+    by_place = {p["place"]: p for p in cat.get("placements") or []}
+
+    rows = [
+        ["Место", f"Фамилия Имя Отчество ({org_label})"],
+    ]
+    for place in (1, 2, 3, 4):
+        p = by_place.get(place)
+        if p:
+            rows.append([str(place), _full_name_with_org(p, competition_level)])
+        else:
+            rows.append([str(place), _NA])
+
+    # Как на бланке: таблица ~половина листа, слева; остальное место свободно
+    max_table_w = 13.5 * cm
+    width = min(avail_width or max_table_w, max_table_w)
+    place_w = 1.6 * cm if compact else 1.8 * cm
+    name_w = max(width - place_w, 8 * cm)
+    font_size = 9 if compact else 11
+    title_size = 10 if compact else 12
+    pad = 2 if compact else 3
+
+    table = Table(rows, colWidths=[place_w, name_w], hAlign="LEFT")
+    table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), BRACKET_FONT),
+        ("FONTNAME", (0, 0), (-1, 0), BRACKET_FONT_BOLD),
+        ("FONTSIZE", (0, 0), (-1, -1), font_size),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+        ("ALIGN", (0, 0), (0, -1), "CENTER"),
+        ("ALIGN", (1, 0), (1, 0), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), pad),
+        ("RIGHTPADDING", (0, 0), (-1, -1), pad),
+        ("TOPPADDING", (0, 0), (-1, -1), pad),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), pad),
+    ]))
+    return KeepTogether([
+        Paragraph("Результаты", ParagraphStyle(
+            "ResTitle", fontName=BRACKET_FONT_BOLD, fontSize=title_size, alignment=0,
+        )),
+        Spacer(1, 0.1 * cm),
+        table,
+    ])
+
+
+def _bracket_signature_block(tournament=None, avail_width=None, compact=False):
+    """Подписи: слева должность, линия, справа ФИО из карточки турнира."""
+    # Подписи шире таблицы результатов — место под ФИО справа
+    width = min(avail_width or (22 * cm), 22 * cm)
+    label_w = 3.8 * cm if compact else 4.2 * cm
+    name_w = 5.5 * cm if compact else 6.5 * cm
+    line_w = max(width - label_w - name_w, 4 * cm)
+    font_size = 9 if compact else 11
+    pad = 6 if compact else 8
+    judge = (tournament or {}).get("chief_judge") or ""
+    secretary = (tournament or {}).get("chief_secretary") or ""
+    table = Table(
+        [
+            ["Главный судья:", "", judge],
+            ["Главный секретарь:", "", secretary],
+        ],
+        colWidths=[label_w, line_w, name_w],
+        hAlign="LEFT",
+    )
+    table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), BRACKET_FONT),
+        ("FONTSIZE", (0, 0), (-1, -1), font_size),
+        ("LINEBELOW", (1, 0), (1, 0), 0.5, colors.black),
+        ("LINEBELOW", (1, 1), (1, 1), 0.5, colors.black),
+        ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+        ("TOPPADDING", (0, 0), (-1, -1), pad),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("ALIGN", (2, 0), (2, -1), "LEFT"),
+    ]))
+    return table
+
 
 def _bouts_index(bouts):
     index = {}
@@ -611,9 +1011,6 @@ def _resolve_match(a, b, bouts_by_pair):
 
 
 def _bracket_rounds(participants, bouts_by_pair):
-    """participants: entries with global draw numbers (№ жреб.).
-  Within a subgroup, local bracket positions 1..k map to sorted global seeds
-  (same logic as federation Excel templates and app/draw.py::subgroup_round1)."""
     sorted_p = sorted((p for p in participants if p.get("seed")), key=lambda p: p["seed"])
     n = len(sorted_p)
     if n == 0:
@@ -621,23 +1018,16 @@ def _bracket_rounds(participants, bouts_by_pair):
     by_local = {i + 1: p for i, p in enumerate(sorted_p)}
     size = next_power_of_two(n)
     pairs = round1_pairs_by_seed(size)
-
     current = []
     for la, lb in pairs:
         pa, pb = by_local.get(la), by_local.get(lb)
         winner, bout = _resolve_match(pa, pb, bouts_by_pair)
         current.append({"a": pa, "b": pb, "winner": winner, "bout": bout})
-
     rounds = [current]
     while len(current) > 1:
         nxt = []
         for i in range(0, len(current), 2):
             wa, wb = current[i]["winner"], current[i + 1]["winner"]
-            # Byes only exist at the leaf level (padding to a power of two);
-            # from round 2 on, a missing side means "not decided yet", not
-            # "no opponent" - _resolve_match can't tell those apart, so only
-            # call it once both feeder matches have an actual winner, or an
-            # undecided semifinal would let the other side prematurely "win".
             winner, bout = _resolve_match(wa, wb, bouts_by_pair) if wa and wb else (None, None)
             nxt.append({"a": wa, "b": wb, "winner": winner, "bout": bout})
         rounds.append(nxt)
@@ -645,237 +1035,860 @@ def _bracket_rounds(participants, bouts_by_pair):
     return rounds
 
 
-class _BracketDiagram(Flowable):
-    """Draws a single-elimination bracket (one tree per subgroup, merging
-    into one final box when there are two subgroups, plus a small
-    consolation-match box for 3rd place) using plain canvas primitives -
-    reportlab has no built-in bracket/tree flowable."""
+def _loser_of(match):
+    if not match or not match.get("winner"):
+        return None
+    w = match["winner"]
+    if match.get("a") and match["a"]["registration_id"] == w["registration_id"]:
+        return match.get("b")
+    return match.get("a")
 
-    BOX_W = 3.2 * cm
-    H_GAP = 0.7 * cm
-    MAX_ROW_H = 0.85 * cm
-    MIN_ROW_H = 0.4 * cm
-    GROUP_GAP = 0.6 * cm
-    SEED_W = 0.42 * cm
 
-    def __init__(self, rounds_per_group, final_match, bronze_match, avail_width, avail_height, competition_level="club", font_name="DejaVuSans"):
+def _build_repechage_bracket(round1, bouts_by_pair):
+    losers = [
+        _loser_of(m)
+        for m in round1
+        if m.get("a") and m.get("b") and m.get("winner")
+    ]
+    losers = [p for p in losers if p]
+    if not losers:
+        return {"rounds": [], "champion": None}
+    if len(losers) == 1:
+        return {"rounds": [], "champion": losers[0]}
+    reseeded = []
+    for i, p in enumerate(sorted(losers, key=lambda x: x.get("seed") or 999)):
+        entry = dict(p)
+        entry["seed"] = i + 1
+        reseeded.append(entry)
+    rounds = _bracket_rounds(reseeded, bouts_by_pair)
+    champion = rounds[-1][0]["winner"] if rounds else None
+    return {"rounds": rounds, "champion": champion}
+
+
+def _compute_kumite_bracket_data(participants, bouts):
+    """Та же логика, что computeKumiteBracketData в App.jsx."""
+    reg_ids = {p["registration_id"] for p in participants}
+    table_bouts = [
+        b for b in bouts
+        if b.get("registration_id_a") in reg_ids and b.get("registration_id_b") in reg_ids
+    ]
+    bouts_by_pair = _bouts_index(table_bouts)
+
+    if len(participants) == 3:
+        sorted_p = sorted(participants, key=lambda p: p.get("seed") or 99)
+        pairs = []
+        for i, j in ((0, 1), (0, 2), (1, 2)):
+            a, b = sorted_p[i], sorted_p[j]
+            winner, bout = _resolve_match(a, b, bouts_by_pair)
+            pairs.append({"a": a, "b": b, "winner": winner, "bout": bout})
+        return {"round_robin": True, "pairs": pairs, "drawn": any(p.get("seed") for p in participants), "participant_count": 3}
+
+    if not any(p.get("seed") for p in participants):
+        return {"round_robin": False, "drawn": False}
+
+    by_subgroup = {}
+    use_parity = len(participants) >= 5
+    for p in participants:
+        if use_parity:
+            key = 1 if p["seed"] % 2 == 1 else 2
+        else:
+            key = p.get("subgroup") or 1
+        by_subgroup.setdefault(key, []).append(p)
+
+    subgroup_keys = sorted(by_subgroup.keys())
+    rounds_per_group = [_bracket_rounds(by_subgroup[k], bouts_by_pair) for k in subgroup_keys]
+    rounds_per_group = [r for r in rounds_per_group if r]
+    two_groups = len(rounds_per_group) > 1
+
+    champs = [r[-1][0]["winner"] if r else None for r in rounds_per_group]
+    final_match = None
+    if two_groups:
+        final_match = {"a": champs[0], "b": champs[-1], "winner": None}
+        if champs[0] and champs[-1]:
+            final_match["winner"], _ = _resolve_match(champs[0], champs[-1], bouts_by_pair)
+
+    repechage_per_group = []
+    bronze_match = None
+    if two_groups:
+        repechage_per_group = [
+            _build_repechage_bracket(r[0] if r else [], bouts_by_pair)
+            for r in rounds_per_group
+        ]
+        rep_champs = [g["champion"] for g in repechage_per_group]
+        bronze_match = {"a": rep_champs[0], "b": rep_champs[-1], "winner": None}
+        if rep_champs[0] and rep_champs[-1]:
+            bronze_match["winner"], _ = _resolve_match(
+                rep_champs[0], rep_champs[-1], bouts_by_pair)
+    elif rounds_per_group and len(rounds_per_group[0]) >= 2:
+        semi = rounds_per_group[0][-2]
+        la = _loser_of(semi[0]) if len(semi) >= 1 else None
+        lb = _loser_of(semi[1]) if len(semi) >= 2 else None
+        bronze_match = {"a": la, "b": lb, "winner": None}
+        if la and lb:
+            bronze_match["winner"], _ = _resolve_match(la, lb, bouts_by_pair)
+
+    return {
+        "round_robin": False,
+        "drawn": True,
+        "rounds_per_group": rounds_per_group,
+        "two_groups": two_groups,
+        "final_match": final_match,
+        "bronze_match": bronze_match,
+        "repechage_per_group": repechage_per_group,
+        "participant_count": len(participants),
+    }
+
+
+def _excel_bracket_style(bracket_data):
+    """Одинаковая логика размеров для всех сеток; 17+ — зеркало, иначе слева→направо."""
+    groups = bracket_data.get("rounds_per_group") or [[[]]]
+    if bracket_data.get("round_robin"):
+        row_leaves = 2
+        two_groups = False
+        n_part = 3
+        total_leaves = 2
+    else:
+        per_group = [2 * len(g[0]) for g in groups if g]
+        total_leaves = sum(per_group) if per_group else 0
+        two_groups = bool(bracket_data.get("two_groups"))
+        n_part = bracket_data.get("participant_count")
+        if n_part is None:
+            n_part = sum(
+                1
+                for g in groups if g
+                for m in g[0]
+                for p in (m.get("a"), m.get("b"))
+                if p
+            )
+        # Плотность по числу рядов по вертикали:
+        # зеркало — максимум в одной половине; до 16 — обе подгруппы друг под другом.
+        if two_groups and n_part >= 17:
+            row_leaves = max(per_group or [0])
+        elif two_groups:
+            row_leaves = total_leaves
+        else:
+            row_leaves = max(per_group or [0])
+
+    # База одна и та же для 3…18+ (дальше единый fit под страницу, как у 2–16).
+    layout = (
+        "round_robin" if bracket_data.get("round_robin")
+        else "horizontal" if (two_groups and n_part >= 17)
+        else "single"
+    )
+    box_w = 170.0
+    seed_w = 14.0
+    # Зеркало: плотнее по горизонтали — ячейки крупнее после fit под страницу
+    h_gap = 8.0 if layout == "horizontal" else 24.0
+    if row_leaves > 12:
+        box_h = 12.5 if layout == "horizontal" else 11.0
+        row_gap = 6.5 if layout == "horizontal" else 7.5
+        pair_gap = 4.5 if layout == "horizontal" else 5.5
+        seed_font, name_font, label_font = (6.5, 8.5, 8.5) if layout == "horizontal" else (5.5, 7.5, 7.5)
+    elif row_leaves > 8:
+        box_h = 12.5
+        row_gap = 7.5
+        pair_gap = 7.5
+        seed_font, name_font, label_font = 7.0, 9.0, 9.0
+    else:
+        box_h = 14.5
+        row_gap = 8.0
+        pair_gap = 10.0
+        seed_font, name_font, label_font = 8.0, 10.0, 10.0
+    row_h = box_h + row_gap
+
+    return {
+        "seed_w": seed_w,
+        "leaf_w": box_w,
+        "h_gap": h_gap,
+        "round_w": box_w,
+        "row_h": row_h,
+        "box_h": box_h,
+        "row_gap": row_gap,
+        "pair_gap": pair_gap,
+        "seed_font": seed_font,
+        "name_font": name_font,
+        "winner_font": name_font,
+        "label_font": label_font,
+        # Зеркало: крошечный зазор между финалистами (бокс «1-е место» сверху, не в зазоре)
+        "center_gap": 6.0 if layout == "horizontal" else (h_gap + box_w + h_gap),
+        "group_gap": pair_gap if (layout == "single" and two_groups) else (row_h + pair_gap),
+        "layout": layout,
+    }
+
+
+def _scale_bracket_style(style, factor):
+    """Единый коэффициент на ячейки, зазоры и шрифты (пропорции как у сеток 2–16)."""
+    if abs(factor - 1.0) < 0.001:
+        return style
+    factor = max(min(factor, 1.75), 0.28)
+    out = dict(style)
+    for key in (
+        "seed_w", "leaf_w", "h_gap", "round_w", "box_h", "row_gap", "pair_gap",
+        "seed_font", "name_font", "winner_font", "label_font",
+    ):
+        if key in out:
+            out[key] = out[key] * factor
+    out["seed_font"] = max(out["seed_font"], 4.0)
+    out["name_font"] = max(out["name_font"], 4.5)
+    out["winner_font"] = max(out["winner_font"], 4.5)
+    out["label_font"] = max(out["label_font"], 4.5)
+    out["row_h"] = out["box_h"] + out["row_gap"]
+    out["round_w"] = out["leaf_w"]
+    if out.get("layout") == "horizontal":
+        # Не раздувать зазор вместе с ячейками — между финалистами всегда узко
+        out["center_gap"] = 6.0
+    else:
+        out["center_gap"] = out["h_gap"] + out["leaf_w"] + out["h_gap"]
+    if style.get("layout") == "single" and style.get("group_gap", 99) <= style.get("pair_gap", 0) + 0.1:
+        out["group_gap"] = out["pair_gap"]
+    else:
+        out["group_gap"] = out["row_h"] + out["pair_gap"]
+    return out
+
+
+def _bracket_col_x(c, box_w, h_gap, round_w=None):
+    """Левый край колонки раунда c (0 — листья). Все колонки одной ширины box_w."""
+    return c * (box_w + h_gap)
+
+
+def _fit_name_font(canv, text, font_name, max_size, min_size, max_width):
+    """Уменьшить шрифт под ширину поля; размер бокса не меняется."""
+    size = max_size
+    while size > min_size and canv.stringWidth(text or "", font_name, size) > max_width:
+        size -= 0.5
+    return size
+
+
+def _layout_single_tree(rounds, y_start, style, leaf_bye_seeds=None, compact_finish=False):
+    """Чертёж одной подгруппы: 1) боксы 1-го круга 2) соединители 3) бокс победителя.
+    compact_finish (зеркало 17+): финалист в колонке полуфиналистов, ровно между
+    ними по Y; вертикаль вилки справа коротких штрихом. После зеркала — справа.
+    """
+    box_w = style["leaf_w"]
+    box_h = style["box_h"]
+    row_h = style["row_h"]
+    h_gap = style["h_gap"]
+    pair_gap = style.get("pair_gap", 0)
+    boxes, lines = [], []
+    leaf_n = 2 * len(rounds[0])
+    y = y_start
+    ys0, present0 = [], []
+
+    # Этап 1 — все прямоугольники первого раунда (с зазором между ячейками)
+    for i in range(leaf_n):
+        cy = y + box_h / 2
+        ys0.append(cy)
+        match = rounds[0][i // 2]
+        slot = match["a"] if i % 2 == 0 else match["b"]
+        present0.append(bool(slot))
+        if slot:
+            boxes.append({"kind": "leaf", "x": 0, "y": y, "width": box_w, "participant": slot})
+        elif leaf_bye_seeds and i < len(leaf_bye_seeds):
+            boxes.append({"kind": "bye", "x": 0, "y": y, "width": box_w, "seed": leaf_bye_seeds[i]})
+        y += row_h
+        if pair_gap and i % 2 == 1 and i < leaf_n - 1:
+            y += pair_gap
+
+    col_ys, col_present = ys0, present0
+    max_rounds = len(rounds)
+    fork_exit_x = 0.0
+    for c in range(1, max_rounds + 1):
+        next_ys = []
+        x_prev_right = _bracket_col_x(c - 1, box_w, h_gap) + box_w
+        is_finalist_round = compact_finish and c == max_rounds
+
+        if is_finalist_round:
+            # Финалист в той же колонке, что полуфиналисты — ровно между ними по вертикали.
+            # Вертикаль вилки справа с коротким штрихом (не впритык к боксу).
+            x_sf = _bracket_col_x(c - 1, box_w, h_gap)
+            x_box = x_sf
+            fin_right = x_box + box_w
+            stub = max(h_gap * 0.2, 3)
+            mid_x = fin_right + stub
+            fork_exit_x = mid_x
+            for j, match in enumerate(rounds[c - 1]):
+                ya = col_ys[2 * j]
+                yb = col_ys[2 * j + 1]
+                py = (ya + yb) / 2
+                next_ys.append(py)
+                lines.extend([
+                    (fin_right, ya, mid_x, ya),
+                    (fin_right, yb, mid_x, yb),
+                    (mid_x, ya, mid_x, yb),
+                    (fin_right, py, mid_x, py),
+                ])
+                boxes.append({
+                    "kind": "participant_box", "round": c,
+                    "x": x_box, "y": py - box_h / 2, "width": box_w,
+                    "participant": match.get("winner"),
+                })
+        else:
+            x_next_left = _bracket_col_x(c, box_w, h_gap)
+            for j, match in enumerate(rounds[c - 1]):
+                ya = col_ys[2 * j]
+                yb = col_ys[2 * j + 1]
+                py = (ya + yb) / 2
+                next_ys.append(py)
+                mid_x = x_prev_right + (x_next_left - x_prev_right) / 2
+                lines.extend([
+                    (x_prev_right, ya, mid_x, ya),
+                    (x_prev_right, yb, mid_x, yb),
+                    (mid_x, ya, mid_x, yb),
+                    (mid_x, py, x_next_left, py),
+                ])
+                boxes.append({
+                    "kind": "participant_box", "round": c,
+                    "x": x_next_left, "y": py - box_h / 2, "width": box_w,
+                    "participant": match.get("winner"),
+                })
+            fork_exit_x = x_next_left + box_w
+        col_ys, col_present = next_ys, [True] * len(next_ys)
+
+    champ_y = col_ys[0] if col_ys else ys0[0]
+    if compact_finish and max_rounds >= 1:
+        # Короткий хвост после вертикали (без пустой «колонки» шириной с ячейку)
+        finish_inset = max(h_gap * 0.15, 2)
+        champ_x = fork_exit_x
+        tree_w = champ_x + finish_inset
+    else:
+        tree_w = _bracket_col_x(max_rounds, box_w, h_gap) + box_w
+        champ_x = tree_w
+    return boxes, lines, y, champ_x, champ_y, tree_w
+
+
+def _mirror_tree(boxes, lines, tree_w, leaf_w, origin_x):
+    m_boxes = []
+    for b in boxes:
+        nb = dict(b)
+        w = b.get("width", leaf_w)
+        nb["x"] = origin_x + tree_w - b["x"] - w
+        if b["kind"] in ("winner", "leaf", "participant_box", "bye"):
+            nb["mirrored"] = True
+        if b["kind"] == "winner":
+            nb["line_from"] = origin_x + tree_w - b["line_to"]
+            nb["line_to"] = origin_x + tree_w - b["line_from"]
+        m_boxes.append(nb)
+    m_lines = [
+        (origin_x + tree_w - x2, y2, origin_x + tree_w - x1, y1)
+        for x1, y1, x2, y2 in lines
+    ]
+    return m_boxes, m_lines
+
+
+def _leaf_bye_seeds_for_rounds(rounds):
+    n = sum(1 for m in rounds[0] for p in (m.get("a"), m.get("b")) if p)
+    size = next_power_of_two(max(n, 1))
+    return seed_position_order(size)
+
+
+def _append_bronze_block(all_boxes, all_lines, labels, bronze_match, repechage, style, y):
+    """Блок «поединок за 3-е место» под основной сеткой."""
+    leaf_w = style["leaf_w"]
+    box_h = style["box_h"]
+    row_h = style["row_h"]
+    h_gap = style["h_gap"]
+    if not bronze_match:
+        return y
+    has_rep = any(g.get("rounds") for g in (repechage or []))
+    labels.append({"x": 0, "y": y + row_h * 0.4, "text": "поединок за 3-е место", "bold": True})
+    y += row_h * 1.6
+    if has_rep:
+        rep_champs = []
+        for group in repechage:
+            rounds = group.get("rounds") or []
+            if rounds:
+                rb, rl, y_end, rcx, rcy, _ = _layout_single_tree(rounds, y, style)
+                all_boxes.extend(rb)
+                all_lines.extend(rl)
+                rep_champs.append((rcx, rcy))
+                y = y_end
+            elif group.get("champion"):
+                py = y + box_h / 2
+                all_boxes.append({
+                    "kind": "participant_box", "round": 2,
+                    "x": 0, "y": y, "width": leaf_w, "participant": group["champion"],
+                })
+                rep_champs.append((leaf_w, py))
+                y += row_h
+        if len(rep_champs) >= 2:
+            ya, yb = rep_champs[0][1], rep_champs[-1][1]
+            py = (ya + yb) / 2
+            x_prev_right = leaf_w
+            x_next_left = leaf_w + h_gap
+            mid_x = x_prev_right + (x_next_left - x_prev_right) / 2
+            all_lines.extend([
+                (x_prev_right, ya, mid_x, ya), (x_prev_right, yb, mid_x, yb),
+                (mid_x, ya, mid_x, yb), (mid_x, py, x_next_left, py),
+            ])
+            all_boxes.append({
+                "kind": "participant_box", "round": 2,
+                "x": x_next_left, "y": py - box_h / 2, "width": leaf_w,
+                "participant": bronze_match.get("winner"),
+            })
+    else:
+        ya = y + box_h / 2
+        yb = ya + row_h
+        all_boxes.append({
+            "kind": "leaf", "x": 0, "y": y, "width": leaf_w,
+            "participant": bronze_match.get("a"),
+        })
+        all_boxes.append({
+            "kind": "leaf", "x": 0, "y": y + row_h, "width": leaf_w,
+            "participant": bronze_match.get("b"),
+        })
+        py = (ya + yb) / 2
+        x_prev_right = leaf_w
+        x_next_left = leaf_w + h_gap
+        mid_x = x_prev_right + (x_next_left - x_prev_right) / 2
+        all_lines.extend([
+            (x_prev_right, ya, mid_x, ya), (x_prev_right, yb, mid_x, yb),
+            (mid_x, ya, mid_x, yb), (mid_x, py, x_next_left, py),
+        ])
+        all_boxes.append({
+            "kind": "participant_box", "round": 2,
+            "x": x_next_left, "y": py - box_h / 2, "width": leaf_w,
+            "participant": bronze_match.get("winner"),
+        })
+        y = yb + box_h / 2
+    return y + box_h + 8
+
+
+def _shift_bracket_geometry(boxes, lines, labels, dy):
+    """Сдвиг всей геометрии вниз (нужен, когда «1-е место» рисуется выше сеток)."""
+    if abs(dy) < 0.01:
+        return
+    for b in boxes:
+        b["y"] = b["y"] + dy
+    for i, (x1, y1, x2, y2) in enumerate(lines):
+        lines[i] = (x1, y1 + dy, x2, y2 + dy)
+    for lbl in labels:
+        lbl["y"] = lbl["y"] + dy
+
+
+def _append_final(all_boxes, all_lines, champ_points, final_match, style, layout_w, tree_w, right_origin=None, labels=None):
+    """Финал: single — бокс справа; horizontal — схождение по центру, «1-е место» сверху.
+    Возвращает (layout_w, dy) — dy > 0 если сетку сдвинули вниз под бокс чемпиона.
+    """
+    if not final_match or len(champ_points) < 2:
+        return layout_w, 0
+    leaf_w = style["leaf_w"]
+    box_h = style["box_h"]
+    h_gap = style["h_gap"]
+    center_gap = style["center_gap"]
+    label_fs = max(style.get("label_font", 7), 5)
+
+    y0, y1 = champ_points[0][1], champ_points[1][1]
+    py = (y0 + y1) / 2
+    if right_origin is not None:
+        # «1-е место» сверху по центру — свои размеры, без линий к сетке.
+        mid_x = tree_w + center_gap / 2
+        label_fs = max(label_fs * 1.15, label_fs + 1)
+        label_band = label_fs + 4
+        # Крупнее обычных ячеек; ширина не ограничена center_gap (может заходить в пустоту сверху)
+        champ_h = max(box_h * 2.1, 22.0)
+        champ_w = max(leaf_w * 1.45, 120.0)
+        champ_top = 0.0
+        champ_bottom = champ_h
+        # Не перекрывать зону финалистов по вертикали
+        if champ_bottom + label_band > min(y0, y1) - 6:
+            champ_bottom = min(y0, y1) - label_band - 6
+            champ_top = champ_bottom - champ_h
+
+        x_box = mid_x - champ_w / 2
+        all_boxes.append({
+            "kind": "participant_box", "round": 99,
+            "x": x_box, "y": champ_top, "width": champ_w, "height": champ_h,
+            "participant": final_match.get("winner"),
+            "name_font_scale": 1.25,
+        })
+        if labels is not None:
+            labels.append({
+                "x": mid_x,
+                "y": champ_bottom + label_fs * 0.9,
+                "text": "1-е место",
+                "bold": True,
+                "align": "center",
+                "font_scale": 1.2,
+            })
+
+        top_pad = max(0, -champ_top + 2)
+        if top_pad:
+            _shift_bracket_geometry(all_boxes, all_lines, labels or [], top_pad)
+        return max(layout_w, x_box + champ_w, champ_points[1][0]), top_pad
+
+    x_box = max(p[0] for p in champ_points) + h_gap
+    mid_x = x_box - h_gap / 2
+    all_lines.extend([
+        (champ_points[0][0], y0, mid_x, y0),
+        (champ_points[1][0], y1, mid_x, y1),
+        (mid_x, y0, mid_x, y1),
+        (mid_x, py, x_box, py),
+    ])
+    all_boxes.append({
+        "kind": "participant_box", "round": 99,
+        "x": x_box, "y": py - box_h / 2, "width": leaf_w,
+        "participant": final_match.get("winner"),
+    })
+    return max(layout_w, x_box + leaf_w), 0
+
+
+def _compute_bracket_layout_round_robin(bracket_data, style):
+    """Круговая система (3 участника): три матча тем же чертежом, что олимпийская сетка."""
+    pairs = bracket_data.get("pairs") or []
+    all_boxes, all_lines, labels = [], [], []
+    y = 0
+    layout_w = 0
+    group_gap = style.get("group_gap", style["row_h"] * 1.2)
+    for i, match in enumerate(pairs):
+        rounds = [[match]]
+        b, l, y_end, _cx, _cy, tw = _layout_single_tree(rounds, y, style)
+        all_boxes.extend(b)
+        all_lines.extend(l)
+        layout_w = max(layout_w, tw)
+        y = y_end
+        if i < len(pairs) - 1:
+            y += group_gap
+    return all_boxes, all_lines, labels, layout_w, y
+
+
+def _compute_bracket_layout_horizontal(bracket_data, style):
+    """Две подгруппы зеркально слева/справа + финал по центру."""
+    leaf_w = style["leaf_w"]
+    center_gap = style["center_gap"]
+    rounds_per_group = bracket_data["rounds_per_group"]
+    final_match = bracket_data.get("final_match")
+    bronze_match = bracket_data.get("bronze_match")
+    repechage = bracket_data.get("repechage_per_group") or []
+
+    all_boxes, all_lines, labels = [], [], []
+    b0, l0, y0_end, cx0, cy0, tw0 = _layout_single_tree(
+        rounds_per_group[0], 0, style, _leaf_bye_seeds_for_rounds(rounds_per_group[0]),
+        compact_finish=True)
+    b1, l1, y1_end, cx1, cy1, tw1 = _layout_single_tree(
+        rounds_per_group[1], 0, style, _leaf_bye_seeds_for_rounds(rounds_per_group[1]),
+        compact_finish=True)
+    tree_w = max(tw0, tw1)
+    right_origin = tree_w + center_gap
+    b1m, l1m = _mirror_tree(b1, l1, tw1, leaf_w, right_origin)
+    all_boxes.extend(b0)
+    all_boxes.extend(b1m)
+    all_lines.extend(l0)
+    all_lines.extend(l1m)
+    y = max(y0_end, y1_end)
+    # Точки выхода — правый край левого финалиста / левый край правого
+    champ_points = [(cx0, cy0), (right_origin + tw1 - cx1, cy1)]
+    layout_w = right_origin + tree_w
+    layout_w, dy = _append_final(
+        all_boxes, all_lines, champ_points, final_match, style, layout_w, tree_w, right_origin, labels)
+    y = y + dy
+    y = _append_bronze_block(all_boxes, all_lines, labels, bronze_match, repechage, style, y)
+    return all_boxes, all_lines, labels, layout_w, y
+
+
+def _compute_bracket_layout_single(bracket_data, style):
+    """Слева→направо без зеркала: одна подгруппа или две друг под другом (до 16)."""
+    rounds_per_group = bracket_data["rounds_per_group"]
+    final_match = bracket_data.get("final_match")
+    bronze_match = bracket_data.get("bronze_match")
+    repechage = bracket_data.get("repechage_per_group") or []
+    box_w = style["leaf_w"]
+    box_h = style["box_h"]
+    h_gap = style["h_gap"]
+    group_gap = style.get("group_gap", style["row_h"])
+    all_boxes, all_lines, labels = [], [], []
+    y = 0
+    champ_points = []
+    layout_w = 0
+    max_rounds = max((len(r) for r in rounds_per_group), default=0)
+
+    for gi, rounds in enumerate(rounds_per_group):
+        b, l, y_end, cx, cy, tw = _layout_single_tree(
+            rounds, y, style, _leaf_bye_seeds_for_rounds(rounds))
+        all_boxes.extend(b)
+        all_lines.extend(l)
+        layout_w = max(layout_w, tw)
+        champ_x, champ_y = cx, cy
+        # Выровнять более короткую подгруппу по числу кругов (как на экране)
+        champion = rounds[-1][0].get("winner") if rounds else None
+        for c in range(len(rounds) + 1, max_rounds + 1):
+            x_prev_right = _bracket_col_x(c - 1, box_w, h_gap) + box_w
+            x_next_left = _bracket_col_x(c, box_w, h_gap)
+            all_lines.append((x_prev_right, champ_y, x_next_left, champ_y))
+            all_boxes.append({
+                "kind": "participant_box", "round": c,
+                "x": x_next_left, "y": champ_y - box_h / 2, "width": box_w,
+                "participant": champion,
+            })
+            champ_x = x_next_left + box_w
+            layout_w = max(layout_w, champ_x)
+        champ_points.append((champ_x, champ_y))
+        y = y_end
+        if gi < len(rounds_per_group) - 1:
+            y += group_gap
+
+    if final_match and len(champ_points) >= 2:
+        layout_w, _dy = _append_final(
+            all_boxes, all_lines, champ_points, final_match, style, layout_w, layout_w, None)
+    y = _append_bronze_block(all_boxes, all_lines, labels, bronze_match, repechage, style, y)
+    return all_boxes, all_lines, labels, layout_w, y
+
+
+def _compute_bracket_layout(bracket_data, style):
+    layout = style.get("layout", "single")
+    if layout == "round_robin":
+        return _compute_bracket_layout_round_robin(bracket_data, style)
+    if layout == "horizontal":
+        return _compute_bracket_layout_horizontal(bracket_data, style)
+    return _compute_bracket_layout_single(bracket_data, style)
+
+
+class _OfficialBracketDiagram(Flowable):
+    """Официальный бланк сетки: сначала линии, потом прямоугольники, потом текст.
+
+    Ячейки/шрифты/отступы логически уменьшаются, чтобы сетка влезла в avail_*.
+    """
+
+    def __init__(self, bracket_data, avail_width, avail_height, competition_level="club", font_name=None):
         super().__init__()
-        self.rounds_per_group = rounds_per_group
-        self.final_match = final_match
-        self.bronze_match = bronze_match
         self.competition_level = competition_level
-        self.font_name = font_name
+        self.font_name = font_name or BRACKET_FONT
+        self.font_bold = BRACKET_FONT_BOLD
+        max_w = max((avail_width or 0) * 0.98, 1.0)
+        max_h = max(avail_height or 0, 1.0)
 
-        self.leaf_counts = [2 * len(r[0]) for r in rounds_per_group]
-        total_leaf_rows = sum(self.leaf_counts) or 1
-        n_groups = len(rounds_per_group)
-        bronze_rows = 3 if bronze_match else 0
+        style = _excel_bracket_style(bracket_data)
+        boxes, lines, labels, lw, lh = _compute_bracket_layout(bracket_data, style)
 
-        content_height = total_leaf_rows * self.MAX_ROW_H + max(n_groups - 1, 0) * self.GROUP_GAP
-        content_height += bronze_rows * self.MAX_ROW_H
-        self.row_h = self.MAX_ROW_H
-        if avail_height and content_height > avail_height:
-            scale = max(avail_height / content_height, 0.35)
-            self.row_h = max(self.MAX_ROW_H * scale, self.MIN_ROW_H)
+        # Та же логика, что у сеток 2–16:
+        # 1) подгонка по высоте (ячейки/шрифты/зазоры пропорционально)
+        if lh > max_h and lh > 0:
+            style = _scale_bracket_style(style, max_h / lh)
+            boxes, lines, labels, lw, lh = _compute_bracket_layout(bracket_data, style)
 
-        max_rounds = max((len(r) for r in rounds_per_group), default=0)
-        self.n_cols = 1 + max_rounds + (1 if n_groups > 1 else 0)
-        self.box_w, self.h_gap = self.BOX_W, self.H_GAP
-        natural_width = self.n_cols * self.box_w + (self.n_cols - 1) * self.h_gap
-        if avail_width and natural_width > avail_width:
-            scale = max(avail_width / natural_width, 0.5)
-            self.box_w *= scale
-            self.h_gap *= scale
-        self.font_size = 7 if self.box_w > 2.2 * cm else 6
+        # 2) если шире страницы — жмём ширину ячейки и горизонтальные зазоры
+        if lw > max_w and lw > 0:
+            hx = max_w / lw
+            style = dict(style)
+            for key in ("seed_w", "leaf_w", "h_gap", "round_w"):
+                style[key] = style[key] * hx
+            style["round_w"] = style["leaf_w"]
+            if style.get("layout") == "horizontal":
+                style["center_gap"] = 6.0
+            else:
+                style["center_gap"] = style["h_gap"] + style["leaf_w"] + style["h_gap"]
+            boxes, lines, labels, lw, lh = _compute_bracket_layout(bracket_data, style)
 
-        self.width = self.n_cols * self.box_w + (self.n_cols - 1) * self.h_gap
-        self.height = (
-            sum(self.leaf_counts) * self.row_h
-            + max(n_groups - 1, 0) * self.GROUP_GAP
-            + (bronze_rows * self.row_h + 0.4 * cm if bronze_match else 0)
-        )
-        self.max_rounds = max_rounds
+        # 3) Добор свободного места под лист (как у небольших сеток 2–16)
+        if lw > 0 and lh > 0:
+            grow = min(max_w / lw, max_h / lh)
+            if grow > 1.02:
+                style = _scale_bracket_style(style, grow)
+                boxes, lines, labels, lw, lh = _compute_bracket_layout(bracket_data, style)
+        # Ширина упирается в край, по высоте есть место — растим только ряды/кегль
+        if lw > 0 and lh > 0 and lh < max_h * 0.97 and lw >= max_w * 0.94:
+            vy = min(max_h / lh, 1.75)
+            compact_groups = (
+                style.get("layout") == "single"
+                and style.get("group_gap", 99) <= style.get("pair_gap", 0) + 0.1
+            )
+            style = dict(style)
+            for key in (
+                "box_h", "row_gap", "pair_gap",
+                "seed_font", "name_font", "winner_font", "label_font",
+            ):
+                style[key] = style[key] * vy
+            style["seed_font"] = max(style["seed_font"], 4.0)
+            style["name_font"] = max(style["name_font"], 4.5)
+            style["winner_font"] = max(style["winner_font"], 4.5)
+            style["label_font"] = max(style["label_font"], 4.5)
+            style["row_h"] = style["box_h"] + style["row_gap"]
+            style["group_gap"] = style["pair_gap"] if compact_groups else (
+                style["row_h"] + style["pair_gap"]
+            )
+            boxes, lines, labels, lw, lh = _compute_bracket_layout(bracket_data, style)
+
+        # 4) финальный canvas-scale, если чуть вылезли
+        s = 1.0
+        if lw > max_w or lh > max_h:
+            s = min(max_w / lw if lw else 1.0, max_h / lh if lh else 1.0)
+
+        self._style = style
+        self._boxes, self._lines, self._labels = boxes, lines, labels
+        self.scale_x = s
+        self.scale_y = s
+        self.scale = s
+        self.width = lw * s
+        self.height = lh * s
+        self.box_w = style["leaf_w"] * s
+        self.box_h = style["box_h"] * s
+        self.seed_w = style["seed_w"] * s
+        self._layout_box_h = style["box_h"]
+        font_scale = max(s, 0.45)
+        self._seed_font = max(4.0, style["seed_font"] * font_scale)
+        self._name_font = max(4.5, style["name_font"] * font_scale)
+        self._label_font = max(4.5, style["label_font"] * font_scale)
 
     def wrap(self, avail_width, avail_height):
         return self.width, self.height
 
-    def _box(self, c, y_center, label, bold=False):
-        x = c * (self.box_w + self.h_gap)
-        y = y_center - self.row_h / 2
+    def _ly(self, y_layout):
+        return self.height - y_layout * self.scale_y
+
+    def _box_rect(self, item):
+        """Экранные координаты прямоугольника (ширина/высота из layout)."""
+        layout_w = item.get("width", self._style["leaf_w"])
+        layout_h = item.get("height", self._style["box_h"])
+        w = layout_w * self.scale_x
+        h = layout_h * self.scale_y
+        x = item["x"] * self.scale_x
+        y_c = self._ly(item["y"] + layout_h / 2)
+        return x, y_c - h / 2, w, h, y_c
+
+    def _draw_box_outline(self, item):
+        """Бокс № | ФИО — как на эталоне после соединителя."""
+        x, y_b, w, h, _ = self._box_rect(item)
         canv = self.canv
-        canv.setLineWidth(1.1 if bold else 0.6)
-        canv.rect(x, y, self.box_w, self.row_h, stroke=1, fill=0)
-        text = label.get("text") if isinstance(label, dict) else str(label or "")
-        if text:
-            seed = label.get("seed", "") if isinstance(label, dict) else ""
-            name = label.get("name", text) if isinstance(label, dict) else text
-            seed_w = min(self.SEED_W, self.box_w * 0.22)
-            name_x = x + seed_w + 0.08 * cm
-            name_w = self.box_w - seed_w - 0.16 * cm
-            canv.line(x + seed_w, y, x + seed_w, y + self.row_h)
-            canv.setFont(f"{self.font_name}-Bold" if bold else self.font_name, self.font_size)
-            if seed:
-                canv.drawCentredString(x + seed_w / 2, y_center - self.font_size / 3, seed)
-            canv.drawString(name_x, y_center - self.font_size / 3, _clip_text(canv, name, name_w))
-        return x, x + self.box_w
+        canv.setLineWidth(0.5)
+        canv.rect(x, y_b, w, h, stroke=1, fill=0)
+        sw = min(self.seed_w, w * 0.18)
+        if item.get("mirrored"):
+            canv.line(x + w - sw, y_b, x + w - sw, y_b + h)
+        else:
+            canv.line(x + sw, y_b, x + sw, y_b + h)
+
+    def _draw_box_text(self, item):
+        x, y_b, w, h, y_c = self._box_rect(item)
+        canv = self.canv
+        sw = min(self.seed_w, w * 0.18)
+        name_max_w = w - sw - 4
+        mirrored = item.get("mirrored", False)
+        if item["kind"] == "bye":
+            seed_text = str(item.get("seed") or "")
+            name_text = ""
+        elif item.get("participant"):
+            label = _participant_label(item["participant"], self.competition_level, short=True)
+            seed_text, name_text = label["seed"], label["name"]
+        else:
+            seed_text, name_text = "", _NA
+        base_name = self._name_font * float(item.get("name_font_scale") or 1.0)
+        name_fs = _fit_name_font(
+            canv, name_text, self.font_name, base_name, 5.0, name_max_w) if name_text else base_name
+        seed_fs = min(self._seed_font * float(item.get("name_font_scale") or 1.0), name_fs)
+        ty = y_c - name_fs / 3
+        if mirrored:
+            if seed_text:
+                canv.setFont(self.font_name, seed_fs)
+                canv.drawCentredString(x + w - sw / 2, ty, seed_text)
+            if name_text:
+                canv.setFont(self.font_name, name_fs)
+                canv.drawRightString(x + w - sw - 2, ty, _clip_text(canv, name_text, name_max_w))
+        else:
+            if seed_text:
+                canv.setFont(self.font_name, seed_fs)
+                canv.drawCentredString(x + sw / 2, ty, seed_text)
+            if name_text:
+                canv.setFont(self.font_name, name_fs)
+                canv.drawString(x + sw + 2, ty, _clip_text(canv, name_text, name_max_w))
 
     def draw(self):
-        top_y = self.height
-        group_champion_y = []
+        canv = self.canv
+        # 1) Все соединители
+        canv.setLineWidth(0.5)
+        for x1, y1, x2, y2 in self._lines:
+            canv.line(
+                x1 * self.scale_x, self._ly(y1),
+                x2 * self.scale_x, self._ly(y2),
+            )
+        # 2) Все прямоугольники
+        for item in self._boxes:
+            self._draw_box_outline(item)
+        # 3) Весь текст
+        for item in self._boxes:
+            self._draw_box_text(item)
+        for lbl in self._labels:
+            fn = self.font_bold if lbl.get("bold") else self.font_name
+            fs = self._label_font if lbl.get("bold") else self._name_font
+            fs = fs * float(lbl.get("font_scale") or 1.0)
+            canv.setFont(fn, fs)
+            lx = lbl["x"] * self.scale_x
+            ly = self._ly(lbl["y"])
+            if lbl.get("align") == "center":
+                canv.drawCentredString(lx, ly, lbl["text"])
+            else:
+                canv.drawString(lx, ly, lbl["text"])
 
-        y_cursor = top_y
-        for gi, rounds in enumerate(self.rounds_per_group):
-            leaf_n = self.leaf_counts[gi]
-            ys0, present0 = [], []
-            for i in range(leaf_n):
-                y_cursor -= self.row_h
-                ys0.append(y_cursor + self.row_h / 2)
-                match = rounds[0][i // 2]
-                slot = match["a"] if i % 2 == 0 else match["b"]
-                present0.append(slot is not None)
-                if slot is not None:
-                    self._box(0, ys0[-1], _participant_label(slot, self.competition_level, short=True))
-            if gi < len(self.rounds_per_group) - 1:
-                y_cursor -= self.GROUP_GAP
-
-            col_ys, col_present = ys0, present0
-            for c in range(1, len(rounds) + 1):
-                next_ys = []
-                for j, match in enumerate(rounds[c - 1]):
-                    ya, pa = col_ys[2 * j], col_present[2 * j]
-                    yb, pb = col_ys[2 * j + 1], col_present[2 * j + 1]
-                    if pa and pb:
-                        py = (ya + yb) / 2
-                    elif pa:
-                        py = ya
-                    else:
-                        py = yb
-                    next_ys.append(py)
-                    x_from = c * (self.box_w + self.h_gap) - self.h_gap
-                    x_to = c * (self.box_w + self.h_gap)
-                    if pa and pb:
-                        canv = self.canv
-                        canv.setLineWidth(0.6)
-                        mid_x = x_from + self.h_gap / 2
-                        canv.line(x_from, ya, mid_x, ya)
-                        canv.line(x_from, yb, mid_x, yb)
-                        canv.line(mid_x, ya, mid_x, yb)
-                        canv.line(mid_x, py, x_to, py)
-                    else:
-                        canv = self.canv
-                        canv.setLineWidth(0.6)
-                        canv.line(x_from, py, x_to, py)
-                    label = _participant_label(match["winner"], self.competition_level, short=True) if match["winner"] else ""
-                    self._box(c, py, label)
-                col_ys, col_present = next_ys, [True] * len(next_ys)
-
-            # carry the group champion forward (straight passthrough) if the
-            # other group's tree is taller, so the two line up for the final.
-            champ_y = col_ys[0] if col_ys else ys0[0]
-            champ_label = _participant_label(rounds[-1][0]["winner"], self.competition_level, short=True) if rounds and rounds[-1][0]["winner"] else ""
-            for c in range(len(rounds) + 1, self.max_rounds + 1):
-                x_from = c * (self.box_w + self.h_gap) - self.h_gap
-                x_to = c * (self.box_w + self.h_gap)
-                self.canv.setLineWidth(0.6)
-                self.canv.line(x_from, champ_y, x_to, champ_y)
-                self._box(c, champ_y, champ_label)
-            group_champion_y.append(champ_y)
-
-        if self.final_match:
-            c = self.max_rounds + 1
-            x_from = c * (self.box_w + self.h_gap) - self.h_gap
-            x_to = c * (self.box_w + self.h_gap)
-            y0, y1 = group_champion_y[0], group_champion_y[-1]
-            py = (y0 + y1) / 2
-            canv = self.canv
-            canv.setLineWidth(0.6)
-            mid_x = x_from + self.h_gap / 2
-            canv.line(x_from, y0, mid_x, y0)
-            canv.line(x_from, y1, mid_x, y1)
-            canv.line(mid_x, y0, mid_x, y1)
-            canv.line(mid_x, py, x_to, py)
-            label = _participant_label(self.final_match["winner"], self.competition_level, short=True) if self.final_match["winner"] else ""
-            self._box(c, py, label, bold=True)
-
-        if self.bronze_match:
-            self.canv.setFont(self.font_name, self.font_size)
-            label_y = y_cursor - 0.55 * cm
-            self.canv.drawString(0, label_y, "Матч за 3-е место")
-            row_h = self.row_h
-            ya = label_y - 0.25 * cm - row_h / 2
-            yb = ya - row_h - 0.1 * cm
-            a, b, winner = self.bronze_match["a"], self.bronze_match["b"], self.bronze_match["winner"]
-            self._box(0, ya, _participant_label(a, self.competition_level, short=True) if a else "")
-            self._box(0, yb, _participant_label(b, self.competition_level, short=True) if b else "")
-            py = (ya + yb) / 2
-            x_from = 1 * (self.box_w + self.h_gap) - self.h_gap
-            x_to = 1 * (self.box_w + self.h_gap)
-            canv = self.canv
-            mid_x = x_from + self.h_gap / 2
-            canv.line(x_from, ya, mid_x, ya)
-            canv.line(x_from, yb, mid_x, yb)
-            canv.line(mid_x, ya, mid_x, yb)
-            canv.line(mid_x, py, x_to, py)
-            self._box(1, py, _participant_label(winner, self.competition_level, short=True) if winner else "")
 
 
 def _build_bracket_diagram(cat, avail_width, avail_height):
+    """Все сетки кумитэ (3 / 4 / 5+ / …) — один чертёж с фиксированными боксами."""
     participants = cat["participants"]
-    if not any(p.get("seed") for p in participants):
+    data = _compute_kumite_bracket_data(participants, cat.get("bouts") or [])
+    if not data.get("drawn"):
         return None
-
-    bouts_by_pair = _bouts_index(cat["bouts"])
-    groups = {}
-    for p in participants:
-        groups.setdefault(p.get("subgroup") or 1, []).append(p)
-    group_keys = sorted(groups.keys())
-    rounds_per_group = [_bracket_rounds(groups[k], bouts_by_pair) for k in group_keys]
-    rounds_per_group = [r for r in rounds_per_group if r]
-    if not rounds_per_group:
+    if not data.get("round_robin") and not data.get("rounds_per_group"):
         return None
-
-    final_match = None
-    if len(rounds_per_group) > 1:
-        champs = [r[-1][0]["winner"] for r in rounds_per_group]
-        final_match = {"a": champs[0], "b": champs[-1], "winner": None}
-        if all(champs):
-            final_match["winner"], _ = _resolve_match(champs[0], champs[-1], bouts_by_pair)
-
-    by_reg_id = {p["registration_id"]: p for p in participants}
-    bronze_bout = next((b for b in cat["bouts"] if b["round_label"] == "bronze"), None)
-    bronze_match = None
-    if bronze_bout:
-        a = by_reg_id.get(bronze_bout["registration_id_a"])
-        b = by_reg_id.get(bronze_bout["registration_id_b"])
-        winner = None
-        if bronze_bout["status"] == "completed" and bronze_bout.get("winner_registration_id"):
-            winner_id = bronze_bout["winner_registration_id"]
-            winner = a if a and a["registration_id"] == winner_id else b
-        bronze_match = {"a": a, "b": b, "winner": winner}
-
-    return _BracketDiagram(
-        rounds_per_group, final_match, bronze_match, avail_width, avail_height,
-        competition_level=cat.get("competition_level") or "club"
-    )
+    level = cat.get("competition_level") or "club"
+    return _OfficialBracketDiagram(data, avail_width, avail_height, level)
 
 
-def _results_table(cat, styles):
-    if not cat["placements"]:
-        return [Paragraph("Результаты пока не определены.", styles["Normal"])]
-    org_header = "Регион" if cat.get("competition_level") == "region" else "Клуб"
-    rows = [[ "Место", "Фамилия Имя Отчество", org_header ]] + [
-        [str(p["place"]), p["full_name"], _participant_org(p, cat.get("competition_level") or "club")] for p in cat["placements"]
-    ]
-    table = Table(rows, colWidths=[2 * cm, 8 * cm, 6 * cm])
-    table.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), "DejaVuSans"),
-        ("FONTNAME", (0, 0), (-1, 0), "DejaVuSans-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
-        ("ALIGN", (0, 0), (0, -1), "CENTER"),
-    ]))
-    return [Paragraph("Результаты", styles["Heading3"]), Spacer(1, 0.15 * cm), table]
+def _measure_flow_height(flowables, avail_width):
+    """Суммарная высота flowables при заданной ширине."""
+    total = 0.0
+    for f in flowables:
+        if isinstance(f, KeepTogether):
+            total += _measure_flow_height(f._content, avail_width)
+            continue
+        _w, h = f.wrap(avail_width, 20000)
+        total += h
+    return total
+
+
+def _flatten_flowables(flowables):
+    out = []
+    for f in flowables:
+        if isinstance(f, KeepTogether):
+            out.extend(_flatten_flowables(f._content))
+        else:
+            out.append(f)
+    return out
+
+
+def _build_kumite_protocol_page(styles, tournament, cat, avail_width, usable_height):
+    """Шапка + сетка + результаты + подписи — список flowables на один лист."""
+    n_part = len(cat.get("participants") or [])
+    compact = n_part >= 6
+
+    def make_fixed():
+        header = list(_bracket_protocol_header(styles, tournament, cat, compact=compact))
+        results = _flatten_flowables([
+            _official_bracket_results_table(cat, avail_width, compact=compact)
+        ])
+        signatures = _bracket_signature_block(tournament, avail_width, compact=compact)
+        gap1 = Spacer(1, 0.1 * cm if compact else 0.18 * cm)
+        gap2 = Spacer(1, 0.12 * cm if compact else 0.22 * cm)
+        return header, gap1, results, gap2, signatures
+
+    header, gap1, results, gap2, signatures = make_fixed()
+    fixed_h = _measure_flow_height(header + [gap1] + results + [gap2, signatures], avail_width)
+    # Запас: Platypus иногда рисует таблицы чуть выше wrap()
+    target = usable_height - 14
+    bracket_h = max(target - fixed_h, 2.5 * cm)
+
+    diagram = _build_bracket_diagram(cat, avail_width, bracket_h)
+    body = None
+    for _ in range(14):
+        header, gap1, results, gap2, signatures = make_fixed()
+        body = header + ([diagram] if diagram else [
+            Paragraph("Жеребьёвка ещё не проведена.", styles["Normal"])
+        ]) + [gap1] + results + [gap2, signatures]
+        total = _measure_flow_height(body, avail_width)
+        if total <= target or not diagram:
+            return body
+        overflow = total - target
+        bracket_h = max(bracket_h - overflow - 10, 2.0 * cm)
+        diagram = _build_bracket_diagram(cat, avail_width, bracket_h)
+
+    return body
 
 
 def build_pdf(tournament, summary, categories, team_ranking):
@@ -887,9 +1900,12 @@ def build_pdf(tournament, summary, categories, team_ranking):
     page_size = landscape(A4)
     margin = 1.2 * cm
     buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=page_size, topMargin=margin, bottomMargin=margin, leftMargin=margin, rightMargin=margin)
+    doc = SimpleDocTemplate(
+        buffer, pagesize=page_size,
+        topMargin=margin, bottomMargin=margin, leftMargin=margin, rightMargin=margin,
+    )
     avail_width = page_size[0] - 2 * margin
-    avail_height = page_size[1] - 2 * margin - 6 * cm  # leave room for header/footer on the tree page
+    usable_height = page_size[1] - 2 * margin
 
     story = [Paragraph("СпортДок — Итоговые документы", styles["Title"]), Spacer(1, 0.3 * cm)]
 
@@ -911,7 +1927,8 @@ def build_pdf(tournament, summary, categories, team_ranking):
     story.append(_make_table(discipline_rows, header=True))
 
     for cat in categories:
-        program_label = _category_label(cat["discipline"], cat["gender"], cat["category_name"])
+        # Одна и та же строка категории, что в шапке протокола хода
+        program_label = _bracket_program_desc(cat)
 
         story.append(PageBreak())
         story += _official_header(styles, tournament, program_label, "ИТОГОВЫЙ ПРОТОКОЛ")
@@ -920,26 +1937,21 @@ def build_pdf(tournament, summary, categories, team_ranking):
         else:
             story.append(Paragraph("Участники не заявлены.", styles["Normal"]))
         story.append(Spacer(1, 1 * cm))
-        story.append(_signature_block(styles))
+        story.append(_signature_block(styles, tournament))
 
         story.append(PageBreak())
-        story += _official_header(styles, tournament, program_label, "ПРОТОКОЛ ХОДА СОРЕВНОВАНИЙ")
         if cat["discipline"] == "kata":
+            story += _official_header(styles, tournament, program_label, "ПРОТОКОЛ ХОДА СОРЕВНОВАНИЙ")
             kata_table = _kata_rounds_table(cat)
             if kata_table:
                 story.append(kata_table)
             else:
                 story.append(Paragraph("Результаты пока не введены.", styles["Normal"]))
+            story.append(Spacer(1, 0.6 * cm))
+            story.append(_signature_block(styles, tournament))
         else:
-            diagram = _build_bracket_diagram(cat, avail_width, avail_height)
-            if diagram:
-                story.append(diagram)
-            else:
-                story.append(Paragraph("Жеребьёвка ещё не проведена.", styles["Normal"]))
-            story.append(Spacer(1, 0.4 * cm))
-            story.append(KeepTogether(_results_table(cat, styles)))
-        story.append(Spacer(1, 0.6 * cm))
-        story.append(_signature_block(styles))
+            story.extend(_build_kumite_protocol_page(
+                styles, tournament, cat, avail_width, usable_height))
 
     story.append(PageBreak())
     story.append(Paragraph("Командный зачёт", styles["Heading2"]))

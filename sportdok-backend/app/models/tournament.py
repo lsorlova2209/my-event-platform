@@ -16,4 +16,7 @@ class Tournament(Base):
     status = Column(String, nullable=False, default="draft")
     # club — в сетке показываем клуб; region — регион (региональные и выше)
     competition_level = Column(String, nullable=False, default="club")
+    # ФИО для подписей в PDF/Excel протоколах
+    chief_judge = Column(String, nullable=True)
+    chief_secretary = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
