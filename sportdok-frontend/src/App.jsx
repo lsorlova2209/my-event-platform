@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback, Fragment } from "react"
 import axios from "axios"
 
-const API = "http://127.0.0.1:8000"
+// Пустая строка = тот же хост (через nginx /api). Локально: VITE_API_URL=http://127.0.0.1:8000
+const API = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000"
 
 const inputStyle = {
   width: "100%", padding: "12px",

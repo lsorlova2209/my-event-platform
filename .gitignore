@@ -15,9 +15,15 @@ dist-ssr/
 # Environment
 .env
 .env.*
+!.env.example
 
 # Editor / OS
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local smoke-test artifacts
+sportdok-backend/_test*.pdf
+sportdok-backend/_test_thing.py
+sportdok-backend/_summary_sample_dump.txt

@@ -7,6 +7,7 @@ from sqlalchemy import text
 from datetime import date, datetime
 from typing import Optional, List
 from io import BytesIO
+import os
 import secrets
 from app.database import get_db, engine, Base
 from app.models.user import User
@@ -30,15 +31,20 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="СпортДок API", version="1.0.0")
 
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
+_cors_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", FRONTEND_URL).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-FRONTEND_URL = "http://localhost:5173"
 
 # ─── СХЕМЫ ────────────────────────────────────────────────────────────────────
 
