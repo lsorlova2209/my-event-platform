@@ -81,10 +81,6 @@ function LoginPage({ onLogin, onRegister, emailConfirmMessage }) {
 
         <button onClick={handleLogin} style={{ ...btnPrimary, width: "100%", padding: "14px", marginBottom: "12px" }}>Войти</button>
         <button onClick={onRegister} style={{ ...btnOutline, width: "100%", padding: "14px" }}>Зарегистрировать клуб</button>
-
-        <div style={{ marginTop: "24px", padding: "16px", background: "#f3f2ee", borderRadius: "8px", fontSize: "13px", color: "#4A4A48" }}>
-          <strong>Тест:</strong> admin@sportdok.ru / admin123
-        </div>
       </div>
     </div>
   )

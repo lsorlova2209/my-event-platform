@@ -59,7 +59,23 @@ curl http://127.0.0.1/api/v1/tournaments/
 
 В браузере: `https://sportdoc24.ru` (после шага с сертификатом ниже).
 
-Логин админа по умолчанию (смени после входа): `admin@sportdok.ru` / `admin123`
+Логин админа при первом запуске: `admin@sportdok.ru` / `admin123` — сразу смени пароль на сервере (см. ниже).
+
+Смена пароля админа (на сервере):
+
+```bash
+cd /opt/my-event-platform
+docker compose -f docker-compose.prod.yml exec api python -c "
+from app.database import SessionLocal
+from app.models.user import User
+from app.auth import hash_password
+db = SessionLocal()
+u = db.query(User).filter(User.email == 'admin@sportdok.ru').first()
+u.password_hash = hash_password('НОВЫЙ_ПАРОЛЬ')
+db.commit()
+print('Пароль обновлён')
+"
+```
 
 ## 4. HTTPS (Let's Encrypt)
 
