@@ -79,7 +79,7 @@ print('Пароль обновлён')
 
 ## 4. HTTPS (Let's Encrypt)
 
-Сертификат на **хосте** (без Docker Hub), nginx только монтирует `/etc/letsencrypt`.
+Сертификат на **хосте** (без Docker Hub), nginx только монтирует `/etc/letsencrypt`, а проверки Let's Encrypt идут через `webroot` без остановки сайта.
 
 ```bash
 # порт 443
@@ -89,11 +89,12 @@ ufw allow 443/tcp
 apt-get update
 apt-get install -y certbot
 
-# на минуту освободить порт 80
+# webroot для challenge-файлов
 cd /opt/my-event-platform
-docker compose -f docker-compose.prod.yml stop web
+mkdir -p certbot-www/.well-known/acme-challenge
 
-certbot certonly --standalone \
+certbot certonly --webroot \
+  -w /opt/my-event-platform/certbot-www \
   -d sportdoc24.ru \
   --email ТВОЙ_EMAIL@example.com \
   --agree-tos \
@@ -110,13 +111,28 @@ nano .env
 docker compose -f docker-compose.prod.yml up -d --no-build --force-recreate web api
 ```
 
-Продление сертификата (раз в ~2–3 месяца, можно cron):
+Автопродление сертификата без ручных действий:
 
 ```bash
 cd /opt/my-event-platform
-docker compose -f docker-compose.prod.yml stop web
-certbot renew
-docker compose -f docker-compose.prod.yml start web
+
+# скрипт продления
+cat >/usr/local/bin/sportdok-renew-cert.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+certbot renew --webroot -w /opt/my-event-platform/certbot-www
+cd /opt/my-event-platform
+docker compose -f docker-compose.prod.yml exec web nginx -s reload
+EOF
+
+chmod +x /usr/local/bin/sportdok-renew-cert.sh
+
+# ежедневный cron: проверка в 03:17
+cat >/etc/cron.d/sportdok-cert-renew <<'EOF'
+17 3 * * * root /usr/local/bin/sportdok-renew-cert.sh >> /var/log/sportdok-cert-renew.log 2>&1
+EOF
+
+chmod 644 /etc/cron.d/sportdok-cert-renew
 ```
 
 ## 5. Обновление после правок в GitHub
@@ -130,7 +146,14 @@ bash scripts/deploy.sh
 
 Или включи **автодеплой** (см. раздел 6).
 
-Если снова `429 Too Many Requests` — `docker login` на сервере, подождать или собирать с `DOCKER_BUILDKIT=0`.
+Скрипт `scripts/deploy.sh` сам:
+
+- подтягивает `origin/main`
+- смотрит, какие файлы изменились
+- пересобирает только `api` и/или `web`, если это нужно
+- не трогает `postgres`, если менялись только docs / workflow
+
+Если снова `429 Too Many Requests` — `docker login` на сервере.
 
 ## 6. Автодеплой из GitHub Actions
 

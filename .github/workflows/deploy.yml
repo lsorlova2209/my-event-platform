@@ -17,9 +17,4 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script_stop: true
           script: |
-            cd /opt/my-event-platform
-            git fetch origin main
-            git reset --hard origin/main
-            export DOCKER_BUILDKIT=0
-            docker compose -f docker-compose.prod.yml up -d --build
-            docker compose -f docker-compose.prod.yml ps
+            bash /opt/my-event-platform/scripts/deploy.sh
