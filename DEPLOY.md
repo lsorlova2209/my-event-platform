@@ -121,14 +121,80 @@ docker compose -f docker-compose.prod.yml start web
 
 ## 5. Обновление после правок в GitHub
 
+Вручную на сервере:
+
 ```bash
 cd /opt/my-event-platform
-git pull
-# api/web: только если менялся код/зависимости; при лимите Docker Hub — см. ниже
-DOCKER_BUILDKIT=0 docker compose -f docker-compose.prod.yml up -d --build
+bash scripts/deploy.sh
 ```
 
+Или включи **автодеплой** (см. раздел 6).
+
 Если снова `429 Too Many Requests` — `docker login` на сервере, подождать или собирать с `DOCKER_BUILDKIT=0`.
+
+## 6. Автодеплой из GitHub Actions
+
+После `git push` в ветку `main` сайт обновляется сам (workflow `.github/workflows/deploy.yml`).
+
+### Один раз: SSH-ключ только для деплоя
+
+**На своём компьютере** (PowerShell):
+
+```powershell
+ssh-keygen -t ed25519 -f $env:USERPROFILE\.ssh\sportdok_deploy -N '""'
+```
+
+Публичный ключ добавь на сервер:
+
+```powershell
+type $env:USERPROFILE\.ssh\sportdok_deploy.pub | ssh root@217.149.19.36 "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
+```
+
+(Введи пароль root с Timeweb.)
+
+Проверка входа по ключу:
+
+```powershell
+ssh -i $env:USERPROFILE\.ssh\sportdok_deploy root@217.149.19.36 "echo ok"
+```
+
+Должно вывести `ok` без запроса пароля.
+
+### Один раз: секреты в GitHub
+
+Репозиторий → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**:
+
+| Имя | Значение |
+|-----|----------|
+| `DEPLOY_HOST` | `217.149.19.36` |
+| `DEPLOY_USER` | `root` |
+| `DEPLOY_SSH_KEY` | содержимое файла `sportdok_deploy` (приватный ключ, целиком) |
+
+Приватный ключ скопировать:
+
+```powershell
+Get-Content $env:USERPROFILE\.ssh\sportdok_deploy -Raw
+```
+
+Вставь в секрет `DEPLOY_SSH_KEY` — от `-----BEGIN` до `-----END` включительно.
+
+### Проверка
+
+1. Закоммить и запушить любое изменение в `main`.
+2. На GitHub: вкладка **Actions** — workflow **Deploy to production** должен стать зелёным.
+3. Сайт: https://sportdoc24.ru
+
+Ручной запуск: **Actions** → **Deploy to production** → **Run workflow**.
+
+### Если деплой упал с 429 (Docker Hub)
+
+На сервере по SSH:
+
+```bash
+docker login
+```
+
+Подожди 10–15 минут и на GitHub нажми **Re-run failed jobs**.
 
 ## Полезные команды
 
@@ -145,6 +211,4 @@ docker compose -f docker-compose.prod.yml down
 
 ## Дальше (по желанию)
 
-- сменить пароль админа
 - автопродление домена в Timeweb
-- автодеплой из GitHub Actions
