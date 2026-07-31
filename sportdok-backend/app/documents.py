@@ -2164,3 +2164,103 @@ def build_pdf(tournament, summary, categories, team_ranking):
     doc.build(story)
     buffer.seek(0)
     return buffer
+
+
+def build_participants_list_pdf(tournament, categories):
+    """Публичный PDF: только списки участников по категориям (без сеток и протоколов хода)."""
+    styles = _pdf_styles()
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=A4,
+        topMargin=1.5 * cm, bottomMargin=1.5 * cm, leftMargin=1.5 * cm, rightMargin=1.5 * cm,
+    )
+    story = []
+
+    title_style = ParagraphStyle(
+        "ParticipantsTitle", parent=styles["Title"],
+        fontName="DejaVuSans-Bold", fontSize=16, leading=20, spaceAfter=6,
+    )
+    meta_style = ParagraphStyle(
+        "ParticipantsMeta", parent=styles["Normal"],
+        fontName="DejaVuSans", fontSize=11, leading=14, alignment=1, textColor=colors.HexColor("#444444"),
+    )
+    cat_style = ParagraphStyle(
+        "ParticipantsCat", parent=styles["Heading2"],
+        fontName="DejaVuSans-Bold", fontSize=12, leading=15, spaceBefore=4, spaceAfter=8,
+    )
+
+    story.append(Paragraph("Список участников", title_style))
+    story.append(Paragraph(tournament.get("name") or "Турнир", styles["Heading2"]))
+    meta_parts = []
+    if tournament.get("event_date"):
+        meta_parts.append(_fmt_date(tournament.get("event_date")) or tournament.get("event_date"))
+    if tournament.get("location"):
+        meta_parts.append(tournament.get("location"))
+    if meta_parts:
+        story.append(Paragraph(" · ".join(str(p) for p in meta_parts), meta_style))
+    story.append(Spacer(1, 0.4 * cm))
+
+    competition_level = _competition_level(tournament)
+    org_header = "Регион" if competition_level == "region" else "Клуб"
+
+    cats = [c for c in (categories or []) if c.get("participants")]
+    cats = sorted(
+        cats,
+        key=lambda c: _category_label(c.get("discipline"), c.get("gender"), c.get("category_name")),
+    )
+
+    if not cats:
+        story.append(Paragraph("Пока нет зарегистрированных участников.", styles["Normal"]))
+    else:
+        for i, cat in enumerate(cats):
+            if i > 0:
+                story.append(Spacer(1, 0.35 * cm))
+            label = _category_label(cat.get("discipline"), cat.get("gender"), cat.get("category_name"))
+            story.append(Paragraph(f"{label} ({len(cat['participants'])})", cat_style))
+
+            is_kata = cat.get("discipline") == "kata"
+            header = ["№", "ФИО", org_header, "Возраст"]
+            if not is_kata:
+                header.append("Вес")
+
+            def sort_key(p):
+                seed = p.get("seed")
+                return (0, seed) if seed is not None else (1, 9999, p.get("last_name") or "", p.get("first_name") or "")
+
+            participants = sorted(cat["participants"], key=sort_key)
+            rows = [header]
+            for idx, p in enumerate(participants, start=1):
+                full = " ".join(
+                    part for part in (p.get("last_name"), p.get("first_name"), p.get("middle_name")) if part
+                ).strip()
+                org = _participant_org(p, competition_level) or "—"
+                num = str(p["seed"]) if p.get("seed") is not None else str(idx)
+                row = [num, full or "—", org, p.get("age_group") or "—"]
+                if not is_kata:
+                    row.append(str(p["weight"]) if p.get("weight") is not None else "—")
+                rows.append(row)
+
+            col_count = len(header)
+            if is_kata:
+                widths = [1.2 * cm, 8.5 * cm, 5.5 * cm, 3.0 * cm]
+            else:
+                widths = [1.2 * cm, 7.2 * cm, 4.8 * cm, 2.8 * cm, 2.2 * cm]
+            table = Table(rows, colWidths=widths[:col_count], repeatRows=1, hAlign="LEFT")
+            table.setStyle(TableStyle([
+                ("FONTNAME", (0, 0), (-1, -1), "DejaVuSans"),
+                ("FONTNAME", (0, 0), (-1, 0), "DejaVuSans-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8eef7")),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ALIGN", (0, 0), (0, -1), "CENTER"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]))
+            story.append(table)
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer

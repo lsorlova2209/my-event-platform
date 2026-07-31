@@ -92,12 +92,50 @@ const registrationToneStyle = {
   neutral: { background: "#e8eef7", color: "#1A56A0" },
 }
 
-// ─── ПУБЛИЧНАЯ ГЛАВНАЯ: СПИСОК ТУРНИРОВ ───────────────────────────────────────
-function PublicHomePage({ onLoginClick, onRegisterClick }) {
+const arenaToneStyle = {
+  open: { background: "rgba(15,110,86,0.28)", color: "#8de0c8" },
+  closed: { background: "rgba(163,45,45,0.28)", color: "#f0a8a8" },
+  past: { background: "rgba(255,255,255,0.08)", color: "rgba(244,245,247,0.65)" },
+  neutral: { background: "rgba(47,111,191,0.28)", color: "#9ec0ef" },
+}
+
+const HERO_IMG = "/hero-karate.png"
+
+const arenaInputStyle = {
+  width: "100%", padding: "12px 14px",
+  border: "1px solid rgba(255,255,255,0.16)", borderRadius: "10px",
+  fontSize: "16px", boxSizing: "border-box",
+  background: "rgba(11,13,16,0.65)", color: "#f4f5f7",
+  outline: "none",
+}
+const arenaLabelStyle = {
+  display: "block", marginBottom: "6px",
+  color: "rgba(244,245,247,0.72)", fontSize: "13px", fontWeight: 600,
+}
+const arenaBtnPrimary = {
+  padding: "12px 22px", background: "#2f6fbf", color: "white",
+  border: "none", borderRadius: "10px", cursor: "pointer",
+  fontWeight: 700, fontSize: "15px",
+}
+const arenaBtnGhost = {
+  padding: "12px 22px", background: "transparent", color: "#f4f5f7",
+  border: "1px solid rgba(255,255,255,0.35)", borderRadius: "10px", cursor: "pointer",
+  fontWeight: 600, fontSize: "15px",
+}
+const arenaPanel = {
+  background: "rgba(21,24,32,0.88)",
+  border: "1px solid rgba(255,255,255,0.12)",
+  borderRadius: "16px",
+  padding: "28px",
+  backdropFilter: "blur(10px)",
+  boxShadow: "0 18px 48px rgba(0,0,0,0.4)",
+}
+
+// ─── ПУБЛИЧНАЯ ГЛАВНАЯ: АРЕНА + ТУРНИРЫ ───────────────────────────────────────
+function PublicHomePage({ onLoginClick, onRegisterClick, onTournamentClick }) {
   const [tournaments, setTournaments] = useState([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState("upcoming")
-  const [selected, setSelected] = useState(null)
 
   useEffect(() => {
     let cancelled = false
@@ -118,45 +156,87 @@ function PublicHomePage({ onLoginClick, onRegisterClick }) {
   const list = tab === "upcoming" ? upcoming : past
 
   return (
-    <div style={{ minHeight: "100vh", background: "linear-gradient(180deg, #e8eef7 0%, #f3f2ee 42%, #f3f2ee 100%)", fontFamily: "Arial, sans-serif", color: "#1f1f1d" }}>
-      <header style={{
-        display: "flex", justifyContent: "space-between", alignItems: "center",
-        padding: "18px 28px", borderBottom: "1px solid rgba(26,86,160,0.12)",
-        background: "rgba(255,255,255,0.88)", backdropFilter: "blur(8px)",
-        position: "sticky", top: 0, zIndex: 10
-      }}>
-        <div>
-          <div style={{ fontSize: "28px", fontWeight: "800", color: "#1A56A0", letterSpacing: "-0.02em" }}>СпортДок</div>
-          <div style={{ fontSize: "13px", color: "#4A4A48" }}>Платформа турниров по всестилевому каратэ</div>
+    <div style={{ minHeight: "100vh", background: "#0b0d10", fontFamily: "var(--font-body)", color: "#f4f5f7" }}>
+      <section style={{ position: "relative", minHeight: "100vh", overflow: "hidden", display: "flex", alignItems: "flex-end" }}>
+        <img
+          src={HERO_IMG}
+          alt=""
+          className="arena-hero-bg"
+          style={{
+            position: "absolute", inset: 0, width: "100%", height: "100%",
+            objectFit: "cover", objectPosition: "center 20%",
+          }}
+        />
+        <div style={{
+          position: "absolute", inset: 0,
+          background: "linear-gradient(90deg, rgba(11,13,16,0.96) 0%, rgba(11,13,16,0.62) 48%, rgba(11,13,16,0.28) 100%), linear-gradient(0deg, rgba(11,13,16,0.96) 0%, rgba(11,13,16,0.25) 45%, rgba(11,13,16,0.5) 100%)",
+        }} />
+        <div style={{
+          position: "relative", zIndex: 1, width: "100%",
+          padding: "clamp(28px, 6vw, 72px) clamp(20px, 5vw, 64px) clamp(40px, 8vw, 80px)",
+          maxWidth: "1200px",
+        }}>
+          <div className="arena-hero-copy" style={{ textShadow: "0 2px 24px rgba(0,0,0,0.55)" }}>
+            <div style={{
+              fontFamily: "var(--font-display)", fontSize: "clamp(84px, 18vw, 160px)",
+              fontWeight: 700, lineHeight: 0.88, letterSpacing: "0.02em",
+              textTransform: "uppercase", marginBottom: "22px", color: "#ffffff",
+            }}>
+              СпортДок
+            </div>
+            <h1 style={{
+              margin: "0 0 18px", fontFamily: "var(--font-display)",
+              fontSize: "clamp(34px, 6.5vw, 56px)", fontWeight: 600,
+              letterSpacing: "0.04em", textTransform: "uppercase", color: "#ffffff",
+            }}>
+              Турниры всестилевого каратэ
+            </h1>
+            <p style={{
+              margin: "0 0 34px", maxWidth: "520px",
+              color: "rgba(255,255,255,0.92)", fontSize: "clamp(19px, 2.6vw, 24px)",
+              lineHeight: 1.5, fontWeight: 500,
+            }}>
+              Платформа для клубов, заявок и проведения соревнований.
+            </p>
+          </div>
+          <div className="arena-hero-cta" style={{ display: "flex", gap: "14px", flexWrap: "wrap" }}>
+            <button onClick={onLoginClick} className="arena-btn" style={{ ...arenaBtnPrimary, padding: "16px 32px", fontSize: "18px", borderRadius: "12px" }}>Войти</button>
+            <button onClick={onRegisterClick} className="arena-btn" style={{ ...arenaBtnGhost, padding: "16px 32px", fontSize: "18px", borderRadius: "12px" }}>Зарегистрировать клуб</button>
+          </div>
         </div>
-        <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", justifyContent: "flex-end" }}>
-          <button onClick={onLoginClick} style={{ ...btnPrimary, padding: "10px 18px" }}>Войти</button>
-          <button onClick={onRegisterClick} style={{ ...btnOutline, padding: "10px 18px" }}>Зарегистрировать клуб</button>
-        </div>
-      </header>
+      </section>
 
-      <main style={{ maxWidth: "1100px", margin: "0 auto", padding: "36px 20px 64px" }}>
-        <div style={{ marginBottom: "28px", maxWidth: "640px" }}>
-          <h1 style={{ margin: "0 0 10px", fontSize: "34px", lineHeight: 1.15, color: "#163a6b" }}>Турниры</h1>
-          <p style={{ margin: 0, color: "#4A4A48", fontSize: "16px", lineHeight: 1.5 }}>
-            Смотрите предстоящие и прошедшие соревнования. Вход и регистрация клуба — по кнопкам вверху.
+      <main id="tournaments" className="arena-section-in" style={{
+        width: "100%", maxWidth: "none", margin: "0",
+        padding: "56px clamp(12px, 1.5vw, 20px) 80px",
+      }}>
+        <div style={{ marginBottom: "28px" }}>
+          <h2 style={{
+            margin: "0 0 8px", fontFamily: "var(--font-display)",
+            fontSize: "clamp(28px, 5vw, 40px)", fontWeight: 600,
+            letterSpacing: "0.04em", textTransform: "uppercase",
+          }}>
+            Турниры
+          </h2>
+          <p style={{ margin: 0, color: "rgba(244,245,247,0.65)", fontSize: "15px" }}>
+            Предстоящие и прошедшие соревнования.
           </p>
         </div>
 
-        <div style={{ display: "flex", gap: "8px", marginBottom: "24px" }}>
+        <div style={{ display: "flex", gap: "8px", marginBottom: "24px", flexWrap: "wrap" }}>
           {[
             { id: "upcoming", label: `Предстоящие (${upcoming.length})` },
             { id: "past", label: `Прошедшие (${past.length})` },
           ].map(item => (
             <button
               key={item.id}
-              onClick={() => { setTab(item.id); setSelected(null) }}
+              className="arena-btn"
+              onClick={() => setTab(item.id)}
               style={{
-                ...btnOutline,
-                borderColor: tab === item.id ? "#1A56A0" : "#D3D1C7",
-                background: tab === item.id ? "#1A56A0" : "white",
-                color: tab === item.id ? "white" : "#4A4A48",
-                fontWeight: tab === item.id ? "bold" : "normal",
+                ...arenaBtnGhost,
+                padding: "10px 16px",
+                borderColor: tab === item.id ? "#2f6fbf" : "rgba(255,255,255,0.16)",
+                background: tab === item.id ? "#2f6fbf" : "transparent",
               }}
             >
               {item.label}
@@ -165,103 +245,66 @@ function PublicHomePage({ onLoginClick, onRegisterClick }) {
         </div>
 
         {loading ? (
-          <div style={{ ...card, textAlign: "center", color: "#4A4A48" }}>Загрузка турниров…</div>
+          <div style={{ ...arenaPanel, textAlign: "center", color: "rgba(244,245,247,0.65)" }}>Загрузка турниров…</div>
         ) : list.length === 0 ? (
-          <div style={{ ...card, textAlign: "center", color: "#4A4A48" }}>
+          <div style={{ ...arenaPanel, textAlign: "center", color: "rgba(244,245,247,0.65)" }}>
             {tab === "upcoming" ? "Предстоящих турниров пока нет." : "Прошедших турниров пока нет."}
           </div>
         ) : (
-          <div style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
-            gap: "16px",
-          }}>
+          <div className="arena-tournament-grid">
             {list.map(t => {
               const timing = tournamentTiming(t, today)
-              const tone = registrationToneStyle[timing.registrationTone]
-              const active = selected?.id === t.id
+              const tone = arenaToneStyle[timing.registrationTone]
               return (
                 <button
                   key={t.id}
                   type="button"
-                  onClick={() => setSelected(active ? null : t)}
+                  className="arena-card"
+                  onClick={() => onTournamentClick(t)}
                   style={{
                     textAlign: "left",
-                    border: active ? "2px solid #1A56A0" : "1px solid #e4e1d8",
+                    border: "1px solid rgba(255,255,255,0.12)",
                     borderRadius: "14px",
-                    background: "white",
+                    background: "rgba(21,24,32,0.88)",
                     padding: "0",
                     cursor: "pointer",
                     overflow: "hidden",
-                    boxShadow: active ? "0 8px 28px rgba(26,86,160,0.16)" : "0 4px 18px rgba(0,0,0,0.05)",
+                    color: "inherit",
                     fontFamily: "inherit",
                   }}
                 >
-                  <div style={{ padding: "18px 18px 14px" }}>
-                    <div style={{ fontSize: "12px", color: "#1A56A0", fontWeight: "bold", letterSpacing: "0.04em", marginBottom: "8px" }}>
+                  <div style={{ padding: "22px 20px 16px" }}>
+                    <div style={{
+                      fontSize: "15px", color: "#9ec0ef", fontWeight: 700,
+                      letterSpacing: "0.06em", marginBottom: "10px", textTransform: "uppercase",
+                    }}>
                       {formatRuDate(t.event_date)}
                     </div>
-                    <div style={{ fontSize: "17px", fontWeight: "700", color: "#163a6b", lineHeight: 1.3, marginBottom: "8px", minHeight: "44px" }}>
+                    <div style={{
+                      fontSize: "22px", fontWeight: 700, lineHeight: 1.25,
+                      marginBottom: "10px", minHeight: "56px",
+                    }}>
                       {t.name}
                     </div>
-                    <div style={{ fontSize: "13px", color: "#4A4A48", marginBottom: "12px" }}>
+                    <div style={{ fontSize: "16px", color: "rgba(244,245,247,0.7)", marginBottom: "14px" }}>
                       {t.location || "Место уточняется"}
                     </div>
                     <span style={{
-                      display: "inline-block",
-                      fontSize: "12px",
-                      padding: "4px 10px",
-                      borderRadius: "999px",
-                      background: "#e8eef7",
-                      color: "#1A56A0",
+                      display: "inline-block", fontSize: "14px", padding: "6px 12px",
+                      borderRadius: "6px", background: "rgba(47,111,191,0.22)", color: "#9ec0ef",
                     }}>
                       {t.competition_level === "region" ? "Региональный+" : "Городской / клубный"}
                     </span>
                   </div>
                   <div style={{
-                    padding: "10px 18px",
-                    fontSize: "12px",
-                    fontWeight: "bold",
-                    borderTop: "1px solid #f0eee8",
-                    ...tone,
+                    padding: "14px 20px", fontSize: "15px", fontWeight: 700,
+                    borderTop: "1px solid rgba(255,255,255,0.08)", ...tone,
                   }}>
                     {timing.registrationLabel}
                   </div>
                 </button>
               )
             })}
-          </div>
-        )}
-
-        {selected && (
-          <div style={{ ...card, marginTop: "24px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: "16px", flexWrap: "wrap", alignItems: "flex-start" }}>
-              <div>
-                <h2 style={{ margin: "0 0 8px", color: "#1A56A0" }}>{selected.name}</h2>
-                <div style={{ color: "#4A4A48", fontSize: "14px", lineHeight: 1.6 }}>
-                  <div><strong>Дата:</strong> {formatRuDate(selected.event_date)}</div>
-                  <div><strong>Место:</strong> {selected.location || "уточняется"}</div>
-                  {selected.registration_closes_at && (
-                    <div><strong>Закрытие заявок:</strong> {formatRuDate(selected.registration_closes_at)}</div>
-                  )}
-                  <div style={{ marginTop: "8px" }}>
-                    <span style={{
-                      display: "inline-block",
-                      padding: "4px 10px",
-                      borderRadius: "6px",
-                      fontSize: "13px",
-                      ...registrationToneStyle[tournamentTiming(selected, today).registrationTone],
-                    }}>
-                      {tournamentTiming(selected, today).registrationLabel}
-                    </span>
-                  </div>
-                </div>
-              </div>
-              <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
-                <button onClick={onLoginClick} style={btnPrimary}>Войти, чтобы подать заявку</button>
-                <button onClick={() => setSelected(null)} style={btnOutline}>Закрыть</button>
-              </div>
-            </div>
           </div>
         )}
       </main>
@@ -284,29 +327,63 @@ function LoginPage({ onLogin, onRegister, onBack, emailConfirmMessage }) {
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: "#f3f2ee", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Arial", padding: "24px" }}>
-      <div style={{ background: "white", padding: "48px", borderRadius: "16px", width: "420px", maxWidth: "100%", boxShadow: "0 4px 24px rgba(0,0,0,0.08)" }}>
+    <div style={{
+      minHeight: "100vh", position: "relative", overflow: "hidden",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      fontFamily: "var(--font-body)", padding: "24px",
+    }}>
+      <img
+        src={HERO_IMG}
+        alt=""
+        className="arena-hero-bg"
+        style={{
+          position: "absolute", inset: 0, width: "100%", height: "100%",
+          objectFit: "cover", objectPosition: "center 20%",
+        }}
+      />
+      <div style={{
+        position: "absolute", inset: 0,
+        background: "linear-gradient(115deg, rgba(11,13,16,0.94) 0%, rgba(11,13,16,0.72) 55%, rgba(11,13,16,0.55) 100%)",
+      }} />
+      <div className="arena-hero-copy" style={{ ...arenaPanel, width: "420px", maxWidth: "100%", position: "relative", zIndex: 1 }}>
         {onBack && (
-          <button onClick={onBack} style={{ ...btnOutline, marginBottom: "20px", padding: "8px 14px", fontSize: "13px" }}>← К турнирам</button>
+          <button onClick={onBack} className="arena-btn" style={{ ...arenaBtnGhost, marginBottom: "20px", padding: "8px 14px", fontSize: "13px" }}>
+            ← К турнирам
+          </button>
         )}
-        <h1 style={{ color: "#1A56A0", marginBottom: "8px" }}>СпортДок</h1>
-        <p style={{ color: "#4A4A48", marginBottom: "32px" }}>Войдите в систему</p>
+        <div style={{
+          fontFamily: "var(--font-display)", fontSize: "42px", fontWeight: 700,
+          letterSpacing: "0.04em", textTransform: "uppercase", lineHeight: 1, marginBottom: "8px",
+        }}>
+          СпортДок
+        </div>
+        <p style={{ color: "rgba(244,245,247,0.68)", marginBottom: "28px", marginTop: 0 }}>Войдите в систему</p>
 
-        {emailConfirmMessage && <div style={{ ...successBox, marginBottom: "16px" }}>{emailConfirmMessage}</div>}
+        {emailConfirmMessage && (
+          <div style={{ ...successBox, background: "rgba(15,110,86,0.28)", color: "#8de0c8", marginBottom: "16px" }}>
+            {emailConfirmMessage}
+          </div>
+        )}
 
         <div style={{ marginBottom: "16px" }}>
-          <label style={labelStyle}>Email</label>
-          <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="your@email.com" style={inputStyle} />
+          <label style={arenaLabelStyle}>Email</label>
+          <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="your@email.com" style={arenaInputStyle} />
         </div>
         <div style={{ marginBottom: "16px" }}>
-          <label style={labelStyle}>Пароль</label>
-          <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" style={inputStyle} />
+          <label style={arenaLabelStyle}>Пароль</label>
+          <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" style={arenaInputStyle} />
         </div>
 
-        {error && <div style={errorBox}>{error}</div>}
+        {error && (
+          <div style={{ ...errorBox, background: "rgba(163,45,45,0.28)", color: "#f0a8a8" }}>{error}</div>
+        )}
 
-        <button onClick={handleLogin} style={{ ...btnPrimary, width: "100%", padding: "14px", marginBottom: "12px" }}>Войти</button>
-        <button onClick={onRegister} style={{ ...btnOutline, width: "100%", padding: "14px" }}>Зарегистрировать клуб</button>
+        <button onClick={handleLogin} className="arena-btn" style={{ ...arenaBtnPrimary, width: "100%", padding: "14px", marginBottom: "12px" }}>
+          Войти
+        </button>
+        <button onClick={onRegister} className="arena-btn" style={{ ...arenaBtnGhost, width: "100%", padding: "14px" }}>
+          Зарегистрировать клуб
+        </button>
       </div>
     </div>
   )
@@ -337,61 +414,94 @@ function ClubRegisterPage({ onBack }) {
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: "#f3f2ee", fontFamily: "Arial", padding: "32px" }}>
-      <div style={{ maxWidth: "600px", margin: "0 auto" }}>
-        <button onClick={onBack} style={{ ...btnOutline, marginBottom: "16px" }}>← К турнирам</button>
-        <div style={card}>
-          <h2 style={{ color: "#1A56A0", marginTop: 0 }}>Регистрация клуба</h2>
-          <p style={{ color: "#4A4A48", marginBottom: "24px" }}>После регистрации администратор рассмотрит вашу заявку.</p>
+    <div style={{
+      minHeight: "100vh", position: "relative", overflow: "hidden",
+      fontFamily: "var(--font-body)", padding: "32px 16px",
+    }}>
+      <img
+        src={HERO_IMG}
+        alt=""
+        className="arena-hero-bg"
+        style={{
+          position: "absolute", inset: 0, width: "100%", height: "100%",
+          objectFit: "cover", objectPosition: "center 20%",
+        }}
+      />
+      <div style={{
+        position: "absolute", inset: 0,
+        background: "linear-gradient(160deg, rgba(11,13,16,0.95) 0%, rgba(11,13,16,0.78) 50%, rgba(11,13,16,0.9) 100%)",
+      }} />
+      <div className="arena-hero-copy" style={{ maxWidth: "600px", margin: "0 auto", position: "relative", zIndex: 1 }}>
+        <button onClick={onBack} className="arena-btn" style={{ ...arenaBtnGhost, marginBottom: "16px", padding: "8px 14px", fontSize: "13px" }}>
+          ← К турнирам
+        </button>
+        <div style={arenaPanel}>
+          <h2 style={{
+            marginTop: 0, marginBottom: "8px", fontFamily: "var(--font-display)",
+            fontSize: "28px", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase",
+          }}>
+            Регистрация клуба
+          </h2>
+          <p style={{ color: "rgba(244,245,247,0.68)", marginBottom: "24px", marginTop: 0 }}>
+            После регистрации администратор рассмотрит вашу заявку.
+          </p>
 
           {success ? (
             <div>
-              <div style={successBox}>{success}</div>
-              <button onClick={onBack} style={btnPrimary}>К турнирам</button>
+              <div style={{ ...successBox, background: "rgba(15,110,86,0.28)", color: "#8de0c8" }}>{success}</div>
+              <button onClick={onBack} className="arena-btn" style={arenaBtnPrimary}>К турнирам</button>
             </div>
           ) : (
             <>
               <div style={{ marginBottom: "16px" }}>
-                <label style={labelStyle}>ФИО ответственного *</label>
-                <input type="text" value={form.responsible_name} onChange={e => set("responsible_name", e.target.value)} style={inputStyle} />
+                <label style={arenaLabelStyle}>ФИО ответственного *</label>
+                <input type="text" value={form.responsible_name} onChange={e => set("responsible_name", e.target.value)} style={arenaInputStyle} />
               </div>
               <div style={{ marginBottom: "16px" }}>
-                <label style={labelStyle}>Должность</label>
-                <input type="text" value={form.responsible_position} onChange={e => set("responsible_position", e.target.value)} placeholder="Президент федерации" style={inputStyle} />
+                <label style={arenaLabelStyle}>Должность</label>
+                <input type="text" value={form.responsible_position} onChange={e => set("responsible_position", e.target.value)} placeholder="Президент федерации" style={arenaInputStyle} />
               </div>
               <div style={{ marginBottom: "16px" }}>
-                <label style={labelStyle}>Полное название организации *</label>
-                <input type="text" value={form.full_name} onChange={e => set("full_name", e.target.value)} style={inputStyle} />
+                <label style={arenaLabelStyle}>Полное название организации *</label>
+                <input type="text" value={form.full_name} onChange={e => set("full_name", e.target.value)} style={arenaInputStyle} />
               </div>
               <div style={{ marginBottom: "16px" }}>
-                <label style={labelStyle}>Сокращённое название</label>
-                <input type="text" value={form.short_name} onChange={e => set("short_name", e.target.value)} placeholder="СК Динамо" style={inputStyle} />
+                <label style={arenaLabelStyle}>Сокращённое название</label>
+                <input type="text" value={form.short_name} onChange={e => set("short_name", e.target.value)} placeholder="СК Динамо" style={arenaInputStyle} />
               </div>
-              <div style={{ display: "flex", gap: "12px", marginBottom: "16px" }}>
-                <div style={{ flex: 1 }}>
-                  <label style={labelStyle}>Регион</label>
-                  <input type="text" value={form.region} onChange={e => set("region", e.target.value)} placeholder="Санкт-Петербург" style={inputStyle} />
+              <div style={{ display: "flex", gap: "12px", marginBottom: "16px", flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: "140px" }}>
+                  <label style={arenaLabelStyle}>Регион</label>
+                  <input type="text" value={form.region} onChange={e => set("region", e.target.value)} placeholder="Санкт-Петербург" style={arenaInputStyle} />
                 </div>
-                <div style={{ flex: 1 }}>
-                  <label style={labelStyle}>Телефон</label>
-                  <input type="text" value={form.contact_phone} onChange={e => set("contact_phone", e.target.value)} placeholder="+7 999 000 00 00" style={inputStyle} />
+                <div style={{ flex: 1, minWidth: "140px" }}>
+                  <label style={arenaLabelStyle}>Телефон</label>
+                  <input type="text" value={form.contact_phone} onChange={e => set("contact_phone", e.target.value)} placeholder="+7 999 000 00 00" style={arenaInputStyle} />
                 </div>
               </div>
               <div style={{ marginBottom: "16px" }}>
-                <label style={labelStyle}>Тренеры (ФИО через запятую)</label>
-                <input type="text" value={form.trainers} onChange={e => set("trainers", e.target.value)} placeholder="Иванов И.И., Петрова А.С." style={inputStyle} />
+                <label style={arenaLabelStyle}>Тренеры (ФИО через запятую)</label>
+                <input type="text" value={form.trainers} onChange={e => set("trainers", e.target.value)} placeholder="Иванов И.И., Петрова А.С." style={arenaInputStyle} />
               </div>
               <div style={{ marginBottom: "16px" }}>
-                <label style={labelStyle}>Email для входа *</label>
-                <input type="email" value={form.email} onChange={e => set("email", e.target.value)} style={inputStyle} />
+                <label style={arenaLabelStyle}>Email для входа *</label>
+                <input type="email" value={form.email} onChange={e => set("email", e.target.value)} style={arenaInputStyle} />
               </div>
               <div style={{ marginBottom: "24px" }}>
-                <label style={labelStyle}>Пароль *</label>
-                <input type="password" value={form.password} onChange={e => set("password", e.target.value)} style={inputStyle} />
+                <label style={arenaLabelStyle}>Пароль *</label>
+                <input type="password" value={form.password} onChange={e => set("password", e.target.value)} style={arenaInputStyle} />
               </div>
 
-              {error && <div style={errorBox}>{error}</div>}
-              <button onClick={handleSubmit} style={btnGreen}>Подать заявку</button>
+              {error && (
+                <div style={{ ...errorBox, background: "rgba(163,45,45,0.28)", color: "#f0a8a8" }}>{error}</div>
+              )}
+              <button
+                onClick={handleSubmit}
+                className="arena-btn"
+                style={{ ...arenaBtnPrimary, background: "#0f6e56" }}
+              >
+                Подать заявку
+              </button>
             </>
           )}
         </div>
@@ -747,6 +857,231 @@ function normalizeGlobalDrawNumbers(participants) {
 const categoryLabel = (discipline, gender, category_name) =>
   [DISCIPLINE_LABELS[discipline] || discipline, GENDER_LABELS[gender] || gender, category_name].filter(Boolean).join(" / ")
 const nameInList = (participants, id) => (participants.find(p => p.registration_id === id) || {}).full_name || "?"
+
+// ─── ПУБЛИЧНАЯ СТРАНИЦА ТУРНИРА: УЧАСТНИКИ ПО КАТЕГОРИЯМ ───────────────────────
+function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
+  const [athletes, setAthletes] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [pdfLoading, setPdfLoading] = useState(false)
+  const [pdfError, setPdfError] = useState("")
+  const today = todayISO()
+  const timing = tournamentTiming(tournament, today)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    window.scrollTo(0, 0)
+    axios.get(`${API}/api/v1/tournaments/${tournament.id}/athletes`)
+      .then(r => { if (!cancelled) setAthletes(Array.isArray(r.data) ? r.data : []) })
+      .catch(() => { if (!cancelled) setAthletes([]) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [tournament.id])
+
+  const downloadPdf = async () => {
+    setPdfError("")
+    setPdfLoading(true)
+    try {
+      const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/documents/participants-pdf`, {
+        responseType: "blob",
+      })
+      if (r.data?.type === "application/json") {
+        const text = await r.data.text()
+        const parsed = JSON.parse(text)
+        setPdfError(parsed.message || "Не удалось скачать PDF")
+        return
+      }
+      const url = window.URL.createObjectURL(r.data)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = `участники_${(tournament.name || "tournament").replace(/[\\/:*?"<>|]/g, "_").slice(0, 60)}.pdf`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      window.URL.revokeObjectURL(url)
+    } catch (e) {
+      setPdfError(e.response?.data?.message || "Не удалось скачать PDF")
+    } finally {
+      setPdfLoading(false)
+    }
+  }
+
+  const categories = Object.values(athletes.reduce((groups, a) => {
+    const key = `${a.discipline}|${a.gender}|${a.category_name}`
+    if (!groups[key]) {
+      groups[key] = {
+        key,
+        discipline: a.discipline,
+        gender: a.gender,
+        category_name: a.category_name,
+        athletes: [],
+      }
+    }
+    groups[key].athletes.push(a)
+    return groups
+  }, {})).map(g => ({
+    ...g,
+    athletes: [...g.athletes].sort((a, b) => {
+      const seedA = a.seed == null ? 9999 : a.seed
+      const seedB = b.seed == null ? 9999 : b.seed
+      if (seedA !== seedB) return seedA - seedB
+      return String(a.full_name || "").localeCompare(String(b.full_name || ""), "ru")
+    }),
+  })).sort((a, b) =>
+    categoryLabel(a.discipline, a.gender, a.category_name)
+      .localeCompare(categoryLabel(b.discipline, b.gender, b.category_name), "ru")
+  )
+
+  const showRegion = tournament.competition_level === "region"
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#0b0d10", fontFamily: "var(--font-body)", color: "#f4f5f7" }}>
+      <div style={{
+        padding: "20px clamp(16px, 3vw, 32px)",
+        borderBottom: "1px solid rgba(255,255,255,0.08)",
+        background: "rgba(21,24,32,0.92)",
+        position: "sticky", top: 0, zIndex: 10,
+        display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap",
+      }}>
+        <button onClick={onBack} className="arena-btn" style={{ ...arenaBtnGhost, padding: "10px 16px", fontSize: "14px" }}>
+          ← К турнирам
+        </button>
+        <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+          <button
+            onClick={downloadPdf}
+            disabled={pdfLoading || loading || athletes.length === 0}
+            className="arena-btn"
+            style={{
+              ...arenaBtnPrimary,
+              padding: "10px 18px",
+              fontSize: "14px",
+              opacity: (pdfLoading || loading || athletes.length === 0) ? 0.55 : 1,
+              cursor: (pdfLoading || loading || athletes.length === 0) ? "not-allowed" : "pointer",
+            }}
+          >
+            {pdfLoading ? "Готовим PDF…" : "Скачать PDF"}
+          </button>
+          <button onClick={onLoginClick} className="arena-btn" style={{ ...arenaBtnGhost, padding: "10px 18px", fontSize: "14px" }}>
+            Войти
+          </button>
+        </div>
+      </div>
+
+      <main style={{ maxWidth: "1100px", margin: "0 auto", padding: "36px clamp(16px, 3vw, 28px) 72px" }}>
+        <div style={{ marginBottom: "32px" }}>
+          <div style={{
+            fontFamily: "var(--font-display)", fontSize: "14px", fontWeight: 600,
+            letterSpacing: "0.08em", textTransform: "uppercase", color: "#9ec0ef", marginBottom: "10px",
+          }}>
+            {formatRuDate(tournament.event_date)}
+            {tournament.location ? ` · ${tournament.location}` : ""}
+          </div>
+          <h1 style={{
+            margin: "0 0 12px", fontFamily: "var(--font-display)",
+            fontSize: "clamp(28px, 5vw, 44px)", fontWeight: 600,
+            letterSpacing: "0.03em", textTransform: "uppercase", lineHeight: 1.1,
+          }}>
+            {tournament.name}
+          </h1>
+          <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
+            <span style={{
+              display: "inline-block", padding: "6px 12px", borderRadius: "6px", fontSize: "13px", fontWeight: 700,
+              ...arenaToneStyle[timing.registrationTone],
+            }}>
+              {timing.registrationLabel}
+            </span>
+            <span style={{
+              display: "inline-block", fontSize: "13px", padding: "6px 12px",
+              borderRadius: "6px", background: "rgba(47,111,191,0.22)", color: "#9ec0ef",
+            }}>
+              {tournament.competition_level === "region" ? "Региональный+" : "Городской / клубный"}
+            </span>
+            {!loading && (
+              <span style={{ color: "rgba(244,245,247,0.55)", fontSize: "14px" }}>
+                {athletes.length} участников · {categories.length} категорий
+              </span>
+            )}
+          </div>
+          {pdfError && (
+            <div style={{ ...errorBox, background: "rgba(163,45,45,0.28)", color: "#f0a8a8", marginTop: "14px" }}>
+              {pdfError}
+            </div>
+          )}
+        </div>
+
+        {loading ? (
+          <div style={{ ...arenaPanel, textAlign: "center", color: "rgba(244,245,247,0.65)" }}>
+            Загрузка участников…
+          </div>
+        ) : categories.length === 0 ? (
+          <div style={{ ...arenaPanel, textAlign: "center", color: "rgba(244,245,247,0.65)" }}>
+            Пока нет зарегистрированных участников.
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+            {categories.map(cat => (
+              <section key={cat.key} style={arenaPanel}>
+                <div style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "baseline",
+                  gap: "12px", flexWrap: "wrap", marginBottom: "16px",
+                  paddingBottom: "12px", borderBottom: "1px solid rgba(255,255,255,0.1)",
+                }}>
+                  <h2 style={{
+                    margin: 0, fontFamily: "var(--font-display)", fontSize: "22px",
+                    fontWeight: 600, letterSpacing: "0.03em", textTransform: "uppercase",
+                  }}>
+                    {categoryLabel(cat.discipline, cat.gender, cat.category_name)}
+                  </h2>
+                  <span style={{ color: "rgba(244,245,247,0.55)", fontSize: "14px" }}>
+                    {cat.athletes.length}
+                  </span>
+                </div>
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "15px" }}>
+                    <thead>
+                      <tr style={{ color: "rgba(244,245,247,0.55)", textAlign: "left" }}>
+                        <th style={{ padding: "8px 10px", fontWeight: 600, width: "48px" }}>№</th>
+                        <th style={{ padding: "8px 10px", fontWeight: 600 }}>ФИО</th>
+                        <th style={{ padding: "8px 10px", fontWeight: 600 }}>{showRegion ? "Регион" : "Клуб"}</th>
+                        <th style={{ padding: "8px 10px", fontWeight: 600 }}>Возраст</th>
+                        {cat.discipline !== "kata" && (
+                          <th style={{ padding: "8px 10px", fontWeight: 600 }}>Вес</th>
+                        )}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {cat.athletes.map((a, i) => (
+                        <tr key={a.registration_id || a.id} style={{
+                          borderTop: "1px solid rgba(255,255,255,0.06)",
+                        }}>
+                          <td style={{ padding: "10px", color: "#9ec0ef", fontWeight: 700 }}>
+                            {a.seed != null ? a.seed : i + 1}
+                          </td>
+                          <td style={{ padding: "10px", fontWeight: 600 }}>{a.full_name}</td>
+                          <td style={{ padding: "10px", color: "rgba(244,245,247,0.72)" }}>
+                            {showRegion ? (a.region || a.club_name || "—") : (a.club_name || "—")}
+                          </td>
+                          <td style={{ padding: "10px", color: "rgba(244,245,247,0.72)" }}>
+                            {a.age_group || "—"}
+                          </td>
+                          {cat.discipline !== "kata" && (
+                            <td style={{ padding: "10px", color: "rgba(244,245,247,0.72)" }}>
+                              {a.weight != null ? `${a.weight}` : "—"}
+                            </td>
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            ))}
+          </div>
+        )}
+      </main>
+    </div>
+  )
+}
 
 // ─── СЕТКА КУМИТЭ (топология по посевам + результатам боёв, для секретаря) ────
 // Тот же алгоритм, что и app/draw.py::seed_position_order /
@@ -2799,6 +3134,7 @@ export default function App() {
   const [page, setPage] = useState("home")
   const [user, setUser] = useState(null)
   const [emailConfirmMessage, setEmailConfirmMessage] = useState(null)
+  const [publicTournament, setPublicTournament] = useState(null)
 
   useEffect(() => {
     const token = new URLSearchParams(window.location.search).get("confirm_email")
@@ -2817,11 +3153,13 @@ export default function App() {
 
   const handleLogin = (userData) => {
     setUser(userData)
+    setPublicTournament(null)
     setPage("panel")
   }
 
   const handleLogout = () => {
     setUser(null)
+    setPublicTournament(null)
     setPage("home")
   }
 
@@ -2833,7 +3171,7 @@ export default function App() {
       <LoginPage
         onLogin={handleLogin}
         onRegister={() => setPage("register")}
-        onBack={() => setPage("home")}
+        onBack={() => setPage(publicTournament ? "tournament" : "home")}
         emailConfirmMessage={emailConfirmMessage}
       />
     )
@@ -2849,10 +3187,20 @@ export default function App() {
       return <SecretaryPanel user={user} onLogout={handleLogout} />
     }
   }
+  if (page === "tournament" && publicTournament) {
+    return (
+      <PublicTournamentPage
+        tournament={publicTournament}
+        onBack={() => { setPublicTournament(null); setPage("home") }}
+        onLoginClick={() => setPage("login")}
+      />
+    )
+  }
   return (
     <PublicHomePage
       onLoginClick={() => setPage("login")}
       onRegisterClick={() => setPage("register")}
+      onTournamentClick={(t) => { setPublicTournament(t); setPage("tournament") }}
     />
   )
 }

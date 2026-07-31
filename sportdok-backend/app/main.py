@@ -22,7 +22,7 @@ from app.auth import hash_password, verify_password, create_token, get_current_u
 from app.draw import build_category_draw, subgroup_for_draw_number
 from app.kumite_protocol import determine_winner
 from app.kata_protocol import ROUND_SCALES, validate_scores, compute_total, determine_round_result
-from app.documents import build_category_excel_zip, build_pdf, team_standings
+from app.documents import build_category_excel_zip, build_pdf, build_participants_list_pdf, team_standings
 from app.kata_registry import KATA_TYPES, KATA_STYLE_ORDER, kata_style
 from app.age_group import compute_age_group
 from app.notifications import send_email
@@ -1657,6 +1657,20 @@ def export_documents_pdf(tournament_id: str, db: Session = Depends(get_db)):
         buffer,
         media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename=sportdok_export_{tournament_id[:8]}.pdf"}
+    )
+
+@app.get("/api/v1/tournaments/{tournament_id}/documents/participants-pdf")
+def export_participants_pdf(tournament_id: str, db: Session = Depends(get_db)):
+    """Публичная выгрузка: только списки участников по категориям."""
+    assembled = _assemble_tournament_documents(tournament_id, db)
+    if not assembled:
+        return {"success": False, "message": "Турнир не найден"}
+    tournament_info, _summary, categories_payload, _placements = assembled
+    buffer = build_participants_list_pdf(tournament_info, categories_payload)
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=sportdok_participants_{tournament_id[:8]}.pdf"}
     )
 
 # ─── СПРАВОЧНИКИ ──────────────────────────────────────────────────────────────
