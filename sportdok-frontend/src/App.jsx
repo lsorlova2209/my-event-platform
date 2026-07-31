@@ -46,8 +46,231 @@ const successBox = {
   padding: "12px", borderRadius: "8px", marginBottom: "16px", fontSize: "14px"
 }
 
+function todayISO() {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
+}
+
+function formatRuDate(iso) {
+  if (!iso) return "—"
+  const [y, m, d] = String(iso).slice(0, 10).split("-")
+  if (!y || !m || !d) return iso
+  return `${d}.${m}.${y}`
+}
+
+function tournamentTiming(t, today = todayISO()) {
+  const eventDate = String(t.event_date || "").slice(0, 10)
+  const closes = t.registration_closes_at ? String(t.registration_closes_at).slice(0, 10) : null
+  const isPast = eventDate && eventDate < today
+  let registrationLabel = "Заявки по запросу"
+  let registrationTone = "neutral"
+  if (isPast) {
+    registrationLabel = "Турнир завершён"
+    registrationTone = "past"
+  } else if (closes) {
+    if (closes < today) {
+      registrationLabel = "Регистрация закрыта"
+      registrationTone = "closed"
+    } else {
+      registrationLabel = `Регистрация до ${formatRuDate(closes)}`
+      registrationTone = "open"
+    }
+  } else if (!isPast) {
+    registrationLabel = "Предстоящий турнир"
+    registrationTone = "open"
+  }
+  return { isPast, registrationLabel, registrationTone }
+}
+
+const registrationToneStyle = {
+  open: { background: "#d8f2ea", color: "#0F6E56" },
+  closed: { background: "#fde8e8", color: "#A32D2D" },
+  past: { background: "#eceae4", color: "#4A4A48" },
+  neutral: { background: "#e8eef7", color: "#1A56A0" },
+}
+
+// ─── ПУБЛИЧНАЯ ГЛАВНАЯ: СПИСОК ТУРНИРОВ ───────────────────────────────────────
+function PublicHomePage({ onLoginClick, onRegisterClick }) {
+  const [tournaments, setTournaments] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [tab, setTab] = useState("upcoming")
+  const [selected, setSelected] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    axios.get(`${API}/api/v1/tournaments/`)
+      .then(r => { if (!cancelled) setTournaments(Array.isArray(r.data) ? r.data : []) })
+      .catch(() => { if (!cancelled) setTournaments([]) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  const today = todayISO()
+  const upcoming = tournaments
+    .filter(t => String(t.event_date || "").slice(0, 10) >= today)
+    .sort((a, b) => String(a.event_date).localeCompare(String(b.event_date)))
+  const past = tournaments
+    .filter(t => String(t.event_date || "").slice(0, 10) < today)
+    .sort((a, b) => String(b.event_date).localeCompare(String(a.event_date)))
+  const list = tab === "upcoming" ? upcoming : past
+
+  return (
+    <div style={{ minHeight: "100vh", background: "linear-gradient(180deg, #e8eef7 0%, #f3f2ee 42%, #f3f2ee 100%)", fontFamily: "Arial, sans-serif", color: "#1f1f1d" }}>
+      <header style={{
+        display: "flex", justifyContent: "space-between", alignItems: "center",
+        padding: "18px 28px", borderBottom: "1px solid rgba(26,86,160,0.12)",
+        background: "rgba(255,255,255,0.88)", backdropFilter: "blur(8px)",
+        position: "sticky", top: 0, zIndex: 10
+      }}>
+        <div>
+          <div style={{ fontSize: "28px", fontWeight: "800", color: "#1A56A0", letterSpacing: "-0.02em" }}>СпортДок</div>
+          <div style={{ fontSize: "13px", color: "#4A4A48" }}>Платформа турниров по всестилевому каратэ</div>
+        </div>
+        <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <button onClick={onLoginClick} style={{ ...btnPrimary, padding: "10px 18px" }}>Войти</button>
+          <button onClick={onRegisterClick} style={{ ...btnOutline, padding: "10px 18px" }}>Зарегистрировать клуб</button>
+        </div>
+      </header>
+
+      <main style={{ maxWidth: "1100px", margin: "0 auto", padding: "36px 20px 64px" }}>
+        <div style={{ marginBottom: "28px", maxWidth: "640px" }}>
+          <h1 style={{ margin: "0 0 10px", fontSize: "34px", lineHeight: 1.15, color: "#163a6b" }}>Турниры</h1>
+          <p style={{ margin: 0, color: "#4A4A48", fontSize: "16px", lineHeight: 1.5 }}>
+            Смотрите предстоящие и прошедшие соревнования. Вход и регистрация клуба — по кнопкам вверху.
+          </p>
+        </div>
+
+        <div style={{ display: "flex", gap: "8px", marginBottom: "24px" }}>
+          {[
+            { id: "upcoming", label: `Предстоящие (${upcoming.length})` },
+            { id: "past", label: `Прошедшие (${past.length})` },
+          ].map(item => (
+            <button
+              key={item.id}
+              onClick={() => { setTab(item.id); setSelected(null) }}
+              style={{
+                ...btnOutline,
+                borderColor: tab === item.id ? "#1A56A0" : "#D3D1C7",
+                background: tab === item.id ? "#1A56A0" : "white",
+                color: tab === item.id ? "white" : "#4A4A48",
+                fontWeight: tab === item.id ? "bold" : "normal",
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        {loading ? (
+          <div style={{ ...card, textAlign: "center", color: "#4A4A48" }}>Загрузка турниров…</div>
+        ) : list.length === 0 ? (
+          <div style={{ ...card, textAlign: "center", color: "#4A4A48" }}>
+            {tab === "upcoming" ? "Предстоящих турниров пока нет." : "Прошедших турниров пока нет."}
+          </div>
+        ) : (
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+            gap: "16px",
+          }}>
+            {list.map(t => {
+              const timing = tournamentTiming(t, today)
+              const tone = registrationToneStyle[timing.registrationTone]
+              const active = selected?.id === t.id
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setSelected(active ? null : t)}
+                  style={{
+                    textAlign: "left",
+                    border: active ? "2px solid #1A56A0" : "1px solid #e4e1d8",
+                    borderRadius: "14px",
+                    background: "white",
+                    padding: "0",
+                    cursor: "pointer",
+                    overflow: "hidden",
+                    boxShadow: active ? "0 8px 28px rgba(26,86,160,0.16)" : "0 4px 18px rgba(0,0,0,0.05)",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  <div style={{ padding: "18px 18px 14px" }}>
+                    <div style={{ fontSize: "12px", color: "#1A56A0", fontWeight: "bold", letterSpacing: "0.04em", marginBottom: "8px" }}>
+                      {formatRuDate(t.event_date)}
+                    </div>
+                    <div style={{ fontSize: "17px", fontWeight: "700", color: "#163a6b", lineHeight: 1.3, marginBottom: "8px", minHeight: "44px" }}>
+                      {t.name}
+                    </div>
+                    <div style={{ fontSize: "13px", color: "#4A4A48", marginBottom: "12px" }}>
+                      {t.location || "Место уточняется"}
+                    </div>
+                    <span style={{
+                      display: "inline-block",
+                      fontSize: "12px",
+                      padding: "4px 10px",
+                      borderRadius: "999px",
+                      background: "#e8eef7",
+                      color: "#1A56A0",
+                    }}>
+                      {t.competition_level === "region" ? "Региональный+" : "Городской / клубный"}
+                    </span>
+                  </div>
+                  <div style={{
+                    padding: "10px 18px",
+                    fontSize: "12px",
+                    fontWeight: "bold",
+                    borderTop: "1px solid #f0eee8",
+                    ...tone,
+                  }}>
+                    {timing.registrationLabel}
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        )}
+
+        {selected && (
+          <div style={{ ...card, marginTop: "24px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "16px", flexWrap: "wrap", alignItems: "flex-start" }}>
+              <div>
+                <h2 style={{ margin: "0 0 8px", color: "#1A56A0" }}>{selected.name}</h2>
+                <div style={{ color: "#4A4A48", fontSize: "14px", lineHeight: 1.6 }}>
+                  <div><strong>Дата:</strong> {formatRuDate(selected.event_date)}</div>
+                  <div><strong>Место:</strong> {selected.location || "уточняется"}</div>
+                  {selected.registration_closes_at && (
+                    <div><strong>Закрытие заявок:</strong> {formatRuDate(selected.registration_closes_at)}</div>
+                  )}
+                  <div style={{ marginTop: "8px" }}>
+                    <span style={{
+                      display: "inline-block",
+                      padding: "4px 10px",
+                      borderRadius: "6px",
+                      fontSize: "13px",
+                      ...registrationToneStyle[tournamentTiming(selected, today).registrationTone],
+                    }}>
+                      {tournamentTiming(selected, today).registrationLabel}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                <button onClick={onLoginClick} style={btnPrimary}>Войти, чтобы подать заявку</button>
+                <button onClick={() => setSelected(null)} style={btnOutline}>Закрыть</button>
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  )
+}
+
 // ─── СТРАНИЦА ВХОДА ───────────────────────────────────────────────────────────
-function LoginPage({ onLogin, onRegister, emailConfirmMessage }) {
+function LoginPage({ onLogin, onRegister, onBack, emailConfirmMessage }) {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [error, setError] = useState("")
@@ -61,8 +284,11 @@ function LoginPage({ onLogin, onRegister, emailConfirmMessage }) {
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: "#f3f2ee", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Arial" }}>
-      <div style={{ background: "white", padding: "48px", borderRadius: "16px", width: "420px", boxShadow: "0 4px 24px rgba(0,0,0,0.08)" }}>
+    <div style={{ minHeight: "100vh", background: "#f3f2ee", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Arial", padding: "24px" }}>
+      <div style={{ background: "white", padding: "48px", borderRadius: "16px", width: "420px", maxWidth: "100%", boxShadow: "0 4px 24px rgba(0,0,0,0.08)" }}>
+        {onBack && (
+          <button onClick={onBack} style={{ ...btnOutline, marginBottom: "20px", padding: "8px 14px", fontSize: "13px" }}>← К турнирам</button>
+        )}
         <h1 style={{ color: "#1A56A0", marginBottom: "8px" }}>СпортДок</h1>
         <p style={{ color: "#4A4A48", marginBottom: "32px" }}>Войдите в систему</p>
 
@@ -113,7 +339,7 @@ function ClubRegisterPage({ onBack }) {
   return (
     <div style={{ minHeight: "100vh", background: "#f3f2ee", fontFamily: "Arial", padding: "32px" }}>
       <div style={{ maxWidth: "600px", margin: "0 auto" }}>
-        <button onClick={onBack} style={{ ...btnOutline, marginBottom: "16px" }}>← Назад ко входу</button>
+        <button onClick={onBack} style={{ ...btnOutline, marginBottom: "16px" }}>← К турнирам</button>
         <div style={card}>
           <h2 style={{ color: "#1A56A0", marginTop: 0 }}>Регистрация клуба</h2>
           <p style={{ color: "#4A4A48", marginBottom: "24px" }}>После регистрации администратор рассмотрит вашу заявку.</p>
@@ -121,7 +347,7 @@ function ClubRegisterPage({ onBack }) {
           {success ? (
             <div>
               <div style={successBox}>{success}</div>
-              <button onClick={onBack} style={btnPrimary}>Перейти ко входу</button>
+              <button onClick={onBack} style={btnPrimary}>К турнирам</button>
             </div>
           ) : (
             <>
@@ -2570,7 +2796,7 @@ function BoutResultForm({ a, b, roundLabel, existingBout, tournamentId, user, on
 
 // ─── ГЛАВНЫЙ КОМПОНЕНТ ────────────────────────────────────────────────────────
 export default function App() {
-  const [page, setPage] = useState("login")
+  const [page, setPage] = useState("home")
   const [user, setUser] = useState(null)
   const [emailConfirmMessage, setEmailConfirmMessage] = useState(null)
 
@@ -2578,8 +2804,14 @@ export default function App() {
     const token = new URLSearchParams(window.location.search).get("confirm_email")
     if (!token) return
     axios.post(`${API}/api/v1/clubs/confirm-email`, null, { params: { token } })
-      .then(r => setEmailConfirmMessage(r.data.message))
-      .catch(() => setEmailConfirmMessage("Не удалось подтвердить email - ссылка недействительна или устарела"))
+      .then(r => {
+        setEmailConfirmMessage(r.data.message)
+        setPage("login")
+      })
+      .catch(() => {
+        setEmailConfirmMessage("Не удалось подтвердить email - ссылка недействительна или устарела")
+        setPage("login")
+      })
     window.history.replaceState({}, "", window.location.pathname)
   }, [])
 
@@ -2588,17 +2820,39 @@ export default function App() {
     setPage("panel")
   }
 
-  if (page === "register") return <ClubRegisterPage onBack={() => setPage("login")} />
+  const handleLogout = () => {
+    setUser(null)
+    setPage("home")
+  }
+
+  if (page === "register") {
+    return <ClubRegisterPage onBack={() => setPage("home")} />
+  }
+  if (page === "login") {
+    return (
+      <LoginPage
+        onLogin={handleLogin}
+        onRegister={() => setPage("register")}
+        onBack={() => setPage("home")}
+        emailConfirmMessage={emailConfirmMessage}
+      />
+    )
+  }
   if (page === "panel" && user) {
     if (user.role === "admin" || user.role === "owner") {
-      return <AdminPanel user={user} onLogout={() => { setUser(null); setPage("login") }} />
+      return <AdminPanel user={user} onLogout={handleLogout} />
     }
     if (user.role === "club") {
-      return <ClubPanel user={user} onLogout={() => { setUser(null); setPage("login") }} />
+      return <ClubPanel user={user} onLogout={handleLogout} />
     }
     if (user.role === "secretary") {
-      return <SecretaryPanel user={user} onLogout={() => { setUser(null); setPage("login") }} />
+      return <SecretaryPanel user={user} onLogout={handleLogout} />
     }
   }
-  return <LoginPage onLogin={handleLogin} onRegister={() => setPage("register")} emailConfirmMessage={emailConfirmMessage} />
+  return (
+    <PublicHomePage
+      onLoginClick={() => setPage("login")}
+      onRegisterClick={() => setPage("register")}
+    />
+  )
 }

@@ -445,13 +445,14 @@ def create_tournament(data: TournamentCreate, current_user=Depends(get_current_u
 
 @app.get("/api/v1/tournaments/")
 def list_tournaments(db: Session = Depends(get_db)):
-    tournaments = db.query(Tournament).order_by(Tournament.created_at.desc()).all()
+    tournaments = db.query(Tournament).order_by(Tournament.event_date.desc(), Tournament.created_at.desc()).all()
     return [
         {
             "id": str(t.id),
             "name": t.name,
             "location": t.location,
             "event_date": str(t.event_date),
+            "registration_closes_at": str(t.registration_closes_at) if t.registration_closes_at else None,
             "status": t.status,
             "competition_level": t.competition_level or "club",
             "chief_judge": t.chief_judge,
