@@ -2032,15 +2032,8 @@ function TournamentDetail({ tournament, user, onBack }) {
   const [filterSurname, setFilterSurname] = useState("")
   const [filterClub, setFilterClub] = useState("")
   const [filterCategory, setFilterCategory] = useState("")
-  const [filterMandate, setFilterMandate] = useState("")
-  const [filterWeigh, setFilterWeigh] = useState("")
   const [searchOpen, setSearchOpen] = useState({ surname: false, club: false, category: false })
   const [expandedKeys, setExpandedKeys] = useState(() => new Set())
-  const [competitionDays, setCompetitionDays] = useState([])
-  const [dayForm, setDayForm] = useState({ date: "", label: "" })
-  const [dayMsg, setDayMsg] = useState("")
-  const [assignForm, setAssignForm] = useState({ competition_day_id: "", discipline: "" })
-  const [assignMsg, setAssignMsg] = useState("")
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
@@ -2067,12 +2060,6 @@ function TournamentDetail({ tournament, user, onBack }) {
 
   const loadAthletes = async () => {
     try { const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/athletes`); setAthletes(r.data) } catch { setAthletes([]) }
-  }
-  const loadCompetitionDays = async () => {
-    try {
-      const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/competition-days`)
-      setCompetitionDays(Array.isArray(r.data) ? r.data : [])
-    } catch { setCompetitionDays([]) }
   }
   const loadBouts = async () => {
     try { const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/bouts`); setBouts(r.data) } catch { setBouts([]) }
@@ -2119,15 +2106,14 @@ function TournamentDetail({ tournament, user, onBack }) {
             }
           } catch { /* repair is best-effort */ }
         }
-        const [athletesResponse, boutsResponse, ranksResponse, weightCategoriesResponse, kataTypesResponse, secretariesResponse, grantsResponse, daysResponse] = await Promise.all([
+        const [athletesResponse, boutsResponse, ranksResponse, weightCategoriesResponse, kataTypesResponse, secretariesResponse, grantsResponse] = await Promise.all([
           axios.get(`${API}/api/v1/tournaments/${tournament.id}/athletes`),
           axios.get(`${API}/api/v1/tournaments/${tournament.id}/bouts`),
           axios.get(`${API}/api/v1/ranks/`),
           axios.get(`${API}/api/v1/weight-categories/`),
           axios.get(`${API}/api/v1/kata-types/`),
           axios.get(`${API}/api/v1/secretaries/`, { headers }),
-          axios.get(`${API}/api/v1/tournaments/${tournament.id}/secretary-access`, { headers }),
-          axios.get(`${API}/api/v1/tournaments/${tournament.id}/competition-days`).catch(() => ({ data: [] })),
+          axios.get(`${API}/api/v1/tournaments/${tournament.id}/secretary-access`, { headers })
         ])
         setAthletes(athletesResponse.data)
         setBouts(boutsResponse.data)
@@ -2136,7 +2122,6 @@ function TournamentDetail({ tournament, user, onBack }) {
         setKataTypes(kataTypesResponse.data)
         setSecretaries(secretariesResponse.data)
         setGrants(grantsResponse.data)
-        setCompetitionDays(Array.isArray(daysResponse.data) ? daysResponse.data : [])
       } catch {
         setAthletes([])
         setBouts([])
@@ -2145,7 +2130,6 @@ function TournamentDetail({ tournament, user, onBack }) {
         setKataTypes([])
         setSecretaries([])
         setGrants([])
-        setCompetitionDays([])
       }
     }, 0)
     return () => clearTimeout(timeoutId)
@@ -2217,16 +2201,6 @@ function TournamentDetail({ tournament, user, onBack }) {
       const key = `${a.discipline}|${a.gender}|${drawCategoryName(a)}`
       if (key !== filterCategory) return false
     }
-    const mandate = a.mandate_status ?? a.admission_status
-    if (filterMandate === "missing" && mandate === "approved") return false
-    if (filterMandate === "approved" && mandate !== "approved") return false
-    if (filterMandate === "rejected" && mandate !== "rejected") return false
-    if (filterWeigh === "missing") {
-      if (!a.weigh_required || a.weigh_status === "approved") return false
-    }
-    if (filterWeigh === "approved" && a.weigh_status !== "approved" && a.weigh_status !== "not_required") return false
-    if (filterWeigh === "rejected" && a.weigh_status !== "rejected") return false
-    if (filterWeigh === "not_required" && a.weigh_status !== "not_required" && a.weigh_required !== false) return false
     return true
   })
 
@@ -2238,14 +2212,12 @@ function TournamentDetail({ tournament, user, onBack }) {
     return groups
   }, {})
 
-  const filtersActive = Boolean(surnameQ || filterClub || filterCategory || filterMandate || filterWeigh)
+  const filtersActive = Boolean(surnameQ || filterClub || filterCategory)
   const toggleSearch = (key) => setSearchOpen(s => ({ ...s, [key]: !s[key] }))
   const clearFilters = () => {
     setFilterSurname("")
     setFilterClub("")
     setFilterCategory("")
-    setFilterMandate("")
-    setFilterWeigh("")
     setSearchOpen({ surname: false, club: false, category: false })
   }
   const toggleCategory = (key) => setExpandedKeys(prev => {
@@ -2259,52 +2231,17 @@ function TournamentDetail({ tournament, user, onBack }) {
     if (filterCategory) setExpandedKeys(new Set([filterCategory]))
   }, [filterCategory])
 
-  const computeReadiness = (list) => {
-    const total = list.length
-    let missing_mandate = 0
-    let missing_weigh = 0
-    let ready = 0
-    for (const a of list) {
-      const mandate = a.mandate_status ?? a.admission_status
-      const mandateOk = mandate === "approved"
-      const weighOk = a.weigh_status === "approved" || a.weigh_status === "not_required" || a.weigh_required === false
-      if (!mandateOk) missing_mandate += 1
-      if (a.weigh_required && a.weigh_status !== "approved") missing_weigh += 1
-      if (mandateOk && weighOk) ready += 1
-    }
-    return {
-      total, ready, missing_mandate, missing_weigh,
-      all_ready: total > 0 && missing_mandate === 0 && missing_weigh === 0,
-    }
-  }
-  const globalReadiness = computeReadiness(athletes)
-
-  const handleRunDraw = async (force = false, competitionDayId = null) => {
-    const scope = competitionDayId
-      ? athletes.filter(a => a.competition_day_id === competitionDayId)
-      : athletes
-    const readiness = computeReadiness(scope)
-    if (!readiness.all_ready) {
-      const parts = []
-      if (readiness.missing_mandate) parts.push(`без мандата: ${readiness.missing_mandate}`)
-      if (readiness.missing_weigh) parts.push(`не взвесились: ${readiness.missing_weigh}`)
-      setDrawError("Жеребьёвка недоступна (" + parts.join(", ") + ")")
-      return
-    }
-    if (force && !window.confirm("Пережеребить категории заново? Незавершённые бои будут удалены. Категории с уже введёнными результатами не изменятся.")) return
+  const handleRunDraw = async (force = false) => {
+    if (force && !window.confirm("Пережеребить все категории заново? Незавершённые бои будут удалены. Категории с уже введёнными результатами не изменятся.")) return
     setDrawLoading(true); setDrawError("")
     try {
-      const r = await axios.post(`${API}/api/v1/tournaments/${tournament.id}/draw`, {
-        force,
-        competition_day_id: competitionDayId || null,
-      }, {
+      const r = await axios.post(`${API}/api/v1/tournaments/${tournament.id}/draw`, { force }, {
         headers: { Authorization: `Bearer ${user.token}` }
       })
       if (r.data.success) {
         setDrawResult(r.data)
         loadAthletes()
         loadBouts()
-        loadCompetitionDays()
         const skipped = (r.data.categories || []).filter(c => c.skipped)
         const untouched = (r.data.categories || []).filter(c => c.already_drawn)
         if (force && skipped.length) {
@@ -2326,138 +2263,17 @@ function TournamentDetail({ tournament, user, onBack }) {
     loadAthletes()
   }
 
-  const authHeaders = { headers: { Authorization: `Bearer ${user.token}` } }
-
-  const handleAdmitMandate = async (registrationId) => {
-    await axios.post(`${API}/api/v1/registrations/${registrationId}/admit-mandate`, {}, authHeaders)
-    loadAthletes(); loadCompetitionDays()
+  const handleAdmit = async (registrationId) => {
+    await axios.post(`${API}/api/v1/registrations/${registrationId}/admit`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
+    loadAthletes()
   }
-  const handleRejectMandate = async (registrationId) => {
-    await axios.post(`${API}/api/v1/registrations/${registrationId}/reject-mandate`, {}, authHeaders)
-    loadAthletes(); loadCompetitionDays()
+  const handleRejectAdmission = async (registrationId) => {
+    await axios.post(`${API}/api/v1/registrations/${registrationId}/reject-admission`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
+    loadAthletes()
   }
-  const handleResetMandate = async (registrationId) => {
-    await axios.post(`${API}/api/v1/registrations/${registrationId}/reset-mandate`, {}, authHeaders)
-    loadAthletes(); loadCompetitionDays()
-  }
-  const handleAdmitWeigh = async (registrationId) => {
-    await axios.post(`${API}/api/v1/registrations/${registrationId}/admit-weigh`, {}, authHeaders)
-    loadAthletes(); loadCompetitionDays()
-  }
-  const handleRejectWeigh = async (registrationId) => {
-    await axios.post(`${API}/api/v1/registrations/${registrationId}/reject-weigh`, {}, authHeaders)
-    loadAthletes(); loadCompetitionDays()
-  }
-  const handleResetWeigh = async (registrationId) => {
-    await axios.post(`${API}/api/v1/registrations/${registrationId}/reset-weigh`, {}, authHeaders)
-    loadAthletes(); loadCompetitionDays()
-  }
-
-  const handleCreateDay = async () => {
-    if (!dayForm.date) { setDayMsg("Укажите дату"); return }
-    setDayMsg("")
-    try {
-      const r = await axios.post(`${API}/api/v1/tournaments/${tournament.id}/competition-days`, {
-        date: dayForm.date,
-        label: dayForm.label || null,
-      }, authHeaders)
-      if (r.data.success) {
-        setDayForm({ date: "", label: "" })
-        loadCompetitionDays()
-      } else setDayMsg(r.data.message || "Ошибка")
-    } catch (e) {
-      setDayMsg(e.response?.data?.message || "Ошибка")
-    }
-  }
-
-  const handleDeleteDay = async (dayId) => {
-    if (!window.confirm("Удалить день? Привязки категорий будут сняты.")) return
-    await axios.delete(`${API}/api/v1/tournaments/${tournament.id}/competition-days/${dayId}`, authHeaders)
-    loadCompetitionDays(); loadAthletes()
-  }
-
-  const handleAssignDay = async () => {
-    if (!assignForm.discipline) { setAssignMsg("Выберите дисциплину"); return }
-    setAssignMsg("")
-    try {
-      const r = await axios.post(`${API}/api/v1/tournaments/${tournament.id}/competition-days/assign`, {
-        competition_day_id: assignForm.competition_day_id || null,
-        discipline: assignForm.discipline,
-      }, authHeaders)
-      if (r.data.success) {
-        setAssignMsg(`Обновлено заявок: ${r.data.updated}`)
-        loadAthletes(); loadCompetitionDays()
-      } else setAssignMsg(r.data.message || "Ошибка")
-    } catch (e) {
-      setAssignMsg(e.response?.data?.message || "Ошибка")
-    }
-  }
-
-  const renderAdmissionButtons = (a) => {
-    const mandate = a.mandate_status ?? a.admission_status
-    const needsWeigh = a.weigh_required === true || (
-      a.weigh_required !== false
-      && a.weigh_status !== "not_required"
-      && a.discipline !== "kata"
-      && !["абсолютная категория", "двоеборье", "командные соревнования"].includes((a.category_name || "").toLowerCase())
-    )
-
-    return (
-      <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
-        <div style={{ display: "flex", gap: "4px", alignItems: "center", flexWrap: "wrap" }}>
-          <span style={{ fontSize: "11px", color: "#4A4A48", marginRight: "2px" }}>Мандат:</span>
-          {!mandate && (
-            <>
-              <button onClick={() => handleAdmitMandate(a.registration_id)} style={{ ...btnGreen, padding: "6px 10px", fontSize: "12px" }}>✓ Допустить</button>
-              <button onClick={() => handleRejectMandate(a.registration_id)} style={{ ...btnDanger, padding: "6px 10px", fontSize: "12px" }}>✗ Отказать</button>
-            </>
-          )}
-          {mandate === "approved" && (
-            <button type="button" onClick={() => handleResetMandate(a.registration_id)} title="Сбросить мандатный допуск"
-              style={{ ...btnOutline, padding: "6px 10px", fontSize: "12px", color: "#0F6E56", fontWeight: "bold", borderColor: "#0F6E56" }}>
-              ✓ Мандат
-            </button>
-          )}
-          {mandate === "rejected" && (
-            <button type="button" onClick={() => handleResetMandate(a.registration_id)} title="Сбросить мандатный допуск"
-              style={{ ...btnOutline, padding: "6px 10px", fontSize: "12px", color: "#A32D2D", borderColor: "#A32D2D" }}>
-              ✗ Мандат
-            </button>
-          )}
-        </div>
-        <div style={{ display: "flex", gap: "4px", alignItems: "center", flexWrap: "wrap" }}>
-          <span style={{ fontSize: "11px", color: "#4A4A48", marginRight: "2px" }}>Вес:</span>
-          {!needsWeigh ? (
-            <span style={{ ...btnOutline, padding: "6px 10px", fontSize: "12px", color: "#0F6E56", borderColor: "#0F6E56", cursor: "default" }}>
-              не требуется
-            </span>
-          ) : (
-            <>
-              {!a.weigh_status && (
-                <>
-                  <button onClick={() => handleAdmitWeigh(a.registration_id)} style={{ ...btnGreen, padding: "6px 10px", fontSize: "12px" }}>✓ Влез</button>
-                  <button onClick={() => handleRejectWeigh(a.registration_id)} style={{ ...btnDanger, padding: "6px 10px", fontSize: "12px" }}>✗ Не влез</button>
-                </>
-              )}
-              {a.weigh_status === "approved" && (
-                <button type="button" onClick={() => handleResetWeigh(a.registration_id)} title="Сбросить весовой допуск"
-                  style={{ ...btnOutline, padding: "6px 10px", fontSize: "12px", color: "#0F6E56", fontWeight: "bold", borderColor: "#0F6E56" }}>
-                  ✓ Вес
-                </button>
-              )}
-              {a.weigh_status === "rejected" && (
-                <button type="button" onClick={() => handleResetWeigh(a.registration_id)} title="Сбросить весовой допуск"
-                  style={{ ...btnOutline, padding: "6px 10px", fontSize: "12px", color: "#A32D2D", borderColor: "#A32D2D" }}>
-                  ✗ Вес
-                </button>
-              )}
-            </>
-          )}
-        </div>
-        <button onClick={() => setEditingAthleteId(a.id)} style={{ ...btnOutline, padding: "6px 12px", fontSize: "13px" }}>✎ Изменить</button>
-        <button onClick={() => handleDeleteAthlete(a.id)} style={{ ...btnDanger, padding: "6px 12px", fontSize: "13px" }}>✗ Удалить</button>
-      </div>
-    )
+  const handleResetAdmission = async (registrationId) => {
+    await axios.post(`${API}/api/v1/registrations/${registrationId}/reset-admission`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
+    loadAthletes()
   }
 
   const handleCreate = async () => {
@@ -2531,70 +2347,6 @@ function TournamentDetail({ tournament, user, onBack }) {
                 {officialsSaving ? "Сохранение…" : "Сохранить"}
               </button>
               {officialsMsg && <span style={{ color: "#4A4A48", fontSize: "14px" }}>{officialsMsg}</span>}
-            </div>
-          </div>
-        )}
-
-        {(user?.role === "admin" || user?.role === "owner") && (
-          <div style={{ ...card, marginBottom: "16px" }}>
-            <h2 style={{ margin: "0 0 8px", color: "#1A56A0" }}>Дни соревнований</h2>
-            <p style={{ color: "#4A4A48", fontSize: "13px", margin: "0 0 16px" }}>
-              В один день — не больше одного вида кумитэ (ОК / ПК / СЗ). Жеребьёвка проводится отдельно по каждому дню после мандата и взвешивания.
-            </p>
-            <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", marginBottom: "12px", alignItems: "flex-end" }}>
-              <div style={{ minWidth: "160px" }}>
-                <label style={labelStyle}>Дата</label>
-                <input type="date" value={dayForm.date} onChange={e => setDayForm(f => ({ ...f, date: e.target.value }))} style={inputStyle} />
-              </div>
-              <div style={{ flex: 1, minWidth: "160px" }}>
-                <label style={labelStyle}>Название</label>
-                <input type="text" value={dayForm.label} onChange={e => setDayForm(f => ({ ...f, label: e.target.value }))} placeholder="День 1" style={inputStyle} />
-              </div>
-              <button onClick={handleCreateDay} style={btnGreen}>+ День</button>
-            </div>
-            {dayMsg && <div style={{ ...errorBox, marginBottom: "12px" }}>{dayMsg}</div>}
-            {competitionDays.length === 0 ? (
-              <p style={{ color: "#4A4A48", fontSize: "14px" }}>Дней пока нет — жеребьёвка идёт по всему турниру.</p>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "16px" }}>
-                {competitionDays.map(day => {
-                  const r = day.readiness || {}
-                  return (
-                    <div key={day.id} style={{ display: "flex", justifyContent: "space-between", gap: "12px", flexWrap: "wrap", padding: "10px 12px", background: "#f3f2ee", borderRadius: "8px" }}>
-                      <div>
-                        <div style={{ fontWeight: "bold", color: "#1A56A0" }}>{day.label || "День"} · {day.date}</div>
-                        <div style={{ fontSize: "13px", color: "#4A4A48" }}>
-                          заявок: {day.registration_count || 0}
-                          {day.kumite_disciplines?.length ? ` · ${(day.kumite_disciplines || []).map(d => DISCIPLINE_LABELS[d] || d).join(", ")}` : ""}
-                          {r.total != null ? ` · готовы к жеребьёвке: ${r.ready}/${r.total}` : ""}
-                        </div>
-                      </div>
-                      <button onClick={() => handleDeleteDay(day.id)} style={{ ...btnDanger, padding: "6px 10px", fontSize: "12px" }}>Удалить</button>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-            <div style={{ borderTop: "1px solid #e8e6e0", paddingTop: "16px" }}>
-              <div style={{ fontWeight: "bold", color: "#1A56A0", marginBottom: "10px" }}>Назначить дисциплину на день</div>
-              <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "flex-end" }}>
-                <div style={{ minWidth: "180px" }}>
-                  <label style={labelStyle}>Дисциплина</label>
-                  <select value={assignForm.discipline} onChange={e => setAssignForm(f => ({ ...f, discipline: e.target.value }))} style={inputStyle}>
-                    <option value="">— выберите —</option>
-                    {Object.entries(DISCIPLINE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                  </select>
-                </div>
-                <div style={{ minWidth: "180px" }}>
-                  <label style={labelStyle}>День</label>
-                  <select value={assignForm.competition_day_id} onChange={e => setAssignForm(f => ({ ...f, competition_day_id: e.target.value }))} style={inputStyle}>
-                    <option value="">Снять привязку</option>
-                    {competitionDays.map(d => <option key={d.id} value={d.id}>{d.label || d.date} ({d.date})</option>)}
-                  </select>
-                </div>
-                <button onClick={handleAssignDay} style={btnPrimary}>Назначить</button>
-              </div>
-              {assignMsg && <p style={{ color: "#4A4A48", fontSize: "14px", margin: "10px 0 0" }}>{assignMsg}</p>}
             </div>
           </div>
         )}
@@ -2759,28 +2511,6 @@ function TournamentDetail({ tournament, user, onBack }) {
                   </select>
                 </div>
               )}
-
-              <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", marginTop: "4px" }}>
-                <div style={{ minWidth: "180px", flex: 1 }}>
-                  <label style={labelStyle}>Мандат</label>
-                  <select value={filterMandate} onChange={e => setFilterMandate(e.target.value)} style={inputStyle}>
-                    <option value="">Все</option>
-                    <option value="missing">Не прошли мандат</option>
-                    <option value="approved">Мандат ОК</option>
-                    <option value="rejected">Мандат отклонён</option>
-                  </select>
-                </div>
-                <div style={{ minWidth: "180px", flex: 1 }}>
-                  <label style={labelStyle}>Взвешивание</label>
-                  <select value={filterWeigh} onChange={e => setFilterWeigh(e.target.value)} style={inputStyle}>
-                    <option value="">Все</option>
-                    <option value="missing">Не взвесились</option>
-                    <option value="approved">Вес ОК / не требуется</option>
-                    <option value="rejected">Не влезли</option>
-                    <option value="not_required">Только без взвешивания</option>
-                  </select>
-                </div>
-              </div>
             </div>
           )}
 
@@ -2792,8 +2522,6 @@ function TournamentDetail({ tournament, user, onBack }) {
             const groupKey = `${group.discipline}|${group.gender}|${group.category_name}`
             const label = categoryLabel(group.discipline, group.gender, group.category_name)
             const open = expandedKeys.has(groupKey)
-            const mandateOk = group.athletes.filter(a => (a.mandate_status ?? a.admission_status) === "approved").length
-            const weighOk = group.athletes.filter(a => a.weigh_status === "approved" || a.weigh_status === "not_required" || a.weigh_required === false).length
             return (
               <div key={groupKey} style={{ marginBottom: "12px" }}>
                 <button
@@ -2815,9 +2543,6 @@ function TournamentDetail({ tournament, user, onBack }) {
                     }} aria-hidden>▸</span>
                     {label} ({group.athletes.length})
                   </span>
-                  <span style={{ fontWeight: "normal", fontSize: "12px", color: "#4A4A48" }}>
-                    мандат {mandateOk}/{group.athletes.length} · вес {weighOk}/{group.athletes.length}
-                  </span>
                 </button>
                 {open && [...group.athletes]
                   .sort((a, b) => (a.seed ?? 999) - (b.seed ?? 999) || (a.full_name || "").localeCompare(b.full_name || "", "ru"))
@@ -2837,7 +2562,28 @@ function TournamentDetail({ tournament, user, onBack }) {
                         </div>
                       </div>
                     </div>
-                    {renderAdmissionButtons(a)}
+                    <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                      {!a.admission_status && (
+                        <>
+                          <button onClick={() => handleAdmit(a.registration_id)} style={{ ...btnGreen, padding: "6px 10px", fontSize: "12px" }}>✓ Допустить</button>
+                          <button onClick={() => handleRejectAdmission(a.registration_id)} style={{ ...btnDanger, padding: "6px 10px", fontSize: "12px" }}>✗ Не допустить</button>
+                        </>
+                      )}
+                      {a.admission_status === "approved" && (
+                        <button type="button" onClick={() => handleResetAdmission(a.registration_id)} title="Изменить решение о допуске"
+                          style={{ ...btnOutline, padding: "6px 10px", fontSize: "12px", color: "#0F6E56", fontWeight: "bold", borderColor: "#0F6E56" }}>
+                          ✓ Допущен
+                        </button>
+                      )}
+                      {a.admission_status === "rejected" && (
+                        <button type="button" onClick={() => handleResetAdmission(a.registration_id)} title="Изменить решение о допуске"
+                          style={{ ...btnOutline, padding: "6px 10px", fontSize: "12px", color: "#A32D2D", borderColor: "#A32D2D" }}>
+                          ✗ Не допущен
+                        </button>
+                      )}
+                      <button onClick={() => setEditingAthleteId(a.id)} style={{ ...btnOutline, padding: "6px 12px", fontSize: "13px" }}>✎ Изменить</button>
+                      <button onClick={() => handleDeleteAthlete(a.id)} style={{ ...btnDanger, padding: "6px 12px", fontSize: "13px" }}>✗ Удалить</button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -2857,75 +2603,17 @@ function TournamentDetail({ tournament, user, onBack }) {
         <div style={card}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
             <h2 style={{ margin: 0, color: "#1A56A0" }}>Жеребьёвка</h2>
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              <button onClick={() => handleRunDraw(false)} disabled={drawLoading} style={btnPrimary}>
+                {drawLoading ? "Жеребьёвка..." : "Провести жеребьёвку"}
+              </button>
+              <button onClick={() => handleRunDraw(true)} disabled={drawLoading} style={btnOutline}>
+                Пережеребить заново
+              </button>
+            </div>
           </div>
-          <p style={{ color: "#4A4A48", fontSize: "13px", margin: "10px 0 0" }}>
-            Жеребьёвка доступна только когда у всех участников дня есть мандатный допуск и весовой (или «не требуется»).
-          </p>
 
           {drawError && <div style={{ ...errorBox, marginTop: "16px" }}>{drawError}</div>}
-
-          {competitionDays.length > 0 ? (
-            <div style={{ marginTop: "16px", display: "flex", flexDirection: "column", gap: "12px" }}>
-              {competitionDays.map(day => {
-                const r = day.readiness || computeReadiness(athletes.filter(a => a.competition_day_id === day.id))
-                const ready = !!r.all_ready
-                return (
-                  <div key={day.id} style={{ padding: "14px", background: "#f3f2ee", borderRadius: "8px" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", flexWrap: "wrap", alignItems: "center" }}>
-                      <div>
-                        <div style={{ fontWeight: "bold", color: "#1A56A0" }}>{day.label || "День"} · {day.date}</div>
-                        <div style={{ fontSize: "13px", color: "#4A4A48" }}>
-                          готовы: {r.ready || 0}/{r.total || 0}
-                          {r.missing_mandate ? ` · без мандата: ${r.missing_mandate}` : ""}
-                          {r.missing_weigh ? ` · не взвесились: ${r.missing_weigh}` : ""}
-                        </div>
-                      </div>
-                      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                        <button
-                          onClick={() => handleRunDraw(false, day.id)}
-                          disabled={drawLoading || !ready}
-                          style={{ ...btnPrimary, opacity: (drawLoading || !ready) ? 0.55 : 1 }}
-                        >
-                          {drawLoading ? "Жеребьёвка..." : "Жеребьёвка дня"}
-                        </button>
-                        <button
-                          onClick={() => handleRunDraw(true, day.id)}
-                          disabled={drawLoading || !ready}
-                          style={{ ...btnOutline, opacity: (drawLoading || !ready) ? 0.55 : 1 }}
-                        >
-                          Пережеребить
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          ) : (
-            <div style={{ marginTop: "16px" }}>
-              <div style={{ fontSize: "13px", color: "#4A4A48", marginBottom: "10px" }}>
-                готовы: {globalReadiness.ready}/{globalReadiness.total}
-                {globalReadiness.missing_mandate ? ` · без мандата: ${globalReadiness.missing_mandate}` : ""}
-                {globalReadiness.missing_weigh ? ` · не взвесились: ${globalReadiness.missing_weigh}` : ""}
-              </div>
-              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                <button
-                  onClick={() => handleRunDraw(false)}
-                  disabled={drawLoading || !globalReadiness.all_ready}
-                  style={{ ...btnPrimary, opacity: (drawLoading || !globalReadiness.all_ready) ? 0.55 : 1 }}
-                >
-                  {drawLoading ? "Жеребьёвка..." : "Провести жеребьёвку"}
-                </button>
-                <button
-                  onClick={() => handleRunDraw(true)}
-                  disabled={drawLoading || !globalReadiness.all_ready}
-                  style={{ ...btnOutline, opacity: (drawLoading || !globalReadiness.all_ready) ? 0.55 : 1 }}
-                >
-                  Пережеребить заново
-                </button>
-              </div>
-            </div>
-          )}
 
           {Object.keys(bracketGroups).length === 0 ? (
             <p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Сначала добавьте участников.</p>
