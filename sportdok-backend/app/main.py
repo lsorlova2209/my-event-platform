@@ -57,7 +57,7 @@ ALLOWED_COVER_TYPES = {
     "image/png": ".png",
     "image/webp": ".webp",
 }
-MAX_COVER_BYTES = 8 * 1024 * 1024
+MAX_COVER_BYTES = 20 * 1024 * 1024
 
 
 def tournament_public_dict(t: Tournament) -> dict:
@@ -520,7 +520,7 @@ async def upload_tournament_cover(
     if not data:
         return {"success": False, "message": "Пустой файл"}
     if len(data) > MAX_COVER_BYTES:
-        return {"success": False, "message": "Файл больше 8 МБ"}
+        return {"success": False, "message": "Файл больше 20 МБ"}
 
     _unlink_cover(tournament.cover_image)
     filename = f"{tournament.id}{ext}"

@@ -585,8 +585,8 @@ function AdminPanel({ user, onLogout }) {
     if (!/^image\/(jpeg|png|webp)$/i.test(file.type)) {
       setError("Нужен файл JPG, PNG или WebP"); return
     }
-    if (file.size > 8 * 1024 * 1024) {
-      setError("Файл больше 8 МБ"); return
+    if (file.size > 20 * 1024 * 1024) {
+      setError("Файл больше 20 МБ"); return
     }
     setError("")
     setCoverFile(file)
@@ -832,7 +832,7 @@ function AdminPanel({ user, onLogout }) {
                         />
                       )}
                     </div>
-                    <div style={{ color: "#4A4A48", fontSize: "12px", marginTop: "6px" }}>JPG, PNG или WebP, до 8 МБ</div>
+                    <div style={{ color: "#4A4A48", fontSize: "12px", marginTop: "6px" }}>JPG, PNG или WebP, до 20 МБ</div>
                   </div>
                   {error && <div style={errorBox}>{error}</div>}
                   <button onClick={handleSaveTournament} style={btnGreen}>
