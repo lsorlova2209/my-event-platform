@@ -1022,6 +1022,7 @@ const nameInList = (participants, id) => (participants.find(p => p.registration_
 function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
   const [athletes, setAthletes] = useState([])
   const [categoriesPreview, setCategoriesPreview] = useState([])
+  const [clubsPreview, setClubsPreview] = useState([])
   const [athletesTotal, setAthletesTotal] = useState(null)
   const [loading, setLoading] = useState(true)
   const [pdfLoading, setPdfLoading] = useState(false)
@@ -1031,6 +1032,9 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
   const [filterCategory, setFilterCategory] = useState("")
   const [searchOpen, setSearchOpen] = useState({ surname: false, club: false, category: false })
   const [expandedKeys, setExpandedKeys] = useState(() => new Set())
+  const [lazyByKey, setLazyByKey] = useState({})
+  const lazyInflightRef = useRef(new Set())
+  const lazyLoadedRef = useRef(new Set())
   const today = todayISO()
   const timing = tournamentTiming(tournament, today)
 
@@ -1038,7 +1042,13 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
     let cancelled = false
     setLoading(true)
     setCategoriesPreview([])
+    setClubsPreview([])
     setAthletesTotal(null)
+    setAthletes([])
+    setLazyByKey({})
+    setExpandedKeys(new Set())
+    lazyInflightRef.current = new Set()
+    lazyLoadedRef.current = new Set()
     window.scrollTo(0, 0)
     const tid = tournament.id
 
@@ -1047,11 +1057,13 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
         if (cancelled) return
         const data = r.data || {}
         setCategoriesPreview(Array.isArray(data.categories) ? data.categories : [])
+        setClubsPreview(Array.isArray(data.clubs) ? data.clubs : [])
         if (typeof data.total === "number") setAthletesTotal(data.total)
         setLoading(false)
       })
       .catch(() => { if (!cancelled) { setCategoriesPreview([]); setLoading(false) } })
 
+    // Полный список — в фоне (поиск/фильтры); раскрытие категории не ждёт его
     axios.get(`${API}/api/v1/tournaments/${tid}/athletes`)
       .then(r => {
         if (cancelled) return
@@ -1121,8 +1133,10 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
 
   const allCategories = groupAthletes(athletes)
   const surnameQ = filterSurname.trim().toLowerCase()
-  const clubOptions = [...new Set(athletes.map(a => (a.club_name || "").trim()).filter(Boolean))]
-    .sort((a, b) => a.localeCompare(b, "ru"))
+  const clubOptions = [...new Set([
+    ...athletes.map(a => (a.club_name || "").trim()).filter(Boolean),
+    ...clubsPreview,
+  ])].sort((a, b) => a.localeCompare(b, "ru"))
   const categoryOptions = (athletes.length > 0 ? allCategories : categoriesPreview.map(g => ({
     key: `${g.discipline}|${g.gender}|${g.category_name}|${g.age_group || ""}`,
     discipline: g.discipline,
@@ -1189,6 +1203,52 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
     if (filterCategory) setExpandedKeys(new Set([filterCategory]))
   }, [filterCategory])
 
+  // Подгрузка только открытой категории (пока полный список ещё не пришёл)
+  useEffect(() => {
+    if (athletesReady) return
+    let cancelled = false
+    const started = []
+    const tid = tournament.id
+    expandedKeys.forEach(key => {
+      if (lazyLoadedRef.current.has(key) || lazyInflightRef.current.has(key)) return
+      const fromPreview = categoriesPreview.find(
+        g => `${g.discipline}|${g.gender}|${g.category_name}|${g.age_group || ""}` === key
+      )
+      if (!fromPreview) return
+      lazyInflightRef.current.add(key)
+      started.push(key)
+      axios.get(`${API}/api/v1/tournaments/${tid}/athletes`, {
+        params: {
+          discipline: fromPreview.discipline,
+          gender: fromPreview.gender,
+          category_name: fromPreview.category_name,
+          ...(fromPreview.age_group ? { age_group: fromPreview.age_group } : {}),
+        },
+      }).then(r => {
+        if (cancelled) return
+        const list = Array.isArray(r.data) ? r.data : []
+        list.sort((a, b) => {
+          const seedA = a.seed == null ? 9999 : a.seed
+          const seedB = b.seed == null ? 9999 : b.seed
+          if (seedA !== seedB) return seedA - seedB
+          return String(a.full_name || "").localeCompare(String(b.full_name || ""), "ru")
+        })
+        lazyLoadedRef.current.add(key)
+        setLazyByKey(prev => ({ ...prev, [key]: list }))
+      }).catch(() => {
+        if (cancelled) return
+        lazyLoadedRef.current.add(key)
+        setLazyByKey(prev => ({ ...prev, [key]: [] }))
+      }).finally(() => {
+        lazyInflightRef.current.delete(key)
+      })
+    })
+    return () => {
+      cancelled = true
+      started.forEach(k => lazyInflightRef.current.delete(k))
+    }
+  }, [expandedKeys, athletesReady, tournament.id, categoriesPreview])
+
   const showRegion = usesRegionOrg(tournament.competition_level)
   const filterBtn = (active) => ({
     ...arenaBtnGhost,
@@ -1212,14 +1272,14 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
         <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
           <button
             onClick={downloadPdf}
-            disabled={pdfLoading || (!athletesReady && loading) || displayTotal === 0}
+            disabled={pdfLoading || loading || displayTotal === 0}
             className="arena-btn"
             style={{
               ...arenaBtnPrimary,
               padding: "10px 18px",
               fontSize: "14px",
-              opacity: (pdfLoading || loading || athletes.length === 0) ? 0.55 : 1,
-              cursor: (pdfLoading || loading || athletes.length === 0) ? "not-allowed" : "pointer",
+              opacity: (pdfLoading || loading || displayTotal === 0) ? 0.55 : 1,
+              cursor: (pdfLoading || loading || displayTotal === 0) ? "not-allowed" : "pointer",
             }}
           >
             {pdfLoading ? "Готовим PDF…" : "Скачать PDF"}
@@ -1264,7 +1324,6 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
                 {filtersActive && athletesReady
                   ? `${filteredAthletes.length} из ${displayTotal} участников · ${categories.length} категорий`
                   : `${displayTotal} участников · ${displayCatCount} категорий`}
-                {!athletesReady && displayTotal > 0 ? " · загрузка…" : ""}
               </span>
             )}
           </div>
@@ -1350,6 +1409,9 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
               </div>
             ) : categories.map(cat => {
               const open = expandedKeys.has(cat.key)
+              const lazyRows = lazyByKey[cat.key]
+              const rows = athletesReady ? (cat.athletes || []) : (lazyRows || [])
+              const rowsLoading = open && !athletesReady && lazyRows === undefined
               return (
               <section key={cat.key} style={{ ...arenaPanel, padding: open ? "28px" : "16px 28px" }}>
                 <button
@@ -1379,11 +1441,11 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
                     {categoryLabel(cat.discipline, cat.gender, cat.category_name, cat.age_group)}
                   </h2>
                   <span style={{ color: "rgba(244,245,247,0.55)", fontSize: "14px" }}>
-                    {cat.athletes?.length || cat.count || 0}
+                    {athletesReady ? (cat.athletes?.length || 0) : (cat.count || lazyRows?.length || 0)}
                   </span>
                 </button>
                 {open && (
-                !athletesReady ? (
+                rowsLoading ? (
                   <p style={{ color: "rgba(244,245,247,0.55)", margin: 0 }}>Загрузка списка…</p>
                 ) : (
                 <div style={{ overflowX: "auto" }}>
@@ -1400,7 +1462,7 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
                       </tr>
                     </thead>
                     <tbody>
-                      {cat.athletes.map((a, i) => (
+                      {rows.map((a, i) => (
                         <tr key={a.registration_id || a.id} style={{
                           borderTop: "1px solid rgba(255,255,255,0.06)",
                         }}>
@@ -2073,6 +2135,7 @@ function TournamentDetail({ tournament, user, onBack }) {
   const [athletes, setAthletes] = useState([])
   const [athletesLoading, setAthletesLoading] = useState(true)
   const [categoriesPreview, setCategoriesPreview] = useState([])
+  const [clubsPreview, setClubsPreview] = useState([])
   const [athletesTotal, setAthletesTotal] = useState(null)
   const [bouts, setBouts] = useState([])
   const [showForm, setShowForm] = useState(false)
@@ -2106,6 +2169,9 @@ function TournamentDetail({ tournament, user, onBack }) {
   const [filterCategory, setFilterCategory] = useState("")
   const [searchOpen, setSearchOpen] = useState({ surname: false, club: false, category: false })
   const [expandedKeys, setExpandedKeys] = useState(() => new Set())
+  const [lazyByKey, setLazyByKey] = useState({})
+  const lazyInflightRef = useRef(new Set())
+  const lazyLoadedRef = useRef(new Set())
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
@@ -2135,6 +2201,9 @@ function TournamentDetail({ tournament, user, onBack }) {
       const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/athletes`)
       setAthletes(Array.isArray(r.data) ? r.data : [])
       setAthletesTotal(Array.isArray(r.data) ? r.data.length : 0)
+      setLazyByKey({})
+      lazyInflightRef.current = new Set()
+      lazyLoadedRef.current = new Set()
     } catch { setAthletes([]) }
     finally { setAthletesLoading(false) }
   }
@@ -2175,7 +2244,11 @@ function TournamentDetail({ tournament, user, onBack }) {
     let cancelled = false
     setAthletesLoading(true)
     setCategoriesPreview([])
+    setClubsPreview([])
     setAthletesTotal(null)
+    setLazyByKey({})
+    lazyInflightRef.current = new Set()
+    lazyLoadedRef.current = new Set()
     const headers = { Authorization: `Bearer ${user.token}` }
     const tid = tournament.id
 
@@ -2185,11 +2258,12 @@ function TournamentDetail({ tournament, user, onBack }) {
         if (cancelled) return
         const data = r.data || {}
         setCategoriesPreview(Array.isArray(data.categories) ? data.categories : [])
+        setClubsPreview(Array.isArray(data.clubs) ? data.clubs : [])
         if (typeof data.total === "number") setAthletesTotal(data.total)
       })
       .catch(() => { if (!cancelled) setCategoriesPreview([]) })
 
-    // 2) Полный список участников
+    // 2) Полный список участников (в фоне; раскрытие категории не ждёт)
     axios.get(`${API}/api/v1/tournaments/${tid}/athletes`)
       .then(r => {
         if (cancelled) return
@@ -2286,6 +2360,7 @@ function TournamentDetail({ tournament, user, onBack }) {
   const surnameQ = filterSurname.trim().toLowerCase()
   const clubOptions = [...new Set([
     ...athletes.map(a => (a.club_name || "").trim()).filter(Boolean),
+    ...clubsPreview,
   ])].sort((a, b) => a.localeCompare(b, "ru"))
   const categoryOptions = (athletes.length > 0
     ? Object.values(listGroupsAll).map(g => ({
@@ -2369,6 +2444,46 @@ function TournamentDetail({ tournament, user, onBack }) {
     if (filterCategory) setExpandedKeys(new Set([filterCategory]))
   }, [filterCategory])
 
+  const athletesReady = athletes.length > 0
+  useEffect(() => {
+    if (athletesReady) return
+    let cancelled = false
+    const started = []
+    const tid = tournament.id
+    expandedKeys.forEach(key => {
+      if (lazyLoadedRef.current.has(key) || lazyInflightRef.current.has(key)) return
+      const fromPreview = categoriesPreview.find(
+        g => `${g.discipline}|${g.gender}|${g.category_name}|${g.age_group || ""}` === key
+      )
+      if (!fromPreview) return
+      lazyInflightRef.current.add(key)
+      started.push(key)
+      axios.get(`${API}/api/v1/tournaments/${tid}/athletes`, {
+        params: {
+          discipline: fromPreview.discipline,
+          gender: fromPreview.gender,
+          category_name: fromPreview.category_name,
+          ...(fromPreview.age_group ? { age_group: fromPreview.age_group } : {}),
+        },
+      }).then(r => {
+        if (cancelled) return
+        const list = Array.isArray(r.data) ? r.data : []
+        lazyLoadedRef.current.add(key)
+        setLazyByKey(prev => ({ ...prev, [key]: list }))
+      }).catch(() => {
+        if (cancelled) return
+        lazyLoadedRef.current.add(key)
+        setLazyByKey(prev => ({ ...prev, [key]: [] }))
+      }).finally(() => {
+        lazyInflightRef.current.delete(key)
+      })
+    })
+    return () => {
+      cancelled = true
+      started.forEach(k => lazyInflightRef.current.delete(k))
+    }
+  }, [expandedKeys, athletesReady, tournament.id, categoriesPreview])
+
   const handleRunDraw = async (force = false) => {
     if (force && !window.confirm("Пережеребить все категории заново? Незавершённые бои будут удалены. Категории с уже введёнными результатами не изменятся.")) return
     setDrawLoading(true); setDrawError("")
@@ -2397,25 +2512,114 @@ function TournamentDetail({ tournament, user, onBack }) {
 
   const handleDeleteAthlete = async (id) => {
     if (!window.confirm("Удалить участника? Это действие необратимо.")) return
-    await axios.delete(`${API}/api/v1/athletes/${id}`, { headers: { Authorization: `Bearer ${user.token}` } })
-    loadAthletes()
+    const prevAthletes = athletes
+    const prevLazy = lazyByKey
+    const prevTotal = athletesTotal
+    const prevCats = categoriesPreview
+    const removed = (
+      athletes.filter(a => a.id === id).length
+        ? athletes.filter(a => a.id === id)
+        : Object.values(lazyByKey).flat().filter(a => a.id === id)
+    )
+    const catKeyFor = (a) => competitionCategoryKey(a, drawCategoryName(a))
+
+    setAthletes(list => list.filter(a => a.id !== id))
+    setLazyByKey(cache => Object.fromEntries(
+      Object.entries(cache).map(([k, list]) => [k, list.filter(a => a.id !== id)])
+    ))
+    if (removed.length) {
+      setAthletesTotal(t => (typeof t === "number" ? Math.max(0, t - removed.length) : t))
+      setCategoriesPreview(cats => cats
+        .map(g => {
+          const key = `${g.discipline}|${g.gender}|${g.category_name}|${g.age_group || ""}`
+          const n = removed.filter(a => catKeyFor(a) === key).length
+          return n ? { ...g, count: Math.max(0, (g.count || 0) - n) } : g
+        })
+        .filter(g => (g.count || 0) > 0))
+    }
+
+    try {
+      const r = await axios.delete(`${API}/api/v1/athletes/${id}`, { headers: { Authorization: `Bearer ${user.token}` } })
+      if (r.data?.success === false) {
+        setAthletes(prevAthletes)
+        setLazyByKey(prevLazy)
+        setAthletesTotal(prevTotal)
+        setCategoriesPreview(prevCats)
+      }
+    } catch {
+      setAthletes(prevAthletes)
+      setLazyByKey(prevLazy)
+      setAthletesTotal(prevTotal)
+      setCategoriesPreview(prevCats)
+    }
+  }
+
+  const patchRegistrationLocal = (registrationId, patch) => {
+    setAthletes(list => list.map(a =>
+      a.registration_id === registrationId ? { ...a, ...patch } : a
+    ))
+    setLazyByKey(cache => Object.fromEntries(
+      Object.entries(cache).map(([k, list]) => [
+        k,
+        list.map(a => a.registration_id === registrationId ? { ...a, ...patch } : a),
+      ])
+    ))
   }
 
   const handleAdmit = async (registrationId) => {
-    await axios.post(`${API}/api/v1/registrations/${registrationId}/admit`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
-    loadAthletes()
+    patchRegistrationLocal(registrationId, { admission_status: "approved" })
+    try {
+      const r = await axios.post(`${API}/api/v1/registrations/${registrationId}/admit`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
+      if (r.data?.success === false) patchRegistrationLocal(registrationId, { admission_status: null })
+    } catch {
+      patchRegistrationLocal(registrationId, { admission_status: null })
+    }
   }
   const handleResetAdmission = async (registrationId) => {
-    await axios.post(`${API}/api/v1/registrations/${registrationId}/reset-admission`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
-    loadAthletes()
+    patchRegistrationLocal(registrationId, { admission_status: null })
+    try {
+      const r = await axios.post(`${API}/api/v1/registrations/${registrationId}/reset-admission`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
+      if (r.data?.success === false) patchRegistrationLocal(registrationId, { admission_status: "approved" })
+    } catch {
+      patchRegistrationLocal(registrationId, { admission_status: "approved" })
+    }
   }
   const handleAdmitWeigh = async (registrationId) => {
-    await axios.post(`${API}/api/v1/registrations/${registrationId}/admit-weigh`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
-    loadAthletes()
+    patchRegistrationLocal(registrationId, { weigh_status: "approved" })
+    try {
+      const r = await axios.post(`${API}/api/v1/registrations/${registrationId}/admit-weigh`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
+      if (r.data?.success === false) patchRegistrationLocal(registrationId, { weigh_status: null })
+    } catch {
+      patchRegistrationLocal(registrationId, { weigh_status: null })
+    }
   }
   const handleResetWeigh = async (registrationId) => {
-    await axios.post(`${API}/api/v1/registrations/${registrationId}/reset-weigh`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
-    loadAthletes()
+    patchRegistrationLocal(registrationId, { weigh_status: null })
+    try {
+      const r = await axios.post(`${API}/api/v1/registrations/${registrationId}/reset-weigh`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
+      if (r.data?.success === false) patchRegistrationLocal(registrationId, { weigh_status: "approved" })
+    } catch {
+      patchRegistrationLocal(registrationId, { weigh_status: "approved" })
+    }
+  }
+
+  const applyAthleteEditLocal = (updated) => {
+    if (!updated?.id) return
+    const fullName = `${updated.last_name || ""} ${updated.first_name || ""} ${updated.middle_name || ""}`.trim()
+    const patch = {
+      full_name: fullName,
+      gender: updated.gender,
+      weight: updated.weight,
+      rank: updated.rank,
+      club_name: updated.club_name,
+    }
+    setAthletes(list => list.map(a => a.id === updated.id ? { ...a, ...patch } : a))
+    setLazyByKey(cache => Object.fromEntries(
+      Object.entries(cache).map(([k, list]) => [
+        k,
+        list.map(a => a.id === updated.id ? { ...a, ...patch } : a),
+      ])
+    ))
   }
 
   const handleCreate = async () => {
@@ -2669,7 +2873,12 @@ function TournamentDetail({ tournament, user, onBack }) {
             const groupKey = `${group.discipline}|${group.gender}|${group.category_name}|${group.age_group || ""}`
             const label = categoryLabel(group.discipline, group.gender, group.category_name, group.age_group)
             const open = expandedKeys.has(groupKey)
-            const count = group.athletes?.length || group.count || 0
+            const lazyRows = lazyByKey[groupKey]
+            const rows = athletesReady
+              ? (group.athletes || [])
+              : (lazyRows || [])
+            const rowsLoading = open && !athletesReady && lazyRows === undefined
+            const count = athletesReady ? (group.athletes?.length || 0) : (group.count || lazyRows?.length || 0)
             return (
               <div key={groupKey} style={{ marginBottom: "12px" }}>
                 <button
@@ -2693,9 +2902,9 @@ function TournamentDetail({ tournament, user, onBack }) {
                   </span>
                 </button>
                 {open && (
-                  athletesLoading && (!group.athletes || group.athletes.length === 0) ? (
+                  rowsLoading ? (
                     <p style={{ color: "#4A4A48", padding: "12px 4px", fontSize: "14px" }}>Загрузка списка…</p>
-                  ) : [...(group.athletes || [])]
+                  ) : [...rows]
                   .sort((a, b) => (a.seed ?? 999) - (b.seed ?? 999) || (a.full_name || "").localeCompare(b.full_name || "", "ru"))
                   .map((a, i) => (
                   <div key={a.registration_id} style={{ padding: "12px 4px", borderBottom: "1px solid #f3f2ee", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
@@ -2749,7 +2958,10 @@ function TournamentDetail({ tournament, user, onBack }) {
           <Modal onClose={() => setEditingAthleteId(null)}>
             <h3 style={{ margin: "0 0 12px", color: "#1A56A0" }}>Изменить участника</h3>
             <AthleteEditForm athleteId={editingAthleteId} user={user} ranks={ranks}
-              onDone={() => { setEditingAthleteId(null); loadAthletes() }}
+              onDone={(updated) => {
+                setEditingAthleteId(null)
+                applyAthleteEditLocal(updated)
+              }}
               onCancel={() => setEditingAthleteId(null)} />
           </Modal>
         )}
@@ -3624,7 +3836,7 @@ function AthleteEditForm({ athleteId, user, ranks, onDone, onCancel }) {
         middle_name: form.middle_name || null,
         rank: form.rank || null
       }, { headers: { Authorization: `Bearer ${user.token}` } })
-      if (r.data.success) onDone()
+      if (r.data.success) onDone(r.data)
       else { setError(r.data.message || "Ошибка при сохранении"); setSaving(false) }
     } catch (e) {
       setError(e.response?.data?.detail || e.response?.data?.message || "Ошибка соединения с сервером")

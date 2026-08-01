@@ -4,7 +4,7 @@ from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text, or_
 from datetime import date, datetime
 from typing import Optional, List
 from io import BytesIO
@@ -1151,9 +1151,15 @@ async def import_tournament_application(
     }
 
 
-def _region_by_club_name(db):
+def _region_by_club_name(db, club_names=None):
     region_by_club_name = {}
-    for club in db.query(Club).all():
+    q = db.query(Club)
+    if club_names is not None:
+        names = [n for n in club_names if n]
+        if not names:
+            return {}
+        q = q.filter(or_(Club.short_name.in_(names), Club.full_name.in_(names)))
+    for club in q.all():
         if club.short_name:
             region_by_club_name[club.short_name] = club.region
         if club.full_name:
@@ -1161,13 +1167,17 @@ def _region_by_club_name(db):
     return region_by_club_name
 
 
-def _registration_athlete_rows(db, tournament_id):
-    return (
+def _registration_athlete_rows(db, tournament_id, discipline=None, gender=None):
+    q = (
         db.query(Registration, Athlete)
         .join(Athlete, Registration.athlete_id == Athlete.id)
         .filter(Registration.tournament_id == tournament_id)
-        .all()
     )
+    if discipline:
+        q = q.filter(Registration.discipline == discipline)
+    if gender:
+        q = q.filter(Athlete.gender == gender)
+    return q.all()
 
 
 NO_WEIGH_CATEGORIES = {"абсолютная категория", "двоеборье", "командные соревнования"}
@@ -1245,13 +1255,48 @@ def list_athlete_categories(tournament_id: str, db: Session = Depends(get_db)):
 
 
 @app.get("/api/v1/tournaments/{tournament_id}/athletes")
-def list_athletes(tournament_id: str, db: Session = Depends(get_db)):
+def list_athletes(
+    tournament_id: str,
+    discipline: Optional[str] = None,
+    gender: Optional[str] = None,
+    category_name: Optional[str] = None,
+    age_group: Optional[str] = None,
+    q: Optional[str] = None,
+    club: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
     # Repair жеребьёвки не делаем здесь — только POST .../draw/repair.
     tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
-    region_lookup = _region_by_club_name(db)
-    rows = _registration_athlete_rows(db, tournament_id)
+    rows = _registration_athlete_rows(db, tournament_id, discipline=discipline, gender=gender)
+    club_names = {athlete.club_name for _, athlete in rows if athlete.club_name}
+    region_lookup = _region_by_club_name(db, club_names)
     event_date = tournament.event_date if tournament else None
-    return [_athlete_list_item(reg, athlete, event_date, region_lookup) for reg, athlete in rows]
+    q_norm = (q or "").strip().lower()
+    club_norm = (club or "").strip().lower()
+    age_filter = (age_group or "").strip()
+    cat_filter = (category_name or "").strip()
+
+    result = []
+    for reg, athlete in rows:
+        draw_cat = draw_category_key(reg.discipline, reg.category_name)
+        if cat_filter and draw_cat != cat_filter and (reg.category_name or "") != cat_filter:
+            continue
+        item = _athlete_list_item(reg, athlete, event_date, region_lookup)
+        if age_filter and (item.get("age_group") or "") != age_filter:
+            continue
+        if club_norm:
+            club_name = (athlete.club_name or "").lower()
+            region = (item.get("region") or "").lower()
+            if club_norm not in club_name and club_norm not in region:
+                continue
+        if q_norm:
+            full = (item.get("full_name") or "").lower()
+            if q_norm not in full:
+                continue
+        if cat_filter:
+            item = {**item, "category_name": draw_cat}
+        result.append(item)
+    return result
 
 @app.post("/api/v1/registrations/{registration_id}/admit")
 def admit_registration(registration_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
