@@ -1006,6 +1006,10 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
   const [loading, setLoading] = useState(true)
   const [pdfLoading, setPdfLoading] = useState(false)
   const [pdfError, setPdfError] = useState("")
+  const [filterSurname, setFilterSurname] = useState("")
+  const [filterClub, setFilterClub] = useState("")
+  const [filterCategory, setFilterCategory] = useState("")
+  const [searchOpen, setSearchOpen] = useState({ surname: false, club: false, category: false })
   const today = todayISO()
   const timing = tournamentTiming(tournament, today)
 
@@ -1048,7 +1052,7 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
     }
   }
 
-  const categories = Object.values(athletes.reduce((groups, a) => {
+  const groupAthletes = (list) => Object.values(list.reduce((groups, a) => {
     const key = `${a.discipline}|${a.gender}|${a.category_name}`
     if (!groups[key]) {
       groups[key] = {
@@ -1074,7 +1078,48 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
       .localeCompare(categoryLabel(b.discipline, b.gender, b.category_name), "ru")
   )
 
+  const allCategories = groupAthletes(athletes)
+  const surnameQ = filterSurname.trim().toLowerCase()
+  const clubOptions = [...new Set(athletes.map(a => (a.club_name || "").trim()).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, "ru"))
+  const categoryOptions = allCategories.map(g => ({
+    key: g.key,
+    label: categoryLabel(g.discipline, g.gender, g.category_name),
+  }))
+
+  const filteredAthletes = athletes.filter(a => {
+    if (surnameQ) {
+      const name = (a.full_name || "").toLowerCase()
+      const surname = name.split(/\s+/)[0] || ""
+      if (!surname.includes(surnameQ) && !name.includes(surnameQ)) return false
+    }
+    if (filterClub) {
+      if ((a.club_name || "").trim() !== filterClub) return false
+    }
+    if (filterCategory) {
+      const key = `${a.discipline}|${a.gender}|${a.category_name}`
+      if (key !== filterCategory) return false
+    }
+    return true
+  })
+
+  const categories = groupAthletes(filteredAthletes)
+  const filtersActive = Boolean(surnameQ || filterClub || filterCategory)
+  const toggleSearch = (key) => setSearchOpen(s => ({ ...s, [key]: !s[key] }))
+  const clearFilters = () => {
+    setFilterSurname("")
+    setFilterClub("")
+    setFilterCategory("")
+    setSearchOpen({ surname: false, club: false, category: false })
+  }
+
   const showRegion = usesRegionOrg(tournament.competition_level)
+  const filterBtn = (active) => ({
+    ...arenaBtnGhost,
+    padding: "8px 14px",
+    fontSize: "13px",
+    ...(active ? { background: "#2f6fbf", borderColor: "#2f6fbf", color: "#fff" } : {}),
+  })
 
   return (
     <div style={{ minHeight: "100vh", background: "#0b0d10", fontFamily: "var(--font-body)", color: "#f4f5f7" }}>
@@ -1140,7 +1185,9 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
             </span>
             {!loading && (
               <span style={{ color: "rgba(244,245,247,0.55)", fontSize: "14px" }}>
-                {athletes.length} участников · {categories.length} категорий
+                {filtersActive
+                  ? `${filteredAthletes.length} из ${athletes.length} участников · ${categories.length} категорий`
+                  : `${athletes.length} участников · ${allCategories.length} категорий`}
               </span>
             )}
           </div>
@@ -1155,13 +1202,76 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
           <div style={{ ...arenaPanel, textAlign: "center", color: "rgba(244,245,247,0.65)" }}>
             Загрузка участников…
           </div>
-        ) : categories.length === 0 ? (
+        ) : athletes.length === 0 ? (
           <div style={{ ...arenaPanel, textAlign: "center", color: "rgba(244,245,247,0.65)" }}>
             Пока нет зарегистрированных участников.
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
-            {categories.map(cat => (
+            <div style={arenaPanel}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px", marginBottom: "14px" }}>
+                <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: "16px", letterSpacing: "0.03em" }}>
+                  Поиск участников
+                </div>
+                {filtersActive && (
+                  <button type="button" onClick={clearFilters} className="arena-btn" style={{ ...arenaBtnGhost, padding: "6px 12px", fontSize: "13px" }}>
+                    Сбросить
+                  </button>
+                )}
+              </div>
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "10px" }}>
+                <button type="button" onClick={() => toggleSearch("surname")} className="arena-btn" style={filterBtn(searchOpen.surname || surnameQ)}>
+                  Поиск по фамилии
+                </button>
+                <button type="button" onClick={() => toggleSearch("club")} className="arena-btn" style={filterBtn(searchOpen.club || filterClub)}>
+                  Поиск по команде
+                </button>
+                <button type="button" onClick={() => toggleSearch("category")} className="arena-btn" style={filterBtn(searchOpen.category || filterCategory)}>
+                  Поиск по категории
+                </button>
+              </div>
+              {searchOpen.surname && (
+                <div style={{ marginBottom: "10px" }}>
+                  <label style={arenaLabelStyle}>Фамилия</label>
+                  <input
+                    type="text"
+                    value={filterSurname}
+                    onChange={e => setFilterSurname(e.target.value)}
+                    placeholder="Начните вводить фамилию…"
+                    style={arenaInputStyle}
+                    autoFocus
+                  />
+                </div>
+              )}
+              {searchOpen.club && (
+                <div style={{ marginBottom: "10px" }}>
+                  <label style={arenaLabelStyle}>Команда / клуб</label>
+                  <select value={filterClub} onChange={e => setFilterClub(e.target.value)} style={arenaInputStyle} autoFocus>
+                    <option value="">Все команды</option>
+                    {clubOptions.map(name => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              {searchOpen.category && (
+                <div style={{ marginBottom: "10px" }}>
+                  <label style={arenaLabelStyle}>Категория</label>
+                  <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} style={arenaInputStyle} autoFocus>
+                    <option value="">Все категории</option>
+                    {categoryOptions.map(opt => (
+                      <option key={opt.key} value={opt.key}>{opt.label}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+
+            {categories.length === 0 ? (
+              <div style={{ ...arenaPanel, textAlign: "center", color: "rgba(244,245,247,0.65)" }}>
+                Ничего не найдено. Измените или сбросьте фильтры.
+              </div>
+            ) : categories.map(cat => (
               <section key={cat.key} style={arenaPanel}>
                 <div style={{
                   display: "flex", justifyContent: "space-between", alignItems: "baseline",
