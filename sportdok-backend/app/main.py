@@ -1158,41 +1158,85 @@ def _region_by_club_name(db):
     return region_by_club_name
 
 
-@app.get("/api/v1/tournaments/{tournament_id}/athletes")
-def list_athletes(tournament_id: str, db: Session = Depends(get_db)):
-    # Не вызываем _repair_stale_draws здесь: при тысячах заявок это секунды–минуты
-    # на каждый просмотр списка. Repair — только POST .../draw/repair.
-    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
-    region_lookup = _region_by_club_name(db)
-    rows = (
+def _registration_athlete_rows(db, tournament_id):
+    return (
         db.query(Registration, Athlete)
         .join(Athlete, Registration.athlete_id == Athlete.id)
         .filter(Registration.tournament_id == tournament_id)
         .all()
     )
-    event_date = tournament.event_date if tournament else None
-    result = []
+
+
+def _athlete_list_item(reg, athlete, event_date, region_lookup):
+    return {
+        "id": str(athlete.id),
+        "registration_id": str(reg.id),
+        "full_name": f"{athlete.last_name} {athlete.first_name} {athlete.middle_name or ''}".strip(),
+        "gender": athlete.gender,
+        "weight": float(athlete.weight) if athlete.weight else None,
+        "rank": athlete.rank,
+        "club_name": athlete.club_name,
+        "region": region_lookup.get(athlete.club_name),
+        "discipline": reg.discipline,
+        "category_name": reg.category_name,
+        "kata_name": reg.kata_name,
+        "team_number": reg.team_number,
+        "admission_status": reg.admission_status,
+        "age_group": compute_age_group(athlete.birth_date, event_date, athlete.gender, reg.discipline),
+        "seed": reg.seed,
+        "subgroup": reg.subgroup,
+    }
+
+
+@app.get("/api/v1/tournaments/{tournament_id}/athletes/categories")
+def list_athlete_categories(tournament_id: str, db: Session = Depends(get_db)):
+    """Лёгкая сводка для быстрой отрисовки заголовков категорий."""
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        return {"total": 0, "categories": [], "clubs": []}
+    rows = _registration_athlete_rows(db, tournament_id)
+    event_date = tournament.event_date
+    groups = {}
+    clubs = set()
     for reg, athlete in rows:
-        result.append({
-            "id": str(athlete.id),
-            "registration_id": str(reg.id),
-            "full_name": f"{athlete.last_name} {athlete.first_name} {athlete.middle_name or ''}".strip(),
-            "gender": athlete.gender,
-            "birth_date": str(athlete.birth_date),
-            "weight": float(athlete.weight) if athlete.weight else None,
-            "rank": athlete.rank,
-            "club_name": athlete.club_name,
-            "region": region_lookup.get(athlete.club_name),
-            "discipline": reg.discipline,
-            "category_name": reg.category_name,
-            "kata_name": reg.kata_name,
-            "team_number": reg.team_number,
-            "admission_status": reg.admission_status,
-            "age_group": compute_age_group(athlete.birth_date, event_date, athlete.gender, reg.discipline),
-            "seed": reg.seed,
-            "subgroup": reg.subgroup
-        })
-    return result
+        if athlete.club_name:
+            clubs.add(athlete.club_name.strip())
+        cat = draw_category_key(reg.discipline, reg.category_name)
+        age = compute_age_group(athlete.birth_date, event_date, athlete.gender, reg.discipline)
+        key = (reg.discipline, athlete.gender, cat, age or "")
+        if key not in groups:
+            groups[key] = {
+                "discipline": reg.discipline,
+                "gender": athlete.gender,
+                "category_name": cat,
+                "age_group": age,
+                "count": 0,
+            }
+        groups[key]["count"] += 1
+    categories = sorted(
+        groups.values(),
+        key=lambda g: (
+            g.get("discipline") or "",
+            g.get("gender") or "",
+            str(g.get("category_name") or ""),
+            g.get("age_group") or "",
+        ),
+    )
+    return {
+        "total": len(rows),
+        "categories": categories,
+        "clubs": sorted(c for c in clubs if c),
+    }
+
+
+@app.get("/api/v1/tournaments/{tournament_id}/athletes")
+def list_athletes(tournament_id: str, db: Session = Depends(get_db)):
+    # Repair жеребьёвки не делаем здесь — только POST .../draw/repair.
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    region_lookup = _region_by_club_name(db)
+    rows = _registration_athlete_rows(db, tournament_id)
+    event_date = tournament.event_date if tournament else None
+    return [_athlete_list_item(reg, athlete, event_date, region_lookup) for reg, athlete in rows]
 
 @app.post("/api/v1/registrations/{registration_id}/admit")
 def admit_registration(registration_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):

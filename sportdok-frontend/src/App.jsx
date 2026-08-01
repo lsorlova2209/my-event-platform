@@ -1013,6 +1013,8 @@ const nameInList = (participants, id) => (participants.find(p => p.registration_
 // ─── ПУБЛИЧНАЯ СТРАНИЦА ТУРНИРА: УЧАСТНИКИ ПО КАТЕГОРИЯМ ───────────────────────
 function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
   const [athletes, setAthletes] = useState([])
+  const [categoriesPreview, setCategoriesPreview] = useState([])
+  const [athletesTotal, setAthletesTotal] = useState(null)
   const [loading, setLoading] = useState(true)
   const [pdfLoading, setPdfLoading] = useState(false)
   const [pdfError, setPdfError] = useState("")
@@ -1027,11 +1029,30 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
   useEffect(() => {
     let cancelled = false
     setLoading(true)
+    setCategoriesPreview([])
+    setAthletesTotal(null)
     window.scrollTo(0, 0)
-    axios.get(`${API}/api/v1/tournaments/${tournament.id}/athletes`)
-      .then(r => { if (!cancelled) setAthletes(Array.isArray(r.data) ? r.data : []) })
+    const tid = tournament.id
+
+    axios.get(`${API}/api/v1/tournaments/${tid}/athletes/categories`)
+      .then(r => {
+        if (cancelled) return
+        const data = r.data || {}
+        setCategoriesPreview(Array.isArray(data.categories) ? data.categories : [])
+        if (typeof data.total === "number") setAthletesTotal(data.total)
+        setLoading(false)
+      })
+      .catch(() => { if (!cancelled) { setCategoriesPreview([]); setLoading(false) } })
+
+    axios.get(`${API}/api/v1/tournaments/${tid}/athletes`)
+      .then(r => {
+        if (cancelled) return
+        const list = Array.isArray(r.data) ? r.data : []
+        setAthletes(list)
+        setAthletesTotal(list.length)
+      })
       .catch(() => { if (!cancelled) setAthletes([]) })
-      .finally(() => { if (!cancelled) setLoading(false) })
+
     return () => { cancelled = true }
   }, [tournament.id])
 
@@ -1094,9 +1115,16 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
   const surnameQ = filterSurname.trim().toLowerCase()
   const clubOptions = [...new Set(athletes.map(a => (a.club_name || "").trim()).filter(Boolean))]
     .sort((a, b) => a.localeCompare(b, "ru"))
-  const categoryOptions = allCategories.map(g => ({
-    key: g.key,
-    label: `${categoryLabel(g.discipline, g.gender, g.category_name, g.age_group)} (${g.athletes.length})`,
+  const categoryOptions = (athletes.length > 0 ? allCategories : categoriesPreview.map(g => ({
+    key: `${g.discipline}|${g.gender}|${g.category_name}|${g.age_group || ""}`,
+    discipline: g.discipline,
+    gender: g.gender,
+    category_name: g.category_name,
+    age_group: g.age_group,
+    athletes: Array(g.count || 0).fill(null),
+  }))).map(g => ({
+    key: g.key || `${g.discipline}|${g.gender}|${g.category_name}|${g.age_group || ""}`,
+    label: `${categoryLabel(g.discipline, g.gender, g.category_name, g.age_group)} (${g.athletes?.length || g.count || 0})`,
   }))
 
   const filteredAthletes = athletes.filter(a => {
@@ -1115,7 +1143,24 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
     return true
   })
 
-  const categories = groupAthletes(filteredAthletes)
+  const categories = athletes.length > 0
+    ? groupAthletes(filteredAthletes)
+    : categoriesPreview.map(g => ({
+        key: `${g.discipline}|${g.gender}|${g.category_name}|${g.age_group || ""}`,
+        discipline: g.discipline,
+        gender: g.gender,
+        category_name: g.category_name,
+        age_group: g.age_group || null,
+        athletes: [],
+        count: g.count || 0,
+      })).sort((a, b) =>
+        categoryLabel(a.discipline, a.gender, a.category_name, a.age_group)
+          .localeCompare(categoryLabel(b.discipline, b.gender, b.category_name, b.age_group), "ru")
+      )
+
+  const displayTotal = athletes.length > 0 ? athletes.length : (athletesTotal ?? 0)
+  const displayCatCount = athletes.length > 0 ? allCategories.length : categoriesPreview.length
+  const athletesReady = athletes.length > 0
   const filtersActive = Boolean(surnameQ || filterClub || filterCategory)
   const toggleSearch = (key) => setSearchOpen(s => ({ ...s, [key]: !s[key] }))
   const clearFilters = () => {
@@ -1159,7 +1204,7 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
         <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
           <button
             onClick={downloadPdf}
-            disabled={pdfLoading || loading || athletes.length === 0}
+            disabled={pdfLoading || (!athletesReady && loading) || displayTotal === 0}
             className="arena-btn"
             style={{
               ...arenaBtnPrimary,
@@ -1206,11 +1251,12 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
             }}>
               {competitionLevelLabel(tournament.competition_level)}
             </span>
-            {!loading && (
+            {(!loading || displayTotal > 0) && (
               <span style={{ color: "rgba(244,245,247,0.55)", fontSize: "14px" }}>
-                {filtersActive
-                  ? `${filteredAthletes.length} из ${athletes.length} участников · ${categories.length} категорий`
-                  : `${athletes.length} участников · ${allCategories.length} категорий`}
+                {filtersActive && athletesReady
+                  ? `${filteredAthletes.length} из ${displayTotal} участников · ${categories.length} категорий`
+                  : `${displayTotal} участников · ${displayCatCount} категорий`}
+                {!athletesReady && displayTotal > 0 ? " · загрузка…" : ""}
               </span>
             )}
           </div>
@@ -1221,11 +1267,11 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
           )}
         </div>
 
-        {loading ? (
+        {loading && categories.length === 0 ? (
           <div style={{ ...arenaPanel, textAlign: "center", color: "rgba(244,245,247,0.65)" }}>
             Загрузка участников…
           </div>
-        ) : athletes.length === 0 ? (
+        ) : displayTotal === 0 && categories.length === 0 ? (
           <div style={{ ...arenaPanel, textAlign: "center", color: "rgba(244,245,247,0.65)" }}>
             Пока нет зарегистрированных участников.
           </div>
@@ -1325,10 +1371,13 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
                     {categoryLabel(cat.discipline, cat.gender, cat.category_name, cat.age_group)}
                   </h2>
                   <span style={{ color: "rgba(244,245,247,0.55)", fontSize: "14px" }}>
-                    {cat.athletes.length}
+                    {cat.athletes?.length || cat.count || 0}
                   </span>
                 </button>
                 {open && (
+                !athletesReady ? (
+                  <p style={{ color: "rgba(244,245,247,0.55)", margin: 0 }}>Загрузка списка…</p>
+                ) : (
                 <div style={{ overflowX: "auto" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "15px" }}>
                     <thead>
@@ -1367,6 +1416,7 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
                     </tbody>
                   </table>
                 </div>
+                )
                 )}
               </section>
               )
@@ -2014,6 +2064,8 @@ function ExcelImportPanel({ tournamentId, token, onImported }) {
 function TournamentDetail({ tournament, user, onBack }) {
   const [athletes, setAthletes] = useState([])
   const [athletesLoading, setAthletesLoading] = useState(true)
+  const [categoriesPreview, setCategoriesPreview] = useState([])
+  const [athletesTotal, setAthletesTotal] = useState(null)
   const [bouts, setBouts] = useState([])
   const [showForm, setShowForm] = useState(false)
   const [ranks, setRanks] = useState([])
@@ -2074,6 +2126,7 @@ function TournamentDetail({ tournament, user, onBack }) {
     try {
       const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/athletes`)
       setAthletes(Array.isArray(r.data) ? r.data : [])
+      setAthletesTotal(Array.isArray(r.data) ? r.data.length : 0)
     } catch { setAthletes([]) }
     finally { setAthletesLoading(false) }
   }
@@ -2113,58 +2166,53 @@ function TournamentDetail({ tournament, user, onBack }) {
   useEffect(() => {
     let cancelled = false
     setAthletesLoading(true)
-    const timeoutId = setTimeout(async () => {
-      const headers = { Authorization: `Bearer ${user.token}` }
-      // Список участников — сразу, без ожидания repair жеребьёвки
-      try {
-        const [athletesResponse, boutsResponse, ranksResponse, weightCategoriesResponse, kataTypesResponse, secretariesResponse, grantsResponse] = await Promise.all([
-          axios.get(`${API}/api/v1/tournaments/${tournament.id}/athletes`),
-          axios.get(`${API}/api/v1/tournaments/${tournament.id}/bouts`),
-          axios.get(`${API}/api/v1/ranks/`),
-          axios.get(`${API}/api/v1/weight-categories/`),
-          axios.get(`${API}/api/v1/kata-types/`),
-          axios.get(`${API}/api/v1/secretaries/`, { headers }),
-          axios.get(`${API}/api/v1/tournaments/${tournament.id}/secretary-access`, { headers })
-        ])
+    setCategoriesPreview([])
+    setAthletesTotal(null)
+    const headers = { Authorization: `Bearer ${user.token}` }
+    const tid = tournament.id
+
+    // 1) Быстрая сводка категорий — заголовки почти сразу
+    axios.get(`${API}/api/v1/tournaments/${tid}/athletes/categories`)
+      .then(r => {
         if (cancelled) return
-        setAthletes(Array.isArray(athletesResponse.data) ? athletesResponse.data : [])
+        const data = r.data || {}
+        setCategoriesPreview(Array.isArray(data.categories) ? data.categories : [])
+        if (typeof data.total === "number") setAthletesTotal(data.total)
+      })
+      .catch(() => { if (!cancelled) setCategoriesPreview([]) })
+
+    // 2) Полный список участников
+    axios.get(`${API}/api/v1/tournaments/${tid}/athletes`)
+      .then(r => {
+        if (cancelled) return
+        const list = Array.isArray(r.data) ? r.data : []
+        setAthletes(list)
+        setAthletesTotal(list.length)
+      })
+      .catch(() => { if (!cancelled) setAthletes([]) })
+      .finally(() => { if (!cancelled) setAthletesLoading(false) })
+
+    // 3) Всё остальное — после тика, не конкурирует с участниками
+    const deferred = setTimeout(() => {
+      Promise.all([
+        axios.get(`${API}/api/v1/tournaments/${tid}/bouts`).catch(() => ({ data: [] })),
+        axios.get(`${API}/api/v1/ranks/`).catch(() => ({ data: [] })),
+        axios.get(`${API}/api/v1/weight-categories/`).catch(() => ({ data: [] })),
+        axios.get(`${API}/api/v1/kata-types/`).catch(() => ({ data: [] })),
+        axios.get(`${API}/api/v1/secretaries/`, { headers }).catch(() => ({ data: [] })),
+        axios.get(`${API}/api/v1/tournaments/${tid}/secretary-access`, { headers }).catch(() => ({ data: [] })),
+      ]).then(([boutsResponse, ranksResponse, weightCategoriesResponse, kataTypesResponse, secretariesResponse, grantsResponse]) => {
+        if (cancelled) return
         setBouts(boutsResponse.data)
         setRanks(ranksResponse.data)
         setWeightCategories(weightCategoriesResponse.data)
         setKataTypes(kataTypesResponse.data)
         setSecretaries(secretariesResponse.data)
         setGrants(grantsResponse.data)
-      } catch {
-        if (!cancelled) {
-          setAthletes([])
-          setBouts([])
-          setRanks([])
-          setWeightCategories([])
-          setKataTypes([])
-          setSecretaries([])
-          setGrants([])
-        }
-      } finally {
-        if (!cancelled) setAthletesLoading(false)
-      }
-
-      // Repair жеребьёвки — в фоне, не блокирует список
-      if (user?.role === "admin" || user?.role === "owner") {
-        axios.post(`${API}/api/v1/tournaments/${tournament.id}/draw/repair`, {}, { headers })
-          .then(repair => {
-            if (cancelled) return
-            if (repair.data.repaired?.length) {
-              setDrawError("Жеребьёвка обновлена: № жребья 1…N на всю категорию (как в Excel).")
-              return axios.get(`${API}/api/v1/tournaments/${tournament.id}/athletes`)
-            }
-          })
-          .then(r => {
-            if (!cancelled && r?.data) setAthletes(Array.isArray(r.data) ? r.data : [])
-          })
-          .catch(() => { /* best-effort */ })
-      }
+      })
     }, 0)
-    return () => { cancelled = true; clearTimeout(timeoutId) }
+
+    return () => { cancelled = true; clearTimeout(deferred) }
   }, [tournament.id, user.token, user?.role])
 
   const setGrantField = (k, v) => setGrantForm(f => ({ ...f, [k]: v }))
@@ -2228,14 +2276,19 @@ function TournamentDetail({ tournament, user, onBack }) {
   }, {})
 
   const surnameQ = filterSurname.trim().toLowerCase()
-  const clubOptions = [...new Set(athletes.map(a => (a.club_name || "").trim()).filter(Boolean))]
-    .sort((a, b) => a.localeCompare(b, "ru"))
-  const categoryOptions = Object.values(listGroupsAll)
-    .map(g => ({
-      key: `${g.discipline}|${g.gender}|${g.category_name}|${g.age_group || ""}`,
-      label: `${categoryLabel(g.discipline, g.gender, g.category_name, g.age_group)} (${g.athletes.length})`,
-    }))
-    .sort((a, b) => a.label.localeCompare(b.label, "ru"))
+  const clubOptions = [...new Set([
+    ...athletes.map(a => (a.club_name || "").trim()).filter(Boolean),
+  ])].sort((a, b) => a.localeCompare(b, "ru"))
+  const categoryOptions = (athletes.length > 0
+    ? Object.values(listGroupsAll).map(g => ({
+        key: `${g.discipline}|${g.gender}|${g.category_name}|${g.age_group || ""}`,
+        label: `${categoryLabel(g.discipline, g.gender, g.category_name, g.age_group)} (${g.athletes.length})`,
+      }))
+    : categoriesPreview.map(g => ({
+        key: `${g.discipline}|${g.gender}|${g.category_name}|${g.age_group || ""}`,
+        label: `${categoryLabel(g.discipline, g.gender, g.category_name, g.age_group)} (${g.count || 0})`,
+      }))
+  ).sort((a, b) => a.label.localeCompare(b.label, "ru"))
 
   const filteredAthletes = athletes.filter(a => {
     if (surnameQ) {
@@ -2268,6 +2321,26 @@ function TournamentDetail({ tournament, user, onBack }) {
     groups[key].athletes.push(a)
     return groups
   }, {})
+
+  const previewListGroups = categoriesPreview.map(g => ({
+    discipline: g.discipline,
+    gender: g.gender,
+    category_name: g.category_name,
+    age_group: g.age_group || null,
+    athletes: [],
+    count: g.count || 0,
+  }))
+
+  const listDisplayGroups = (athletes.length > 0
+    ? Object.values(filteredBracketGroups)
+    : previewListGroups
+  ).sort((a, b) =>
+    categoryLabel(a.discipline, a.gender, a.category_name, a.age_group)
+      .localeCompare(categoryLabel(b.discipline, b.gender, b.category_name, b.age_group), "ru")
+  )
+
+  const displayTotal = athletes.length > 0 ? athletes.length : (athletesTotal ?? 0)
+  const listReady = !athletesLoading || categoriesPreview.length > 0 || athletes.length > 0
 
   const filtersActive = Boolean(surnameQ || filterClub || filterCategory)
   const toggleSearch = (key) => setSearchOpen(s => ({ ...s, [key]: !s[key] }))
@@ -2411,7 +2484,7 @@ function TournamentDetail({ tournament, user, onBack }) {
         <div style={card}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "12px" }}>
             <h2 style={{ margin: 0, color: "#1A56A0" }}>
-              Участники ({athletesLoading ? "…" : athletes.length})
+              Участники ({!listReady ? "…" : displayTotal})
             </h2>
             <button onClick={() => setShowForm(!showForm)} style={btnPrimary}>{showForm ? "Отмена" : "+ Добавить участника"}</button>
           </div>
@@ -2477,14 +2550,15 @@ function TournamentDetail({ tournament, user, onBack }) {
         <div style={card}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px", marginBottom: "14px" }}>
             <div style={{ fontWeight: "bold", color: "#1A56A0", fontSize: "16px" }}>
-              Участники{athletesLoading ? "…" : (athletes.length > 0 ? ` (${filtersActive ? `${filteredAthletes.length} из ${athletes.length}` : athletes.length})` : "")}
+              Участники{!listReady ? "…" : (displayTotal > 0 ? ` (${filtersActive && athletes.length ? `${filteredAthletes.length} из ${displayTotal}` : displayTotal})` : "")}
+              {athletesLoading && athletes.length === 0 && categoriesPreview.length > 0 ? " · загрузка…" : ""}
             </div>
             {filtersActive && (
               <button type="button" onClick={clearFilters} style={{ ...btnOutline, padding: "6px 12px", fontSize: "13px" }}>Сбросить</button>
             )}
           </div>
 
-          {athletes.length > 0 && (
+          {(displayTotal > 0 || athletes.length > 0) && (
             <div style={{ marginBottom: "16px" }}>
               <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "10px" }}>
                 <button
@@ -2573,21 +2647,17 @@ function TournamentDetail({ tournament, user, onBack }) {
             </div>
           )}
 
-          {athletesLoading ? (
+          {!listReady ? (
             <p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Загрузка участников…</p>
-          ) : Object.keys(bracketGroups).length === 0 ? (
+          ) : listDisplayGroups.length === 0 ? (
             <p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Участников пока нет. Добавьте первого!</p>
-          ) : Object.keys(filteredBracketGroups).length === 0 ? (
+          ) : athletes.length > 0 && Object.keys(filteredBracketGroups).length === 0 ? (
             <p style={{ color: "#4A4A48", textAlign: "center", padding: "24px 0" }}>Ничего не найдено. Измените или сбросьте фильтры.</p>
-          ) : Object.values(filteredBracketGroups)
-            .sort((a, b) =>
-              categoryLabel(a.discipline, a.gender, a.category_name, a.age_group)
-                .localeCompare(categoryLabel(b.discipline, b.gender, b.category_name, b.age_group), "ru")
-            )
-            .map(group => {
+          ) : listDisplayGroups.map(group => {
             const groupKey = `${group.discipline}|${group.gender}|${group.category_name}|${group.age_group || ""}`
             const label = categoryLabel(group.discipline, group.gender, group.category_name, group.age_group)
             const open = expandedKeys.has(groupKey)
+            const count = group.athletes?.length || group.count || 0
             return (
               <div key={groupKey} style={{ marginBottom: "12px" }}>
                 <button
@@ -2607,10 +2677,13 @@ function TournamentDetail({ tournament, user, onBack }) {
                       transform: open ? "rotate(90deg)" : "rotate(0deg)",
                       transition: "transform 0.15s ease", fontSize: "12px",
                     }} aria-hidden>▸</span>
-                    {label} ({group.athletes.length})
+                    {label} ({count})
                   </span>
                 </button>
-                {open && [...group.athletes]
+                {open && (
+                  athletesLoading && (!group.athletes || group.athletes.length === 0) ? (
+                    <p style={{ color: "#4A4A48", padding: "12px 4px", fontSize: "14px" }}>Загрузка списка…</p>
+                  ) : [...(group.athletes || [])]
                   .sort((a, b) => (a.seed ?? 999) - (b.seed ?? 999) || (a.full_name || "").localeCompare(b.full_name || "", "ru"))
                   .map((a, i) => (
                   <div key={a.registration_id} style={{ padding: "16px 4px", borderBottom: "1px solid #f3f2ee", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
@@ -2651,7 +2724,8 @@ function TournamentDetail({ tournament, user, onBack }) {
                       <button onClick={() => handleDeleteAthlete(a.id)} style={{ ...btnDanger, padding: "6px 12px", fontSize: "13px" }}>✗ Удалить</button>
                     </div>
                   </div>
-                ))}
+                ))
+                )}
               </div>
             )
           })}
