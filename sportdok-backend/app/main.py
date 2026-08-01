@@ -11,6 +11,7 @@ from io import BytesIO
 from pathlib import Path
 import os
 import secrets
+from urllib.parse import quote
 
 from app.database import get_db, engine, Base
 from app.models.user import User
@@ -29,7 +30,7 @@ from app.documents import build_category_excel_zip, build_pdf, build_participant
 from app.kata_registry import KATA_TYPES, KATA_STYLE_ORDER, kata_style
 from app.age_group import compute_age_group
 from app.notifications import send_email
-from app.application_import import parse_application_xlsx, preview_dict
+from app.application_import import parse_application_xlsx, preview_dict, fill_application_template
 
 Base.metadata.create_all(bind=engine)
 
@@ -961,12 +962,49 @@ def _club_name_for_user(current_user, db: Session) -> Optional[str]:
 
 @app.get("/api/v1/templates/application")
 def download_application_template():
+    """Пустой шаблон без данных турнира (обратная совместимость)."""
     if not APPLICATION_TEMPLATE_PATH.is_file():
         raise HTTPException(status_code=404, detail="Шаблон не найден")
     return FileResponse(
         path=str(APPLICATION_TEMPLATE_PATH),
         filename=APPLICATION_TEMPLATE_NAME,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@app.get("/api/v1/tournaments/{tournament_id}/templates/application")
+def download_tournament_application_template(
+    tournament_id: str,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Шаблон заявки с названием турнира, местом и датой комиссии по допуску."""
+    require_roles(current_user, {"admin", "owner", "club"})
+    if not APPLICATION_TEMPLATE_PATH.is_file():
+        raise HTTPException(status_code=404, detail="Шаблон не найден")
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        raise HTTPException(status_code=404, detail="Турнир не найден")
+
+    team_name = _club_name_for_user(current_user, db)
+    # Дата комиссии: закрытие заявок, иначе дата турнира
+    admission = tournament.registration_closes_at or tournament.event_date
+    payload = fill_application_template(
+        APPLICATION_TEMPLATE_PATH,
+        tournament_name=tournament.name or "",
+        location=tournament.location,
+        admission_date=admission,
+        team_name=team_name,
+    )
+    safe_name = "".join(ch if ch.isalnum() or ch in " _-" else "_" for ch in (tournament.name or "turnir"))[:40]
+    filename = f"Zayavka_{safe_name.strip() or 'turnir'}.xlsx"
+    starred = quote(f"Заявка_{safe_name.strip() or 'турнир'}.xlsx")
+    return StreamingResponse(
+        BytesIO(payload),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{filename}\"; filename*=UTF-8''{starred}"
+        },
     )
 
 

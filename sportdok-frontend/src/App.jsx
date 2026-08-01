@@ -1793,8 +1793,23 @@ function ExcelImportPanel({ tournamentId, token, onImported }) {
           {open ? "Скрыть загрузку" : "Загрузить заявку (Excel)"}
         </button>
         <a
-          href={`${API}/api/v1/templates/application`}
+          href={`${API}/api/v1/tournaments/${tournamentId}/templates/application`}
           style={{ fontSize: "13px", color: "#1A56A0" }}
+          onClick={(e) => {
+            e.preventDefault()
+            const headers = { Authorization: `Bearer ${token}` }
+            axios.get(`${API}/api/v1/tournaments/${tournamentId}/templates/application`, {
+              headers,
+              responseType: "blob",
+            }).then(r => {
+              const url = window.URL.createObjectURL(new Blob([r.data]))
+              const a = document.createElement("a")
+              a.href = url
+              a.download = "Заявка_СпортДок.xlsx"
+              a.click()
+              window.URL.revokeObjectURL(url)
+            }).catch(() => alert("Не удалось скачать шаблон"))
+          }}
         >
           Скачать шаблон
         </a>

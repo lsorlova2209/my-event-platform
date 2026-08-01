@@ -1,36 +1,42 @@
 """Парсер Excel-заявок формата «ПР» (лист «Регистрация»).
 
-1 строка = 1 человек; колонки J–M (поединки) и N–P (ката) → несколько Registration.
+1 строка = 1 человек; колонки поединков и ката → несколько Registration.
+Поддерживаются раскладки со столбца A (новый шаблон) и со столбца B (старые файлы).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from io import BytesIO
+from pathlib import Path
 from typing import Any, Optional
 
 from openpyxl import load_workbook
+from openpyxl.styles import PatternFill
 
 SHEET_NAME = "Регистрация"
 DATA_START_ROW = 8
-# B=№ C=Фамилия D=Имя E=Отчество F=пол G=ДР H=лет I=вес J–M=кумитэ N–P=ката Q=квалиф R=тренер
-COL_LAST = 3
-COL_FIRST = 4
-COL_MIDDLE = 5
-COL_GENDER = 6
-COL_BIRTH = 7
-COL_AGE = 8
-COL_WEIGHT = 9
-KUMITE_COLS = (10, 11, 12, 13)
-KATA_COLS = (14, 15, 16)
-COL_RANK = 17
-COL_TRAINER = 18
-CLUB_CELL = "H4"
+
+# Раскладка A (новый шаблон): A=№ B=Фамилия … E=пол F=ДР … I–L=кумитэ M–O=ката P=квалиф Q=тренер
+LAYOUT_A = {
+    "last": 2, "first": 3, "middle": 4, "gender": 5, "birth": 6, "age": 7, "weight": 8,
+    "kumite": (9, 10, 11, 12), "kata": (13, 14, 15), "rank": 16, "trainer": 17,
+    "club_cell": "G4",
+}
+# Раскладка B (старые заявки): B=№ C=Фамилия … F=пол …
+LAYOUT_B = {
+    "last": 3, "first": 4, "middle": 5, "gender": 6, "birth": 7, "age": 8, "weight": 9,
+    "kumite": (10, 11, 12, 13), "kata": (14, 15, 16), "rank": 17, "trainer": 18,
+    "club_cell": "H4",
+}
 
 SPECIAL_KUMITE_CATEGORY = {
     "АБС": "абсолютная категория",
     "двоеборье": "двоеборье",
 }
+
+YELLOW = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+
 
 
 @dataclass
@@ -167,6 +173,63 @@ def _parse_weight(value: Any) -> Optional[float]:
         return None
 
 
+def _detect_layout(ws) -> dict:
+    """Новый шаблон начинается с A; старые заявки — с B."""
+    a6 = _cell_str(ws.cell(6, 1).value)
+    b6 = _cell_str(ws.cell(6, 2).value)
+    a1 = _cell_str(ws.cell(1, 1).value)
+    if a6.startswith("№") or (a1 and "ЗАЯВКА" in a1.upper()):
+        # дополнительная проверка: в A8 номер, в B8 не фамилия-заголовок
+        return LAYOUT_A
+    if b6.startswith("№"):
+        return LAYOUT_B
+    # по данным: если A8 — число, а C8 — текст (старый) vs B8 — текст (новый)
+    a8 = ws.cell(8, 1).value
+    b8 = ws.cell(8, 2).value
+    c8 = ws.cell(8, 3).value
+    if isinstance(a8, (int, float)) and isinstance(b8, str) and b8.strip():
+        return LAYOUT_A
+    if (a8 is None or a8 == "") and isinstance(b8, (int, float)) and isinstance(c8, str):
+        return LAYOUT_B
+    return LAYOUT_A
+
+
+def _fmt_date_ru(d: Optional[date]) -> str:
+    if not d:
+        return ""
+    return d.strftime("%d.%m.%Y")
+
+
+def fill_application_template(
+    template_path: Path,
+    *,
+    tournament_name: str,
+    location: Optional[str] = None,
+    admission_date: Optional[date] = None,
+    team_name: Optional[str] = None,
+) -> bytes:
+    """Подставить данные турнира в шаблон и вернуть .xlsx как bytes."""
+    wb = load_workbook(template_path)
+    ws = wb[SHEET_NAME]
+    name = (tournament_name or "").strip() or "________________"
+    loc = (location or "").strip() or "____________________"
+    adm = _fmt_date_ru(admission_date) or "__________"
+
+    ws["A2"] = f"в {name}"
+    ws["A5"] = f"место проведения: {loc}"
+    ws["I5"] = f"дата комиссии по допуску: {adm}"
+
+    if team_name and not _is_placeholder(team_name):
+        ws["G4"] = team_name.strip()
+    for col in range(7, 16):
+        ws.cell(4, col).fill = YELLOW
+
+    buf = BytesIO()
+    wb.save(buf)
+    wb.close()
+    return buf.getvalue()
+
+
 def parse_application_xlsx(data: bytes, club_name_override: Optional[str] = None) -> ParseResult:
     try:
         wb = load_workbook(BytesIO(data), data_only=True)
@@ -182,24 +245,23 @@ def parse_application_xlsx(data: bytes, club_name_override: Optional[str] = None
         )
 
     ws = wb[SHEET_NAME]
-    header_club = _cell_str(ws[CLUB_CELL].value)
+    layout = _detect_layout(ws)
+    club_cell = layout["club_cell"]
+    header_club = _cell_str(ws[club_cell].value)
     if _is_placeholder(header_club):
         header_club = ""
     club_name = (club_name_override or header_club or None)
 
     athletes: list[ParsedAthlete] = []
-    # Шаблон ПР обычно до ~80 строк данных; ограничиваем хвост, чтобы не
-    # сканировать раздутый max_row у xlsx со стилями.
     max_row = min(ws.max_row or DATA_START_ROW, DATA_START_ROW + 500)
     empty_streak = 0
 
     for row in range(DATA_START_ROW, max_row + 1):
-        last_name = _cell_str(ws.cell(row, COL_LAST).value)
-        first_name = _cell_str(ws.cell(row, COL_FIRST).value)
-        middle_raw = _cell_str(ws.cell(row, COL_MIDDLE).value)
+        last_name = _cell_str(ws.cell(row, layout["last"]).value)
+        first_name = _cell_str(ws.cell(row, layout["first"]).value)
+        middle_raw = _cell_str(ws.cell(row, layout["middle"]).value)
         middle_name = middle_raw or None
 
-        # Пустой слот (только номер или совсем пусто)
         if not last_name and not first_name:
             empty_streak += 1
             if empty_streak >= 20 and athletes:
@@ -213,25 +275,25 @@ def parse_application_xlsx(data: bytes, club_name_override: Optional[str] = None
         if not first_name:
             errors.append("нет имени")
 
-        gender_raw = ws.cell(row, COL_GENDER).value
+        gender_raw = ws.cell(row, layout["gender"]).value
         gender = _parse_gender(gender_raw)
         if gender_raw not in (None, "") and gender is None:
             errors.append(f"неизвестный пол «{_cell_str(gender_raw)}»")
 
-        birth_date = _parse_birth(ws.cell(row, COL_BIRTH).value)
+        birth_date = _parse_birth(ws.cell(row, layout["birth"]).value)
         if birth_date is None:
             errors.append("нет или неверная дата рождения")
 
-        age_raw = _cell_str(ws.cell(row, COL_AGE).value)
-        weight = _parse_weight(ws.cell(row, COL_WEIGHT).value)
-        rank = _cell_str(ws.cell(row, COL_RANK).value) or None
-        trainer = _cell_str(ws.cell(row, COL_TRAINER).value) or None
+        age_raw = _cell_str(ws.cell(row, layout["age"]).value)
+        weight = _parse_weight(ws.cell(row, layout["weight"]).value)
+        rank = _cell_str(ws.cell(row, layout["rank"]).value) or None
+        trainer = _cell_str(ws.cell(row, layout["trainer"]).value) or None
 
         registrations: list[ParsedRegistration] = []
         seen_codes: set[str] = set()
         seen_reg_keys: set[tuple[str, str]] = set()
 
-        for col in KUMITE_COLS + KATA_COLS:
+        for col in layout["kumite"] + layout["kata"]:
             raw = _cell_str(ws.cell(row, col).value)
             if not raw:
                 continue
