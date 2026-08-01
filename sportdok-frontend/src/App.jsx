@@ -2013,6 +2013,7 @@ function ExcelImportPanel({ tournamentId, token, onImported }) {
 
 function TournamentDetail({ tournament, user, onBack }) {
   const [athletes, setAthletes] = useState([])
+  const [athletesLoading, setAthletesLoading] = useState(true)
   const [bouts, setBouts] = useState([])
   const [showForm, setShowForm] = useState(false)
   const [ranks, setRanks] = useState([])
@@ -2070,7 +2071,11 @@ function TournamentDetail({ tournament, user, onBack }) {
   const duplicateKeys = new Set((duplicateInfo?.existing_registrations || []).map(r => `${r.discipline}|${r.category_name}`))
 
   const loadAthletes = async () => {
-    try { const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/athletes`); setAthletes(r.data) } catch { setAthletes([]) }
+    try {
+      const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/athletes`)
+      setAthletes(Array.isArray(r.data) ? r.data : [])
+    } catch { setAthletes([]) }
+    finally { setAthletesLoading(false) }
   }
   const loadBouts = async () => {
     try { const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/bouts`); setBouts(r.data) } catch { setBouts([]) }
@@ -2106,17 +2111,12 @@ function TournamentDetail({ tournament, user, onBack }) {
   }
 
   useEffect(() => {
+    let cancelled = false
+    setAthletesLoading(true)
     const timeoutId = setTimeout(async () => {
+      const headers = { Authorization: `Bearer ${user.token}` }
+      // Список участников — сразу, без ожидания repair жеребьёвки
       try {
-        const headers = { Authorization: `Bearer ${user.token}` }
-        if (user?.role === "admin" || user?.role === "owner") {
-          try {
-            const repair = await axios.post(`${API}/api/v1/tournaments/${tournament.id}/draw/repair`, {}, { headers })
-            if (repair.data.repaired?.length) {
-              setDrawError("Жеребьёвка обновлена: № жребья 1…N на всю категорию (как в Excel).")
-            }
-          } catch { /* repair is best-effort */ }
-        }
         const [athletesResponse, boutsResponse, ranksResponse, weightCategoriesResponse, kataTypesResponse, secretariesResponse, grantsResponse] = await Promise.all([
           axios.get(`${API}/api/v1/tournaments/${tournament.id}/athletes`),
           axios.get(`${API}/api/v1/tournaments/${tournament.id}/bouts`),
@@ -2126,7 +2126,8 @@ function TournamentDetail({ tournament, user, onBack }) {
           axios.get(`${API}/api/v1/secretaries/`, { headers }),
           axios.get(`${API}/api/v1/tournaments/${tournament.id}/secretary-access`, { headers })
         ])
-        setAthletes(athletesResponse.data)
+        if (cancelled) return
+        setAthletes(Array.isArray(athletesResponse.data) ? athletesResponse.data : [])
         setBouts(boutsResponse.data)
         setRanks(ranksResponse.data)
         setWeightCategories(weightCategoriesResponse.data)
@@ -2134,16 +2135,36 @@ function TournamentDetail({ tournament, user, onBack }) {
         setSecretaries(secretariesResponse.data)
         setGrants(grantsResponse.data)
       } catch {
-        setAthletes([])
-        setBouts([])
-        setRanks([])
-        setWeightCategories([])
-        setKataTypes([])
-        setSecretaries([])
-        setGrants([])
+        if (!cancelled) {
+          setAthletes([])
+          setBouts([])
+          setRanks([])
+          setWeightCategories([])
+          setKataTypes([])
+          setSecretaries([])
+          setGrants([])
+        }
+      } finally {
+        if (!cancelled) setAthletesLoading(false)
+      }
+
+      // Repair жеребьёвки — в фоне, не блокирует список
+      if (user?.role === "admin" || user?.role === "owner") {
+        axios.post(`${API}/api/v1/tournaments/${tournament.id}/draw/repair`, {}, { headers })
+          .then(repair => {
+            if (cancelled) return
+            if (repair.data.repaired?.length) {
+              setDrawError("Жеребьёвка обновлена: № жребья 1…N на всю категорию (как в Excel).")
+              return axios.get(`${API}/api/v1/tournaments/${tournament.id}/athletes`)
+            }
+          })
+          .then(r => {
+            if (!cancelled && r?.data) setAthletes(Array.isArray(r.data) ? r.data : [])
+          })
+          .catch(() => { /* best-effort */ })
       }
     }, 0)
-    return () => clearTimeout(timeoutId)
+    return () => { cancelled = true; clearTimeout(timeoutId) }
   }, [tournament.id, user.token, user?.role])
 
   const setGrantField = (k, v) => setGrantForm(f => ({ ...f, [k]: v }))
@@ -2389,7 +2410,9 @@ function TournamentDetail({ tournament, user, onBack }) {
 
         <div style={card}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "12px" }}>
-            <h2 style={{ margin: 0, color: "#1A56A0" }}>Участники ({athletes.length})</h2>
+            <h2 style={{ margin: 0, color: "#1A56A0" }}>
+              Участники ({athletesLoading ? "…" : athletes.length})
+            </h2>
             <button onClick={() => setShowForm(!showForm)} style={btnPrimary}>{showForm ? "Отмена" : "+ Добавить участника"}</button>
           </div>
           <div style={{ marginBottom: showForm ? "24px" : 0 }}>
@@ -2454,7 +2477,7 @@ function TournamentDetail({ tournament, user, onBack }) {
         <div style={card}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px", marginBottom: "14px" }}>
             <div style={{ fontWeight: "bold", color: "#1A56A0", fontSize: "16px" }}>
-              Участники{athletes.length > 0 ? ` (${filtersActive ? `${filteredAthletes.length} из ${athletes.length}` : athletes.length})` : ""}
+              Участники{athletesLoading ? "…" : (athletes.length > 0 ? ` (${filtersActive ? `${filteredAthletes.length} из ${athletes.length}` : athletes.length})` : "")}
             </div>
             {filtersActive && (
               <button type="button" onClick={clearFilters} style={{ ...btnOutline, padding: "6px 12px", fontSize: "13px" }}>Сбросить</button>
@@ -2550,7 +2573,9 @@ function TournamentDetail({ tournament, user, onBack }) {
             </div>
           )}
 
-          {Object.keys(bracketGroups).length === 0 ? (
+          {athletesLoading ? (
+            <p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Загрузка участников…</p>
+          ) : Object.keys(bracketGroups).length === 0 ? (
             <p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Участников пока нет. Добавьте первого!</p>
           ) : Object.keys(filteredBracketGroups).length === 0 ? (
             <p style={{ color: "#4A4A48", textAlign: "center", padding: "24px 0" }}>Ничего не найдено. Измените или сбросьте фильтры.</p>

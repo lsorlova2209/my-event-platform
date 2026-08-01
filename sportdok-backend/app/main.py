@@ -662,14 +662,15 @@ def _apply_category_draw(db, tournament_id, discipline, gender, category_name, p
 
 def _build_tournament_groups(db, tournament_id):
     rank_order = {r.name: r.sort_order for r in db.query(Rank).all()}
-    regs = db.query(Registration).filter(
-        Registration.tournament_id == tournament_id
-    ).order_by(Registration.created_at, Registration.id).all()
+    rows = (
+        db.query(Registration, Athlete)
+        .join(Athlete, Registration.athlete_id == Athlete.id)
+        .filter(Registration.tournament_id == tournament_id)
+        .order_by(Registration.created_at, Registration.id)
+        .all()
+    )
     groups = {}
-    for reg in regs:
-        athlete = db.query(Athlete).filter(Athlete.id == reg.athlete_id).first()
-        if not athlete:
-            continue
+    for reg, athlete in rows:
         key = (reg.discipline, athlete.gender, draw_category_key(reg.discipline, reg.category_name))
         groups.setdefault(key, []).append({
             "registration_id": str(reg.id),
@@ -1159,35 +1160,38 @@ def _region_by_club_name(db):
 
 @app.get("/api/v1/tournaments/{tournament_id}/athletes")
 def list_athletes(tournament_id: str, db: Session = Depends(get_db)):
-    _repair_stale_draws(db, tournament_id)
+    # Не вызываем _repair_stale_draws здесь: при тысячах заявок это секунды–минуты
+    # на каждый просмотр списка. Repair — только POST .../draw/repair.
     tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
     region_lookup = _region_by_club_name(db)
-    regs = db.query(Registration).filter(
-        Registration.tournament_id == tournament_id
-    ).all()
+    rows = (
+        db.query(Registration, Athlete)
+        .join(Athlete, Registration.athlete_id == Athlete.id)
+        .filter(Registration.tournament_id == tournament_id)
+        .all()
+    )
+    event_date = tournament.event_date if tournament else None
     result = []
-    for reg in regs:
-        athlete = db.query(Athlete).filter(Athlete.id == reg.athlete_id).first()
-        if athlete:
-            result.append({
-                "id": str(athlete.id),
-                "registration_id": str(reg.id),
-                "full_name": f"{athlete.last_name} {athlete.first_name} {athlete.middle_name or ''}".strip(),
-                "gender": athlete.gender,
-                "birth_date": str(athlete.birth_date),
-                "weight": float(athlete.weight) if athlete.weight else None,
-                "rank": athlete.rank,
-                "club_name": athlete.club_name,
-                "region": region_lookup.get(athlete.club_name),
-                "discipline": reg.discipline,
-                "category_name": reg.category_name,
-                "kata_name": reg.kata_name,
-                "team_number": reg.team_number,
-                "admission_status": reg.admission_status,
-                "age_group": compute_age_group(athlete.birth_date, tournament.event_date if tournament else None, athlete.gender, reg.discipline),
-                "seed": reg.seed,
-                "subgroup": reg.subgroup
-            })
+    for reg, athlete in rows:
+        result.append({
+            "id": str(athlete.id),
+            "registration_id": str(reg.id),
+            "full_name": f"{athlete.last_name} {athlete.first_name} {athlete.middle_name or ''}".strip(),
+            "gender": athlete.gender,
+            "birth_date": str(athlete.birth_date),
+            "weight": float(athlete.weight) if athlete.weight else None,
+            "rank": athlete.rank,
+            "club_name": athlete.club_name,
+            "region": region_lookup.get(athlete.club_name),
+            "discipline": reg.discipline,
+            "category_name": reg.category_name,
+            "kata_name": reg.kata_name,
+            "team_number": reg.team_number,
+            "admission_status": reg.admission_status,
+            "age_group": compute_age_group(athlete.birth_date, event_date, athlete.gender, reg.discipline),
+            "seed": reg.seed,
+            "subgroup": reg.subgroup
+        })
     return result
 
 @app.post("/api/v1/registrations/{registration_id}/admit")
