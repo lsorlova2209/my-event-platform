@@ -35,6 +35,8 @@ class Registration(Base):
     kata_name = Column(String, nullable=True)
     team_number = Column(String, nullable=True)
     admission_status = Column(String, nullable=True)
+    # Весовой допуск: null / approved (только для весового кумитэ)
+    weigh_status = Column(String, nullable=True)
     seed = Column(Integer, nullable=True)
     subgroup = Column(Integer, nullable=True)
     status = Column(String, nullable=False, default="active")

@@ -1008,6 +1008,14 @@ const categoryLabel = (discipline, gender, category_name, age_group) =>
 const competitionCategoryKey = (a, categoryName) =>
   `${a.discipline}|${a.gender}|${categoryName}|${a.age_group || ""}`
 
+const NO_WEIGH_CATEGORIES = new Set(["абсолютная категория", "двоеборье", "командные соревнования"])
+const needsWeighAdmit = (a) => {
+  if (a.weigh_required === true) return true
+  if (a.weigh_required === false) return false
+  if (!String(a.discipline || "").startsWith("kumite")) return false
+  return !NO_WEIGH_CATEGORIES.has(String(a.category_name || "").trim().toLowerCase())
+}
+
 const nameInList = (participants, id) => (participants.find(p => p.registration_id === id) || {}).full_name || "?"
 
 // ─── ПУБЛИЧНАЯ СТРАНИЦА ТУРНИРА: УЧАСТНИКИ ПО КАТЕГОРИЯМ ───────────────────────
@@ -2397,12 +2405,16 @@ function TournamentDetail({ tournament, user, onBack }) {
     await axios.post(`${API}/api/v1/registrations/${registrationId}/admit`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
     loadAthletes()
   }
-  const handleRejectAdmission = async (registrationId) => {
-    await axios.post(`${API}/api/v1/registrations/${registrationId}/reject-admission`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
-    loadAthletes()
-  }
   const handleResetAdmission = async (registrationId) => {
     await axios.post(`${API}/api/v1/registrations/${registrationId}/reset-admission`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
+    loadAthletes()
+  }
+  const handleAdmitWeigh = async (registrationId) => {
+    await axios.post(`${API}/api/v1/registrations/${registrationId}/admit-weigh`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
+    loadAthletes()
+  }
+  const handleResetWeigh = async (registrationId) => {
+    await axios.post(`${API}/api/v1/registrations/${registrationId}/reset-weigh`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
     loadAthletes()
   }
 
@@ -2686,7 +2698,7 @@ function TournamentDetail({ tournament, user, onBack }) {
                   ) : [...(group.athletes || [])]
                   .sort((a, b) => (a.seed ?? 999) - (b.seed ?? 999) || (a.full_name || "").localeCompare(b.full_name || "", "ru"))
                   .map((a, i) => (
-                  <div key={a.registration_id} style={{ padding: "16px 4px", borderBottom: "1px solid #f3f2ee", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+                  <div key={a.registration_id} style={{ padding: "12px 4px", borderBottom: "1px solid #f3f2ee", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "12px", minWidth: 0 }}>
                       <div style={{
                         flexShrink: 0, width: "28px", textAlign: "center", fontWeight: "bold",
@@ -2697,31 +2709,33 @@ function TournamentDetail({ tournament, user, onBack }) {
                       <div style={{ minWidth: 0 }}>
                         <div style={{ fontWeight: "bold", color: "#1A56A0" }}>{a.full_name}</div>
                         <div style={{ color: "#4A4A48", fontSize: "14px" }}>
-                          {[a.club_name, a.weight && `${a.weight} кг`, a.rank, a.age_group].filter(Boolean).join(" · ")}
+                          {[a.region || a.club_name, a.rank].filter(Boolean).join(" · ") || "—"}
                         </div>
                       </div>
                     </div>
-                    <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                      {!a.admission_status && (
-                        <>
-                          <button onClick={() => handleAdmit(a.registration_id)} style={{ ...btnGreen, padding: "6px 10px", fontSize: "12px" }}>✓ Допустить</button>
-                          <button onClick={() => handleRejectAdmission(a.registration_id)} style={{ ...btnDanger, padding: "6px 10px", fontSize: "12px" }}>✗ Не допустить</button>
-                        </>
-                      )}
-                      {a.admission_status === "approved" && (
-                        <button type="button" onClick={() => handleResetAdmission(a.registration_id)} title="Изменить решение о допуске"
+                    <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
+                      {a.admission_status === "approved" ? (
+                        <button type="button" onClick={() => handleResetAdmission(a.registration_id)} title="Сбросить допуск"
                           style={{ ...btnOutline, padding: "6px 10px", fontSize: "12px", color: "#0F6E56", fontWeight: "bold", borderColor: "#0F6E56" }}>
                           ✓ Допущен
                         </button>
+                      ) : (
+                        <button onClick={() => handleAdmit(a.registration_id)} style={{ ...btnGreen, padding: "6px 10px", fontSize: "12px" }}>✓ Допустить</button>
                       )}
-                      {a.admission_status === "rejected" && (
-                        <button type="button" onClick={() => handleResetAdmission(a.registration_id)} title="Изменить решение о допуске"
-                          style={{ ...btnOutline, padding: "6px 10px", fontSize: "12px", color: "#A32D2D", borderColor: "#A32D2D" }}>
-                          ✗ Не допущен
-                        </button>
+                      {needsWeighAdmit(a) && (
+                        a.weigh_status === "approved" ? (
+                          <button type="button" onClick={() => handleResetWeigh(a.registration_id)} title="Сбросить весовой допуск"
+                            style={{ ...btnOutline, padding: "6px 10px", fontSize: "12px", color: "#0F6E56", fontWeight: "bold", borderColor: "#0F6E56" }}>
+                            ✓ По весу
+                          </button>
+                        ) : (
+                          <button onClick={() => handleAdmitWeigh(a.registration_id)} style={{ ...btnGreen, padding: "6px 10px", fontSize: "12px" }}>✓ Допустить по весу</button>
+                        )
                       )}
-                      <button onClick={() => setEditingAthleteId(a.id)} style={{ ...btnOutline, padding: "6px 12px", fontSize: "13px" }}>✎ Изменить</button>
-                      <button onClick={() => handleDeleteAthlete(a.id)} style={{ ...btnDanger, padding: "6px 12px", fontSize: "13px" }}>✗ Удалить</button>
+                      <button onClick={() => setEditingAthleteId(a.id)} title="Изменить"
+                        style={{ ...btnOutline, padding: "4px 8px", fontSize: "11px", minWidth: 0 }}>Изменить</button>
+                      <button onClick={() => handleDeleteAthlete(a.id)} title="Удалить"
+                        style={{ ...btnDanger, padding: "4px 8px", fontSize: "11px", minWidth: 0 }}>Удалить</button>
                     </div>
                   </div>
                 ))

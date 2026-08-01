@@ -230,6 +230,9 @@ def apply_schema_patches():
         conn.execute(text(
             "ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS cover_image VARCHAR"
         ))
+        conn.execute(text(
+            "ALTER TABLE registrations ADD COLUMN IF NOT EXISTS weigh_status VARCHAR"
+        ))
 
 @app.on_event("startup")
 def create_admin():
@@ -1167,6 +1170,16 @@ def _registration_athlete_rows(db, tournament_id):
     )
 
 
+NO_WEIGH_CATEGORIES = {"абсолютная категория", "двоеборье", "командные соревнования"}
+KUMITE_DISCIPLINES = {"kumite_ok", "kumite_pk", "kumite_sz"}
+
+
+def weigh_admit_required(discipline, category_name):
+    if discipline not in KUMITE_DISCIPLINES:
+        return False
+    return (category_name or "").strip().lower() not in NO_WEIGH_CATEGORIES
+
+
 def _athlete_list_item(reg, athlete, event_date, region_lookup):
     return {
         "id": str(athlete.id),
@@ -1182,6 +1195,8 @@ def _athlete_list_item(reg, athlete, event_date, region_lookup):
         "kata_name": reg.kata_name,
         "team_number": reg.team_number,
         "admission_status": reg.admission_status,
+        "weigh_status": getattr(reg, "weigh_status", None),
+        "weigh_required": weigh_admit_required(reg.discipline, reg.category_name),
         "age_group": compute_age_group(athlete.birth_date, event_date, athlete.gender, reg.discipline),
         "seed": reg.seed,
         "subgroup": reg.subgroup,
@@ -1267,6 +1282,28 @@ def reset_admission(registration_id: str, current_user=Depends(get_current_user)
     reg.admission_status = None
     db.commit()
     return {"success": True, "admission_status": None}
+
+@app.post("/api/v1/registrations/{registration_id}/admit-weigh")
+def admit_weigh(registration_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
+    reg = db.query(Registration).filter(Registration.id == registration_id).first()
+    if not reg:
+        return {"success": False, "message": "Заявка не найдена"}
+    if not weigh_admit_required(reg.discipline, reg.category_name):
+        return {"success": False, "message": "Весовой допуск для этой категории не требуется"}
+    reg.weigh_status = "approved"
+    db.commit()
+    return {"success": True, "weigh_status": reg.weigh_status}
+
+@app.post("/api/v1/registrations/{registration_id}/reset-weigh")
+def reset_weigh(registration_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
+    reg = db.query(Registration).filter(Registration.id == registration_id).first()
+    if not reg:
+        return {"success": False, "message": "Заявка не найдена"}
+    reg.weigh_status = None
+    db.commit()
+    return {"success": True, "weigh_status": None}
 
 @app.get("/api/v1/athletes/{athlete_id}")
 def get_athlete(athlete_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
