@@ -24,17 +24,19 @@ def create_token(data: dict) -> str:
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
+def get_optional_user(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
+    """Как get_current_user, но без 401 — для публичных эндпоинтов с опциональным токеном."""
     if credentials is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Не авторизован")
+        return None
     try:
         payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
     except JWTError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Недействительный или просроченный токен")
+        return None
     user_id, role = payload.get("sub"), payload.get("role")
     if not user_id or not role:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Недействительный токен")
+        return None
     return {"user_id": user_id, "role": role}
+
 
 def require_roles(user, allowed_roles):
     if user["role"] not in allowed_roles:

@@ -22,7 +22,7 @@ from app.models.reference import WeightCategory, Rank, KataType
 from app.models.bout import Bout
 from app.models.kata_score import KataScore, KataSession
 from app.models.secretary_access import SecretaryAccess
-from app.auth import hash_password, verify_password, create_token, get_current_user, require_roles
+from app.auth import hash_password, verify_password, create_token, get_current_user, get_optional_user, require_roles
 from app.draw import build_category_draw, subgroup_for_draw_number
 from app.kumite_protocol import determine_winner
 from app.kata_protocol import ROUND_SCALES, validate_scores, compute_total, determine_round_result
@@ -975,27 +975,36 @@ def download_application_template():
 @app.get("/api/v1/tournaments/{tournament_id}/templates/application")
 def download_tournament_application_template(
     tournament_id: str,
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
-    """Шаблон заявки с названием турнира, местом и датой комиссии по допуску."""
-    require_roles(current_user, {"admin", "owner", "club"})
+    """Шаблон заявки с названием турнира, местом и датой комиссии по допуску.
+
+    Авторизация не обязательна (карточка турнира публичная). Если передан
+    токен клуба — в жёлтую ячейку подставим название команды.
+    """
     if not APPLICATION_TEMPLATE_PATH.is_file():
         raise HTTPException(status_code=404, detail="Шаблон не найден")
     tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
     if not tournament:
         raise HTTPException(status_code=404, detail="Турнир не найден")
 
-    team_name = _club_name_for_user(current_user, db)
-    # Дата комиссии: закрытие заявок, иначе дата турнира
+    team_name = None
+    if current_user and current_user.get("role") == "club":
+        team_name = _club_name_for_user(current_user, db)
+
     admission = tournament.registration_closes_at or tournament.event_date
-    payload = fill_application_template(
-        APPLICATION_TEMPLATE_PATH,
-        tournament_name=tournament.name or "",
-        location=tournament.location,
-        admission_date=admission,
-        team_name=team_name,
-    )
+    try:
+        payload = fill_application_template(
+            APPLICATION_TEMPLATE_PATH,
+            tournament_name=tournament.name or "",
+            location=tournament.location,
+            admission_date=admission,
+            team_name=team_name,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Не удалось сформировать шаблон: {exc}") from exc
+
     safe_name = "".join(ch if ch.isalnum() or ch in " _-" else "_" for ch in (tournament.name or "turnir"))[:40]
     filename = f"Zayavka_{safe_name.strip() or 'turnir'}.xlsx"
     starred = quote(f"Заявка_{safe_name.strip() or 'турнир'}.xlsx")
@@ -1006,6 +1015,7 @@ def download_tournament_application_template(
             "Content-Disposition": f"attachment; filename=\"{filename}\"; filename*=UTF-8''{starred}"
         },
     )
+
 
 
 @app.post("/api/v1/tournaments/{tournament_id}/import/preview")
