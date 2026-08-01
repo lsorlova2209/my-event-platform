@@ -2036,7 +2036,8 @@ function TournamentDetail({ tournament, user, onBack }) {
   }, {})
 
   const surnameQ = filterSurname.trim().toLowerCase()
-  const clubQ = filterClub.trim().toLowerCase()
+  const clubOptions = [...new Set(athletes.map(a => (a.club_name || "").trim()).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, "ru"))
   const categoryOptions = Object.values(bracketGroups)
     .map(g => ({
       key: `${g.discipline}|${g.gender}|${g.category_name}`,
@@ -2050,9 +2051,8 @@ function TournamentDetail({ tournament, user, onBack }) {
       const surname = name.split(/\s+/)[0] || ""
       if (!surname.includes(surnameQ) && !name.includes(surnameQ)) return false
     }
-    if (clubQ) {
-      const club = (a.club_name || "").toLowerCase()
-      if (!club.includes(clubQ)) return false
+    if (filterClub) {
+      if ((a.club_name || "").trim() !== filterClub) return false
     }
     if (filterCategory) {
       const key = `${a.discipline}|${a.gender}|${drawCategoryName(a)}`
@@ -2069,7 +2069,7 @@ function TournamentDetail({ tournament, user, onBack }) {
     return groups
   }, {})
 
-  const filtersActive = Boolean(surnameQ || clubQ || filterCategory)
+  const filtersActive = Boolean(surnameQ || filterClub || filterCategory)
   const toggleSearch = (key) => setSearchOpen(s => ({ ...s, [key]: !s[key] }))
   const clearFilters = () => {
     setFilterSurname("")
@@ -2292,8 +2292,8 @@ function TournamentDetail({ tournament, user, onBack }) {
                   onClick={() => toggleSearch("club")}
                   style={{
                     ...btnOutline, padding: "8px 14px", fontSize: "13px",
-                    background: searchOpen.club || clubQ ? "#1A56A0" : "transparent",
-                    color: searchOpen.club || clubQ ? "#fff" : "#1A56A0",
+                    background: searchOpen.club || filterClub ? "#1A56A0" : "transparent",
+                    color: searchOpen.club || filterClub ? "#fff" : "#1A56A0",
                     borderColor: "#1A56A0",
                   }}
                 >
@@ -2329,14 +2329,17 @@ function TournamentDetail({ tournament, user, onBack }) {
               {searchOpen.club && (
                 <div style={{ marginBottom: "10px" }}>
                   <label style={labelStyle}>Команда / клуб</label>
-                  <input
-                    type="text"
+                  <select
                     value={filterClub}
                     onChange={e => setFilterClub(e.target.value)}
-                    placeholder="Начните вводить название команды…"
                     style={inputStyle}
                     autoFocus
-                  />
+                  >
+                    <option value="">Все команды</option>
+                    {clubOptions.map(name => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
                 </div>
               )}
               {searchOpen.category && (
