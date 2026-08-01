@@ -46,6 +46,27 @@ const successBox = {
   padding: "12px", borderRadius: "8px", marginBottom: "16px", fontSize: "14px"
 }
 
+const COMPETITION_LEVELS = [
+  { value: "municipal", label: "Муниципальные" },
+  { value: "intermunicipal", label: "Межмуниципальные" },
+  { value: "regional", label: "Региональные" },
+  { value: "interregional", label: "Межрегиональные" },
+  { value: "national", label: "Всероссийские" },
+  { value: "international", label: "Международные" },
+]
+const COMPETITION_LEVEL_LABELS = Object.fromEntries(COMPETITION_LEVELS.map(l => [l.value, l.label]))
+// Старые club/region + региональные и выше — в скобках регион, иначе клуб
+const REGION_ORG_LEVELS = new Set(["region", "regional", "interregional", "national", "international"])
+function usesRegionOrg(level) {
+  return REGION_ORG_LEVELS.has(level || "municipal")
+}
+function competitionLevelLabel(level) {
+  if (!level) return COMPETITION_LEVEL_LABELS.municipal
+  if (level === "club") return "Муниципальные"
+  if (level === "region") return "Региональные"
+  return COMPETITION_LEVEL_LABELS[level] || level
+}
+
 function todayISO() {
   const d = new Date()
   const y = d.getFullYear()
@@ -293,7 +314,7 @@ function PublicHomePage({ onLoginClick, onRegisterClick, onTournamentClick }) {
                       display: "inline-block", fontSize: "14px", padding: "6px 12px",
                       borderRadius: "6px", background: "rgba(47,111,191,0.22)", color: "#9ec0ef",
                     }}>
-                      {t.competition_level === "region" ? "Региональный+" : "Городской / клубный"}
+                      {competitionLevelLabel(t.competition_level)}
                     </span>
                   </div>
                   <div style={{
@@ -521,7 +542,7 @@ function AdminPanel({ user, onLogout }) {
   const [location, setLocation] = useState("")
   const [eventDate, setEventDate] = useState("")
   const [closesDate, setClosesDate] = useState("")
-  const [competitionLevel, setCompetitionLevel] = useState("club")
+  const [competitionLevel, setCompetitionLevel] = useState("municipal")
   const [chiefJudge, setChiefJudge] = useState("")
   const [chiefSecretary, setChiefSecretary] = useState("")
   const [error, setError] = useState("")
@@ -590,7 +611,7 @@ function AdminPanel({ user, onLogout }) {
         chief_judge: chiefJudge || null,
         chief_secretary: chiefSecretary || null,
       }, { headers: { Authorization: `Bearer ${user.token}` } })
-      setName(""); setLocation(""); setEventDate(""); setClosesDate(""); setCompetitionLevel("club")
+      setName(""); setLocation(""); setEventDate(""); setClosesDate(""); setCompetitionLevel("municipal")
       setChiefJudge(""); setChiefSecretary("")
       setShowForm(false); setError(""); loadTournaments()
     } catch { setError("Ошибка при создании") }
@@ -810,18 +831,14 @@ const DRAW_SYSTEM_LABELS = {
   single_elimination_repechage: "Олимпийская с утешительной сеткой",
   kata_order: "Порядок выступлений"
 }
-const COMPETITION_LEVELS = [
-  { value: "club", label: "Городской / клубный — в скобках клуб" },
-  { value: "region", label: "Региональный и выше — в скобках регион" },
-]
 /** Пустой бокс №|ФИО — как на протоколе после соединителя, пока нет победителя. */
 function emptyBracketBox() {
   return { seed: "", name: "", text: " " }
 }
-function bracketParticipantParts(p, competitionLevel = "club") {
+function bracketParticipantParts(p, competitionLevel = "municipal") {
   if (!p) return emptyBracketBox()
   const seedPart = p.seed != null && p.seed !== "" ? String(p.seed) : ""
-  const org = competitionLevel === "region"
+  const org = usesRegionOrg(competitionLevel)
     ? (p.region || p.club_name || "")
     : (p.club_name || p.region || "")
   const orgPart = org ? ` (${org})` : ""
@@ -932,7 +949,7 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
       .localeCompare(categoryLabel(b.discipline, b.gender, b.category_name), "ru")
   )
 
-  const showRegion = tournament.competition_level === "region"
+  const showRegion = usesRegionOrg(tournament.competition_level)
 
   return (
     <div style={{ minHeight: "100vh", background: "#0b0d10", fontFamily: "var(--font-body)", color: "#f4f5f7" }}>
@@ -994,7 +1011,7 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
               display: "inline-block", fontSize: "13px", padding: "6px 12px",
               borderRadius: "6px", background: "rgba(47,111,191,0.22)", color: "#9ec0ef",
             }}>
-              {tournament.competition_level === "region" ? "Региональный+" : "Городской / клубный"}
+              {competitionLevelLabel(tournament.competition_level)}
             </span>
             {!loading && (
               <span style={{ color: "rgba(244,245,247,0.55)", fontSize: "14px" }}>
@@ -2038,7 +2055,7 @@ function TournamentDetail({ tournament, user, onBack }) {
                   <div key={label} style={{ marginBottom: "24px" }}>
                     <div style={{ fontWeight: "bold", color: "#1A56A0", marginBottom: "8px" }}>{label}</div>
                     <KumiteBracket grant={{ tournament_id: tournament.id }} user={user} participants={group.athletes} bouts={bouts}
-                      competitionLevel={tournament.competition_level || "club"}
+                      competitionLevel={tournament.competition_level || "municipal"}
                       onChanged={() => { loadAthletes(); loadBouts() }} />
                   </div>
                 )
@@ -2545,7 +2562,7 @@ function SecretaryTable({ user, grant, tournament, onBack }) {
             user={user}
             participants={participants}
             bouts={bouts}
-            competitionLevel={tournament?.competition_level || "club"}
+            competitionLevel={tournament?.competition_level || "municipal"}
             onChanged={async () => {
               const [athletesResponse, boutsResponse] = await Promise.all([
                 axios.get(`${API}/api/v1/tournaments/${grant.tournament_id}/athletes`),
@@ -2991,7 +3008,7 @@ function BracketSvgView({ layout, interactive, onOpenMatch, canEditSeeds, displa
   )
 }
 
-function KumiteBracket({ grant, user, participants, bouts, onChanged, competitionLevel = "club" }) {
+function KumiteBracket({ grant, user, participants, bouts, onChanged, competitionLevel = "municipal" }) {
   const [activeMatch, setActiveMatch] = useState(null)
   const [seedBusy, setSeedBusy] = useState(false)
   const canEditSeeds = user?.role === "admin" || user?.role === "owner"

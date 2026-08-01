@@ -72,7 +72,7 @@ class TournamentCreate(BaseModel):
     event_date: date
     registration_closes_at: Optional[date] = None
     admin_user_id: str
-    competition_level: Optional[str] = "club"
+    competition_level: Optional[str] = "municipal"
     chief_judge: Optional[str] = None
     chief_secretary: Optional[str] = None
 
@@ -171,7 +171,7 @@ class DrawRequest(BaseModel):
 def apply_schema_patches():
     with engine.begin() as conn:
         conn.execute(text(
-            "ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS competition_level VARCHAR DEFAULT 'club' NOT NULL"
+            "ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS competition_level VARCHAR DEFAULT 'municipal' NOT NULL"
         ))
         conn.execute(text(
             "ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS chief_judge VARCHAR"
@@ -423,7 +423,7 @@ def create_tournament(data: TournamentCreate, current_user=Depends(get_current_u
         event_date=data.event_date,
         registration_closes_at=data.registration_closes_at,
         admin_user_id=data.admin_user_id,
-        competition_level=data.competition_level or "club",
+        competition_level=data.competition_level or "municipal",
         chief_judge=(data.chief_judge or "").strip() or None,
         chief_secretary=(data.chief_secretary or "").strip() or None,
         status="draft"
@@ -438,7 +438,7 @@ def create_tournament(data: TournamentCreate, current_user=Depends(get_current_u
         "location": tournament.location,
         "event_date": str(tournament.event_date),
         "status": tournament.status,
-        "competition_level": tournament.competition_level or "club",
+        "competition_level": tournament.competition_level or "municipal",
         "chief_judge": tournament.chief_judge,
         "chief_secretary": tournament.chief_secretary,
     }
@@ -454,7 +454,7 @@ def list_tournaments(db: Session = Depends(get_db)):
             "event_date": str(t.event_date),
             "registration_closes_at": str(t.registration_closes_at) if t.registration_closes_at else None,
             "status": t.status,
-            "competition_level": t.competition_level or "club",
+            "competition_level": t.competition_level or "municipal",
             "chief_judge": t.chief_judge,
             "chief_secretary": t.chief_secretary,
         }
@@ -482,7 +482,7 @@ def update_tournament(tournament_id: str, data: TournamentUpdate, current_user=D
         "location": tournament.location,
         "event_date": str(tournament.event_date),
         "status": tournament.status,
-        "competition_level": tournament.competition_level or "club",
+        "competition_level": tournament.competition_level or "municipal",
         "chief_judge": tournament.chief_judge,
         "chief_secretary": tournament.chief_secretary,
     }
@@ -1421,7 +1421,11 @@ def _assemble_tournament_documents(tournament_id, db):
         return f"{athlete.last_name} {athlete.first_name} {athlete.middle_name or ''}".strip()
 
     def doc_label(reg, athlete):
-        org = region_by_club_name.get(athlete.club_name) if (tournament.competition_level or "club") == "region" else athlete.club_name
+        level = tournament.competition_level or "municipal"
+        use_region = level in (
+            "region", "regional", "interregional", "national", "international",
+        )
+        org = region_by_club_name.get(athlete.club_name) if use_region else athlete.club_name
         if not org:
             org = athlete.club_name or region_by_club_name.get(athlete.club_name)
         suffix = f" ({org})" if org else ""
@@ -1593,7 +1597,7 @@ def _assemble_tournament_documents(tournament_id, db):
             "discipline": discipline,
             "gender": gender,
             "category_name": category_name,
-            "competition_level": tournament.competition_level or "club",
+            "competition_level": tournament.competition_level or "municipal",
             "placements": placements,
             "progress": progress,
             "participants": participants_payload,
@@ -1618,7 +1622,7 @@ def _assemble_tournament_documents(tournament_id, db):
         "event_date": str(tournament.event_date),
         "registration_closes_at": str(tournament.registration_closes_at) if tournament.registration_closes_at else None,
         "status": tournament.status,
-        "competition_level": tournament.competition_level or "club",
+        "competition_level": tournament.competition_level or "municipal",
         "chief_judge": tournament.chief_judge,
         "chief_secretary": tournament.chief_secretary,
     }

@@ -139,16 +139,26 @@ def _short_name(p):
 
 
 def _competition_level(tournament):
-    return (tournament or {}).get("competition_level") or "club"
+    return (tournament or {}).get("competition_level") or "municipal"
 
 
-def _participant_org(p, competition_level="club"):
-    if competition_level == "region":
+# Регион в скобках: региональные и выше (+ старое значение region)
+_REGION_ORG_LEVELS = frozenset({
+    "region", "regional", "interregional", "national", "international",
+})
+
+
+def _uses_region_org(competition_level):
+    return (competition_level or "municipal") in _REGION_ORG_LEVELS
+
+
+def _participant_org(p, competition_level="municipal"):
+    if _uses_region_org(competition_level):
         return (p.get("region") or p.get("club_name") or "").strip()
     return (p.get("club_name") or p.get("region") or "").strip()
 
 
-def _participant_label(p, competition_level="club", short=False):
+def _participant_label(p, competition_level="municipal", short=False):
     if not p:
         return {"seed": "", "name": "", "text": ""}
     base_name = _short_name(p) if short else (p.get("full_name") or _short_name(p))
@@ -1000,8 +1010,8 @@ def _kata_rounds_table(cat):
     rounds = list(_KATA_ROUND_ORDER)
     score_by_reg_round = {(s["registration_id"], s["round_label"]): s for s in (cat.get("kata_scores") or [])}
     place_by_reg = {p["registration_id"]: p["place"] for p in cat.get("placements") or [] if p.get("registration_id")}
-    competition_level = cat.get("competition_level") or "club"
-    org_label = "Регион" if competition_level == "region" else "Команда"
+    competition_level = cat.get("competition_level") or "municipal"
+    org_label = "Регион" if _uses_region_org(competition_level) else "Команда"
     cols_per_round = 7  # Ката + 5 оценок + Итог
 
     participants = sorted(
@@ -1095,7 +1105,7 @@ def _bracket_protocol_header(styles, tournament, cat, compact=False):
     )
 
 
-def _full_name_with_org(p, competition_level="club"):
+def _full_name_with_org(p, competition_level="municipal"):
     if not p:
         return ""
     fio = p.get("full_name") or _short_name(p)
@@ -1105,8 +1115,8 @@ def _full_name_with_org(p, competition_level="club"):
 
 def _official_bracket_results_table(cat, avail_width=None, compact=False):
     """Таблица «Результаты»: Место | ФИО (команда) — компактно слева, не на всю ширину."""
-    competition_level = cat.get("competition_level") or "club"
-    org_label = "Регион" if competition_level == "region" else "Команда"
+    competition_level = cat.get("competition_level") or "municipal"
+    org_label = "Регион" if _uses_region_org(competition_level) else "Команда"
     by_place = {p["place"]: p for p in cat.get("placements") or []}
 
     rows = [
@@ -1848,7 +1858,7 @@ class _OfficialBracketDiagram(Flowable):
     Ячейки/шрифты/отступы логически уменьшаются, чтобы сетка влезла в avail_*.
     """
 
-    def __init__(self, bracket_data, avail_width, avail_height, competition_level="club", font_name=None):
+    def __init__(self, bracket_data, avail_width, avail_height, competition_level="municipal", font_name=None):
         super().__init__()
         self.competition_level = competition_level
         self.font_name = font_name or BRACKET_FONT
@@ -2027,7 +2037,7 @@ def _build_bracket_diagram(cat, avail_width, avail_height):
         return None
     if not data.get("round_robin") and not data.get("rounds_per_group"):
         return None
-    level = cat.get("competition_level") or "club"
+    level = cat.get("competition_level") or "municipal"
     return _OfficialBracketDiagram(data, avail_width, avail_height, level)
 
 
@@ -2201,7 +2211,7 @@ def build_participants_list_pdf(tournament, categories):
     story.append(Spacer(1, 0.4 * cm))
 
     competition_level = _competition_level(tournament)
-    org_header = "Регион" if competition_level == "region" else "Клуб"
+    org_header = "Регион" if _uses_region_org(competition_level) else "Клуб"
 
     cats = [c for c in (categories or []) if c.get("participants")]
     cats = sorted(
