@@ -163,10 +163,10 @@ def _set_headers(ws) -> None:
 
     headers = {
         1: "№",
-        2: "Фамилия",
-        3: "Имя",
-        4: "Отчество",
-        5: "пол",
+        2: "пол",
+        3: "Фамилия",
+        4: "Имя",
+        5: "Отчество",
         6: "дата\nрождения",
         7: "полных лет",
         8: "вес",
@@ -229,7 +229,7 @@ def _reset_validations(wb) -> None:
         type="list", formula1='"м,ж"', allow_blank=True, showDropDown=False,
         showErrorMessage=True, errorTitle="Пол", error="Выберите м или ж",
     )
-    dv_gender.add(f"E{DATA_START}:E{DATA_END}")
+    dv_gender.add(f"B{DATA_START}:B{DATA_END}")
 
     dv_kumite = DataValidation(
         type="list", formula1=f"={kumite_ref}", allow_blank=True, showDropDown=False,

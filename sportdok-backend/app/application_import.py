@@ -17,13 +17,19 @@ from openpyxl.styles import PatternFill
 SHEET_NAME = "Регистрация"
 DATA_START_ROW = 8
 
-# Раскладка A (новый шаблон): A=№ B=Фамилия … E=пол F=ДР … I–L=кумитэ M–O=ката P=квалиф Q=тренер
+# Раскладка A (актуальный шаблон): A=№ B=пол C=Фамилия D=Имя E=Отчество F=ДР …
 LAYOUT_A = {
+    "last": 3, "first": 4, "middle": 5, "gender": 2, "birth": 6, "age": 7, "weight": 8,
+    "kumite": (9, 10, 11, 12), "kata": (13, 14, 15), "rank": 16, "trainer": 17,
+    "club_cell": "G4",
+}
+# Раскладка A старая (№, Фамилия, Имя, Отчество, пол): до смены порядка колонок
+LAYOUT_A_FIO_FIRST = {
     "last": 2, "first": 3, "middle": 4, "gender": 5, "birth": 6, "age": 7, "weight": 8,
     "kumite": (9, 10, 11, 12), "kata": (13, 14, 15), "rank": 16, "trainer": 17,
     "club_cell": "G4",
 }
-# Раскладка B (старые заявки): B=№ C=Фамилия … F=пол …
+# Раскладка B (старые заявки со столбца B): B=№ C=Фамилия … F=пол …
 LAYOUT_B = {
     "last": 3, "first": 4, "middle": 5, "gender": 6, "birth": 7, "age": 8, "weight": 9,
     "kumite": (10, 11, 12, 13), "kata": (14, 15, 16), "rank": 17, "trainer": 18,
@@ -174,21 +180,24 @@ def _parse_weight(value: Any) -> Optional[float]:
 
 
 def _detect_layout(ws) -> dict:
-    """Новый шаблон начинается с A; старые заявки — с B."""
+    """Определяем порядок колонок по заголовкам строки 6."""
     a6 = _cell_str(ws.cell(6, 1).value)
-    b6 = _cell_str(ws.cell(6, 2).value)
-    a1 = _cell_str(ws.cell(1, 1).value)
-    if a6.startswith("№") or (a1 and "ЗАЯВКА" in a1.upper()):
-        # дополнительная проверка: в A8 номер, в B8 не фамилия-заголовок
-        return LAYOUT_A
-    if b6.startswith("№"):
+    b6 = _cell_str(ws.cell(6, 2).value).lower()
+    c6 = _cell_str(ws.cell(6, 3).value).lower()
+
+    if b6.startswith("№") or b6 == "n":
         return LAYOUT_B
-    # по данным: если A8 — число, а C8 — текст (старый) vs B8 — текст (новый)
+    if b6.startswith("пол") and (c6.startswith("фам") or "фам" in c6):
+        return LAYOUT_A
+    if b6.startswith("фам") or "фам" in b6:
+        return LAYOUT_A_FIO_FIRST
+    if a6.startswith("№"):
+        # по умолчанию актуальный шаблон
+        return LAYOUT_A
+
     a8 = ws.cell(8, 1).value
     b8 = ws.cell(8, 2).value
     c8 = ws.cell(8, 3).value
-    if isinstance(a8, (int, float)) and isinstance(b8, str) and b8.strip():
-        return LAYOUT_A
     if (a8 is None or a8 == "") and isinstance(b8, (int, float)) and isinstance(c8, str):
         return LAYOUT_B
     return LAYOUT_A
