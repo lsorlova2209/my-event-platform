@@ -742,7 +742,7 @@ function AdminPanel({ user, onLogout }) {
                   </div>
                   <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
                     <span style={{ padding: "4px 12px", background: "#f3f2ee", borderRadius: "6px", fontSize: "13px", color: "#4A4A48" }}>{t.status}</span>
-                    <button onClick={(e) => handleDeleteTournament(t.id, e)} style={{ ...btnDanger, padding: "6px 12px", fontSize: "13px" }}>✗ Удалить</button>
+                    <button onClick={(e) => handleDeleteTournament(t.id, e)} style={{ ...btnDanger, padding: "4px 10px", fontSize: "12px", fontWeight: "normal" }}>Удалить</button>
                   </div>
                 </div>
               ))}
