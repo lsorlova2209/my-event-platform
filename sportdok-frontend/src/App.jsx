@@ -1887,6 +1887,10 @@ function TournamentDetail({ tournament, user, onBack }) {
   const [chiefSecretary, setChiefSecretary] = useState(tournament.chief_secretary || "")
   const [officialsMsg, setOfficialsMsg] = useState("")
   const [officialsSaving, setOfficialsSaving] = useState(false)
+  const [filterSurname, setFilterSurname] = useState("")
+  const [filterClub, setFilterClub] = useState("")
+  const [filterCategory, setFilterCategory] = useState("")
+  const [searchOpen, setSearchOpen] = useState({ surname: false, club: false, category: false })
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
@@ -2030,6 +2034,49 @@ function TournamentDetail({ tournament, user, onBack }) {
     groups[key].athletes.push(a)
     return groups
   }, {})
+
+  const surnameQ = filterSurname.trim().toLowerCase()
+  const clubQ = filterClub.trim().toLowerCase()
+  const categoryOptions = Object.values(bracketGroups)
+    .map(g => ({
+      key: `${g.discipline}|${g.gender}|${g.category_name}`,
+      label: categoryLabel(g.discipline, g.gender, g.category_name),
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label, "ru"))
+
+  const filteredAthletes = athletes.filter(a => {
+    if (surnameQ) {
+      const name = (a.full_name || "").toLowerCase()
+      const surname = name.split(/\s+/)[0] || ""
+      if (!surname.includes(surnameQ) && !name.includes(surnameQ)) return false
+    }
+    if (clubQ) {
+      const club = (a.club_name || "").toLowerCase()
+      if (!club.includes(clubQ)) return false
+    }
+    if (filterCategory) {
+      const key = `${a.discipline}|${a.gender}|${drawCategoryName(a)}`
+      if (key !== filterCategory) return false
+    }
+    return true
+  })
+
+  const filteredBracketGroups = filteredAthletes.reduce((groups, a) => {
+    const categoryName = drawCategoryName(a)
+    const key = `${a.discipline}|${a.gender}|${categoryName}`
+    if (!groups[key]) groups[key] = { discipline: a.discipline, gender: a.gender, category_name: categoryName, athletes: [] }
+    groups[key].athletes.push(a)
+    return groups
+  }, {})
+
+  const filtersActive = Boolean(surnameQ || clubQ || filterCategory)
+  const toggleSearch = (key) => setSearchOpen(s => ({ ...s, [key]: !s[key] }))
+  const clearFilters = () => {
+    setFilterSurname("")
+    setFilterClub("")
+    setFilterCategory("")
+    setSearchOpen({ surname: false, club: false, category: false })
+  }
 
   const handleRunDraw = async (force = false) => {
     if (force && !window.confirm("Пережеребить все категории заново? Незавершённые бои будут удалены. Категории с уже введёнными результатами не изменятся.")) return
@@ -2216,9 +2263,106 @@ function TournamentDetail({ tournament, user, onBack }) {
         </div>
 
         <div style={card}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px", marginBottom: "14px" }}>
+            <div style={{ fontWeight: "bold", color: "#1A56A0", fontSize: "16px" }}>
+              Участники{athletes.length > 0 ? ` (${filtersActive ? `${filteredAthletes.length} из ${athletes.length}` : athletes.length})` : ""}
+            </div>
+            {filtersActive && (
+              <button type="button" onClick={clearFilters} style={{ ...btnOutline, padding: "6px 12px", fontSize: "13px" }}>Сбросить</button>
+            )}
+          </div>
+
+          {athletes.length > 0 && (
+            <div style={{ marginBottom: "16px" }}>
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "10px" }}>
+                <button
+                  type="button"
+                  onClick={() => toggleSearch("surname")}
+                  style={{
+                    ...btnOutline, padding: "8px 14px", fontSize: "13px",
+                    background: searchOpen.surname || surnameQ ? "#1A56A0" : "transparent",
+                    color: searchOpen.surname || surnameQ ? "#fff" : "#1A56A0",
+                    borderColor: "#1A56A0",
+                  }}
+                >
+                  Поиск по фамилии
+                </button>
+                <button
+                  type="button"
+                  onClick={() => toggleSearch("club")}
+                  style={{
+                    ...btnOutline, padding: "8px 14px", fontSize: "13px",
+                    background: searchOpen.club || clubQ ? "#1A56A0" : "transparent",
+                    color: searchOpen.club || clubQ ? "#fff" : "#1A56A0",
+                    borderColor: "#1A56A0",
+                  }}
+                >
+                  Поиск по команде
+                </button>
+                <button
+                  type="button"
+                  onClick={() => toggleSearch("category")}
+                  style={{
+                    ...btnOutline, padding: "8px 14px", fontSize: "13px",
+                    background: searchOpen.category || filterCategory ? "#1A56A0" : "transparent",
+                    color: searchOpen.category || filterCategory ? "#fff" : "#1A56A0",
+                    borderColor: "#1A56A0",
+                  }}
+                >
+                  Поиск по категории
+                </button>
+              </div>
+
+              {searchOpen.surname && (
+                <div style={{ marginBottom: "10px" }}>
+                  <label style={labelStyle}>Фамилия</label>
+                  <input
+                    type="text"
+                    value={filterSurname}
+                    onChange={e => setFilterSurname(e.target.value)}
+                    placeholder="Начните вводить фамилию…"
+                    style={inputStyle}
+                    autoFocus
+                  />
+                </div>
+              )}
+              {searchOpen.club && (
+                <div style={{ marginBottom: "10px" }}>
+                  <label style={labelStyle}>Команда / клуб</label>
+                  <input
+                    type="text"
+                    value={filterClub}
+                    onChange={e => setFilterClub(e.target.value)}
+                    placeholder="Начните вводить название команды…"
+                    style={inputStyle}
+                    autoFocus
+                  />
+                </div>
+              )}
+              {searchOpen.category && (
+                <div style={{ marginBottom: "10px" }}>
+                  <label style={labelStyle}>Категория</label>
+                  <select
+                    value={filterCategory}
+                    onChange={e => setFilterCategory(e.target.value)}
+                    style={inputStyle}
+                    autoFocus
+                  >
+                    <option value="">Все категории</option>
+                    {categoryOptions.map(opt => (
+                      <option key={opt.key} value={opt.key}>{opt.label}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+          )}
+
           {Object.keys(bracketGroups).length === 0 ? (
             <p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Участников пока нет. Добавьте первого!</p>
-          ) : Object.values(bracketGroups).map(group => {
+          ) : Object.keys(filteredBracketGroups).length === 0 ? (
+            <p style={{ color: "#4A4A48", textAlign: "center", padding: "24px 0" }}>Ничего не найдено. Измените или сбросьте фильтры.</p>
+          ) : Object.values(filteredBracketGroups).map(group => {
             const label = categoryLabel(group.discipline, group.gender, group.category_name)
             return (
               <div key={label} style={{ marginBottom: "12px" }}>
