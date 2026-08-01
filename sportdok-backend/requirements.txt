@@ -11,3 +11,4 @@ redis==5.0.4
 openpyxl==3.1.2
 python-dotenv==1.0.1
 reportlab==5.0.0
+python-multipart==0.0.9

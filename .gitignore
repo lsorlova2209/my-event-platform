@@ -27,3 +27,6 @@ Thumbs.db
 sportdok-backend/_test*.pdf
 sportdok-backend/_test_thing.py
 sportdok-backend/_summary_sample_dump.txt
+
+# Uploaded tournament covers
+sportdok-backend/uploads/

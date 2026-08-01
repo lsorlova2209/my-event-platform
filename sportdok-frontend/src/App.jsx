@@ -4,6 +4,12 @@ import axios from "axios"
 // Пустая строка = тот же хост (через nginx /api). Локально: VITE_API_URL=http://127.0.0.1:8000
 const API = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000"
 
+function mediaUrl(path) {
+  if (!path) return ""
+  if (/^https?:\/\//i.test(path)) return path
+  return `${API}${path}`
+}
+
 const inputStyle = {
   width: "100%", padding: "12px",
   border: "1px solid #D3D1C7", borderRadius: "8px",
@@ -294,6 +300,15 @@ function PublicHomePage({ onLoginClick, onRegisterClick, onTournamentClick }) {
                     fontFamily: "inherit",
                   }}
                 >
+                  {t.cover_image ? (
+                    <div style={{ height: "160px", overflow: "hidden", background: "#151820" }}>
+                      <img
+                        src={mediaUrl(t.cover_image)}
+                        alt=""
+                        style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                      />
+                    </div>
+                  ) : null}
                   <div style={{ padding: "22px 20px 16px" }}>
                     <div style={{
                       fontSize: "15px", color: "#9ec0ef", fontWeight: 700,
@@ -546,6 +561,9 @@ function AdminPanel({ user, onLogout }) {
   const [competitionLevel, setCompetitionLevel] = useState("municipal")
   const [chiefJudge, setChiefJudge] = useState("")
   const [chiefSecretary, setChiefSecretary] = useState("")
+  const [coverFile, setCoverFile] = useState(null)
+  const [coverPreview, setCoverPreview] = useState("")
+  const coverInputRef = useRef(null)
   const [error, setError] = useState("")
   const [secretaries, setSecretaries] = useState([])
   const [showSecretaryForm, setShowSecretaryForm] = useState(false)
@@ -556,7 +574,23 @@ function AdminPanel({ user, onLogout }) {
     setEditingId(null)
     setName(""); setLocation(""); setEventDate(""); setClosesDate("")
     setCompetitionLevel("municipal"); setChiefJudge(""); setChiefSecretary("")
+    setCoverFile(null); setCoverPreview("")
     setError(""); setShowForm(false)
+    if (coverInputRef.current) coverInputRef.current.value = ""
+  }
+
+  const handleCoverPick = (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (!/^image\/(jpeg|png|webp)$/i.test(file.type)) {
+      setError("Нужен файл JPG, PNG или WebP"); return
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      setError("Файл больше 8 МБ"); return
+    }
+    setError("")
+    setCoverFile(file)
+    setCoverPreview(URL.createObjectURL(file))
   }
 
   const loadTournaments = async () => {
@@ -612,6 +646,7 @@ function AdminPanel({ user, onLogout }) {
     if (!name || !eventDate) { setError("Заполните название и дату"); return }
     const headers = { Authorization: `Bearer ${user.token}` }
     try {
+      let tournamentId = editingId
       if (editingId) {
         const r = await axios.patch(`${API}/api/v1/tournaments/${editingId}`, {
           name, location, event_date: eventDate,
@@ -622,7 +657,7 @@ function AdminPanel({ user, onLogout }) {
         }, { headers })
         if (r.data.success === false) { setError(r.data.message || "Ошибка при сохранении"); return }
       } else {
-        await axios.post(`${API}/api/v1/tournaments/`, {
+        const r = await axios.post(`${API}/api/v1/tournaments/`, {
           name, location, event_date: eventDate,
           registration_closes_at: closesDate || null,
           admin_user_id: user.user_id,
@@ -630,6 +665,16 @@ function AdminPanel({ user, onLogout }) {
           chief_judge: chiefJudge || null,
           chief_secretary: chiefSecretary || null,
         }, { headers })
+        if (r.data.success === false) { setError(r.data.message || "Ошибка при создании"); return }
+        tournamentId = r.data.id
+      }
+      if (coverFile && tournamentId) {
+        const form = new FormData()
+        form.append("file", coverFile)
+        const up = await axios.post(`${API}/api/v1/tournaments/${tournamentId}/cover`, form, {
+          headers: { Authorization: `Bearer ${user.token}` },
+        })
+        if (up.data.success === false) { setError(up.data.message || "Ошибка загрузки фото"); return }
       }
       resetTournamentForm(); loadTournaments()
     } catch { setError(editingId ? "Ошибка при сохранении" : "Ошибка при создании") }
@@ -649,6 +694,9 @@ function AdminPanel({ user, onLogout }) {
     )
     setChiefJudge(t.chief_judge || "")
     setChiefSecretary(t.chief_secretary || "")
+    setCoverFile(null)
+    setCoverPreview(t.cover_image ? mediaUrl(t.cover_image) : "")
+    if (coverInputRef.current) coverInputRef.current.value = ""
     setError("")
     setShowForm(true)
     window.scrollTo({ top: 0, behavior: "smooth" })
@@ -759,6 +807,32 @@ function AdminPanel({ user, onLogout }) {
                       <label style={labelStyle}>Главный секретарь</label>
                       <input type="text" value={chiefSecretary} onChange={e => setChiefSecretary(e.target.value)} placeholder="Петров П.П., (ВК, СПб)" style={inputStyle} />
                     </div>
+                  </div>
+                  <div style={{ marginBottom: "16px" }}>
+                    <label style={labelStyle}>Фото для карточки на главной</label>
+                    <input
+                      ref={coverInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      onChange={handleCoverPick}
+                      style={{ display: "none" }}
+                    />
+                    <div style={{ display: "flex", gap: "12px", alignItems: "center", flexWrap: "wrap" }}>
+                      <button type="button" onClick={() => coverInputRef.current?.click()} style={btnOutline}>
+                        {coverPreview ? "Сменить фото" : "Добавить фото"}
+                      </button>
+                      {coverPreview && (
+                        <img
+                          src={coverPreview}
+                          alt=""
+                          style={{
+                            width: "160px", height: "100px", objectFit: "cover",
+                            borderRadius: "8px", border: "1px solid #D3D1C7",
+                          }}
+                        />
+                      )}
+                    </div>
+                    <div style={{ color: "#4A4A48", fontSize: "12px", marginTop: "6px" }}>JPG, PNG или WebP, до 8 МБ</div>
                   </div>
                   {error && <div style={errorBox}>{error}</div>}
                   <button onClick={handleSaveTournament} style={btnGreen}>

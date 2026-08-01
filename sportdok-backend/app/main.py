@@ -1,14 +1,17 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from datetime import date, datetime
 from typing import Optional, List
 from io import BytesIO
+from pathlib import Path
 import os
 import secrets
+
 from app.database import get_db, engine, Base
 from app.models.user import User
 from app.models.tournament import Tournament
@@ -46,7 +49,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+UPLOAD_ROOT = Path(os.getenv("UPLOAD_DIR", Path(__file__).resolve().parents[1] / "uploads"))
+TOURNAMENT_UPLOAD_DIR = UPLOAD_ROOT / "tournaments"
+TOURNAMENT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+ALLOWED_COVER_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
+MAX_COVER_BYTES = 8 * 1024 * 1024
+
+
+def tournament_public_dict(t: Tournament) -> dict:
+    return {
+        "id": str(t.id),
+        "name": t.name,
+        "location": t.location,
+        "event_date": str(t.event_date),
+        "registration_closes_at": str(t.registration_closes_at) if t.registration_closes_at else None,
+        "status": t.status,
+        "competition_level": t.competition_level or "municipal",
+        "chief_judge": t.chief_judge,
+        "chief_secretary": t.chief_secretary,
+        "cover_image": t.cover_image,
+    }
+
+
+def _unlink_cover(cover_image: Optional[str]) -> None:
+    if not cover_image or not cover_image.startswith("/uploads/tournaments/"):
+        return
+    path = UPLOAD_ROOT / cover_image.removeprefix("/uploads/")
+    try:
+        if path.is_file() and path.resolve().is_relative_to(TOURNAMENT_UPLOAD_DIR.resolve()):
+            path.unlink()
+    except OSError:
+        pass
+
+
 # ─── СХЕМЫ ────────────────────────────────────────────────────────────────────
+
 
 class LoginRequest(BaseModel):
     email: str
@@ -178,6 +219,9 @@ def apply_schema_patches():
         ))
         conn.execute(text(
             "ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS chief_secretary VARCHAR"
+        ))
+        conn.execute(text(
+            "ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS cover_image VARCHAR"
         ))
 
 @app.on_event("startup")
@@ -431,35 +475,12 @@ def create_tournament(data: TournamentCreate, current_user=Depends(get_current_u
     db.add(tournament)
     db.commit()
     db.refresh(tournament)
-    return {
-        "success": True,
-        "id": str(tournament.id),
-        "name": tournament.name,
-        "location": tournament.location,
-        "event_date": str(tournament.event_date),
-        "status": tournament.status,
-        "competition_level": tournament.competition_level or "municipal",
-        "chief_judge": tournament.chief_judge,
-        "chief_secretary": tournament.chief_secretary,
-    }
+    return {"success": True, **tournament_public_dict(tournament)}
 
 @app.get("/api/v1/tournaments/")
 def list_tournaments(db: Session = Depends(get_db)):
     tournaments = db.query(Tournament).order_by(Tournament.event_date.desc(), Tournament.created_at.desc()).all()
-    return [
-        {
-            "id": str(t.id),
-            "name": t.name,
-            "location": t.location,
-            "event_date": str(t.event_date),
-            "registration_closes_at": str(t.registration_closes_at) if t.registration_closes_at else None,
-            "status": t.status,
-            "competition_level": t.competition_level or "municipal",
-            "chief_judge": t.chief_judge,
-            "chief_secretary": t.chief_secretary,
-        }
-        for t in tournaments
-    ]
+    return [tournament_public_dict(t) for t in tournaments]
 
 
 @app.patch("/api/v1/tournaments/{tournament_id}")
@@ -475,17 +496,43 @@ def update_tournament(tournament_id: str, data: TournamentUpdate, current_user=D
         setattr(tournament, key, value)
     db.commit()
     db.refresh(tournament)
-    return {
-        "success": True,
-        "id": str(tournament.id),
-        "name": tournament.name,
-        "location": tournament.location,
-        "event_date": str(tournament.event_date),
-        "status": tournament.status,
-        "competition_level": tournament.competition_level or "municipal",
-        "chief_judge": tournament.chief_judge,
-        "chief_secretary": tournament.chief_secretary,
-    }
+    return {"success": True, **tournament_public_dict(tournament)}
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/cover")
+async def upload_tournament_cover(
+    tournament_id: str,
+    file: UploadFile = File(...),
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_roles(current_user, {"admin", "owner"})
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        return {"success": False, "message": "Турнир не найден"}
+
+    content_type = (file.content_type or "").split(";")[0].strip().lower()
+    ext = ALLOWED_COVER_TYPES.get(content_type)
+    if not ext:
+        return {"success": False, "message": "Нужен файл JPG, PNG или WebP"}
+
+    data = await file.read()
+    if not data:
+        return {"success": False, "message": "Пустой файл"}
+    if len(data) > MAX_COVER_BYTES:
+        return {"success": False, "message": "Файл больше 8 МБ"}
+
+    _unlink_cover(tournament.cover_image)
+    filename = f"{tournament.id}{ext}"
+    dest = TOURNAMENT_UPLOAD_DIR / filename
+    with dest.open("wb") as out:
+        out.write(data)
+
+    tournament.cover_image = f"/uploads/tournaments/{filename}"
+    db.commit()
+    db.refresh(tournament)
+    return {"success": True, **tournament_public_dict(tournament)}
+
 
 @app.delete("/api/v1/tournaments/{tournament_id}")
 def delete_tournament(tournament_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
@@ -494,9 +541,11 @@ def delete_tournament(tournament_id: str, current_user=Depends(get_current_user)
     if not tournament:
         return {"success": False, "message": "Турнир не найден"}
     name = tournament.name
+    cover = tournament.cover_image
     db.query(Registration).filter(Registration.tournament_id == tournament_id).delete()
     db.delete(tournament)
     db.commit()
+    _unlink_cover(cover)
     return {"success": True, "message": f"Турнир {name} удалён"}
 
 def draw_category_key(discipline, category_name):
@@ -1715,3 +1764,6 @@ def list_kata_types(group: Optional[str] = None, db: Session = Depends(get_db)):
         }
         for k in kata_types
     ]
+
+# Статика загруженных обложек турниров (после API-роутов)
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_ROOT)), name="uploads")
