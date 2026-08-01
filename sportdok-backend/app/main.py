@@ -22,6 +22,7 @@ from app.models.reference import WeightCategory, Rank, KataType
 from app.models.bout import Bout
 from app.models.kata_score import KataScore, KataSession
 from app.models.secretary_access import SecretaryAccess
+from app.models.competition_day import CompetitionDay
 from app.auth import hash_password, verify_password, create_token, get_current_user, get_optional_user, require_roles
 from app.draw import build_category_draw, subgroup_for_draw_number
 from app.kumite_protocol import determine_winner
@@ -31,6 +32,13 @@ from app.kata_registry import KATA_TYPES, KATA_STYLE_ORDER, kata_style
 from app.age_group import compute_age_group
 from app.notifications import send_email
 from app.application_import import parse_application_xlsx, preview_dict, fill_application_template
+from app.admission import (
+    KUMITE_DISCIPLINES,
+    default_weigh_status,
+    is_registration_draw_ready,
+    registration_readiness,
+    weigh_required,
+)
 
 Base.metadata.create_all(bind=engine)
 
@@ -212,6 +220,26 @@ class SeedSwapRequest(BaseModel):
 
 class DrawRequest(BaseModel):
     force: bool = False
+    competition_day_id: Optional[str] = None
+
+class CompetitionDayCreate(BaseModel):
+    date: date
+    label: Optional[str] = None
+    sort_order: Optional[int] = None
+
+class CompetitionDayUpdate(BaseModel):
+    date: Optional[date] = None
+    label: Optional[str] = None
+    sort_order: Optional[int] = None
+
+class AssignCompetitionDayRequest(BaseModel):
+    competition_day_id: Optional[str] = None  # null = снять привязку
+    discipline: Optional[str] = None
+    category_name: Optional[str] = None
+    gender: Optional[str] = None
+
+class WeighAdmitRequest(BaseModel):
+    weigh_in_kg: Optional[float] = None
 
 # ─── STARTUP ──────────────────────────────────────────────────────────────────
 
@@ -230,6 +258,35 @@ def apply_schema_patches():
         conn.execute(text(
             "ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS cover_image VARCHAR"
         ))
+        conn.execute(text(
+            "ALTER TABLE registrations ADD COLUMN IF NOT EXISTS mandate_status VARCHAR"
+        ))
+        conn.execute(text(
+            "ALTER TABLE registrations ADD COLUMN IF NOT EXISTS weigh_status VARCHAR"
+        ))
+        conn.execute(text(
+            "ALTER TABLE registrations ADD COLUMN IF NOT EXISTS weigh_in_kg NUMERIC"
+        ))
+        conn.execute(text(
+            "ALTER TABLE registrations ADD COLUMN IF NOT EXISTS competition_day_id UUID"
+        ))
+        # Миграция старого admission_status → mandate_status
+        conn.execute(text("""
+            UPDATE registrations
+            SET mandate_status = admission_status
+            WHERE mandate_status IS NULL AND admission_status IS NOT NULL
+        """))
+        # Безвесовые категории → not_required; весовые без статуса остаются NULL
+        conn.execute(text("""
+            UPDATE registrations
+            SET weigh_status = 'not_required'
+            WHERE weigh_status IS NULL AND (
+                discipline = 'kata'
+                OR lower(trim(coalesce(category_name, ''))) IN (
+                    'абсолютная категория', 'двоеборье', 'командные соревнования'
+                )
+            )
+        """))
 
 @app.on_event("startup")
 def create_admin():
@@ -550,10 +607,152 @@ def delete_tournament(tournament_id: str, current_user=Depends(get_current_user)
     name = tournament.name
     cover = tournament.cover_image
     db.query(Registration).filter(Registration.tournament_id == tournament_id).delete()
+    db.query(CompetitionDay).filter(CompetitionDay.tournament_id == tournament_id).delete()
     db.delete(tournament)
     db.commit()
     _unlink_cover(cover)
     return {"success": True, "message": f"Турнир {name} удалён"}
+
+
+# ─── ДНИ СОРЕВНОВАНИЙ ─────────────────────────────────────────────────────────
+
+@app.get("/api/v1/tournaments/{tournament_id}/competition-days")
+def list_competition_days(tournament_id: str, db: Session = Depends(get_db)):
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        return {"success": False, "message": "Турнир не найден"}
+    days = db.query(CompetitionDay).filter(
+        CompetitionDay.tournament_id == tournament_id
+    ).order_by(CompetitionDay.sort_order, CompetitionDay.date, CompetitionDay.id).all()
+    out = []
+    for day in days:
+        readiness = _draw_readiness_summary(db, tournament_id, str(day.id))
+        kumite = sorted(_kumite_disciplines_on_day(db, tournament_id, day.id))
+        count = db.query(Registration).filter(Registration.competition_day_id == day.id).count()
+        out.append({
+            **_competition_day_dict(day),
+            "registration_count": count,
+            "kumite_disciplines": kumite,
+            "readiness": readiness,
+        })
+    return out
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/competition-days")
+def create_competition_day(tournament_id: str, data: CompetitionDayCreate, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        return {"success": False, "message": "Турнир не найден"}
+    max_order = db.query(CompetitionDay).filter(CompetitionDay.tournament_id == tournament_id).count()
+    day = CompetitionDay(
+        tournament_id=tournament_id,
+        date=data.date,
+        label=data.label or f"День {max_order + 1}",
+        sort_order=data.sort_order if data.sort_order is not None else max_order,
+    )
+    db.add(day)
+    db.commit()
+    db.refresh(day)
+    return {"success": True, **_competition_day_dict(day)}
+
+
+@app.patch("/api/v1/tournaments/{tournament_id}/competition-days/{day_id}")
+def update_competition_day(tournament_id: str, day_id: str, data: CompetitionDayUpdate, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
+    day = db.query(CompetitionDay).filter(
+        CompetitionDay.id == day_id,
+        CompetitionDay.tournament_id == tournament_id,
+    ).first()
+    if not day:
+        return {"success": False, "message": "День не найден"}
+    if data.date is not None:
+        day.date = data.date
+    if data.label is not None:
+        day.label = data.label
+    if data.sort_order is not None:
+        day.sort_order = data.sort_order
+    db.commit()
+    db.refresh(day)
+    return {"success": True, **_competition_day_dict(day)}
+
+
+@app.delete("/api/v1/tournaments/{tournament_id}/competition-days/{day_id}")
+def delete_competition_day(tournament_id: str, day_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
+    day = db.query(CompetitionDay).filter(
+        CompetitionDay.id == day_id,
+        CompetitionDay.tournament_id == tournament_id,
+    ).first()
+    if not day:
+        return {"success": False, "message": "День не найден"}
+    db.query(Registration).filter(Registration.competition_day_id == day.id).update(
+        {Registration.competition_day_id: None}, synchronize_session=False
+    )
+    db.delete(day)
+    db.commit()
+    return {"success": True}
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/competition-days/assign")
+def assign_competition_day(tournament_id: str, data: AssignCompetitionDayRequest, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Массово привязать заявки (по дисциплине/категории/полу) к дню."""
+    require_roles(current_user, {"admin", "owner"})
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        return {"success": False, "message": "Турнир не найден"}
+
+    day = None
+    if data.competition_day_id:
+        day = db.query(CompetitionDay).filter(
+            CompetitionDay.id == data.competition_day_id,
+            CompetitionDay.tournament_id == tournament_id,
+        ).first()
+        if not day:
+            return {"success": False, "message": "День не найден"}
+
+    q = db.query(Registration).filter(Registration.tournament_id == tournament_id)
+    if data.discipline:
+        q = q.filter(Registration.discipline == data.discipline)
+    if data.category_name:
+        q = q.filter(Registration.category_name == data.category_name)
+    regs = q.all()
+    if data.gender:
+        filtered = []
+        for reg in regs:
+            athlete = db.query(Athlete).filter(Athlete.id == reg.athlete_id).first()
+            if athlete and athlete.gender == data.gender:
+                filtered.append(reg)
+        regs = filtered
+
+    if not regs:
+        return {"success": False, "message": "Нет заявок по выбранным фильтрам"}
+
+    if day:
+        err = _validate_day_assignment(db, tournament_id, day.id, regs)
+        if err:
+            return {"success": False, "message": err}
+        for reg in regs:
+            reg.competition_day_id = day.id
+    else:
+        for reg in regs:
+            reg.competition_day_id = None
+
+    db.commit()
+    return {
+        "success": True,
+        "updated": len(regs),
+        "competition_day_id": str(day.id) if day else None,
+    }
+
+
+@app.get("/api/v1/tournaments/{tournament_id}/draw/readiness")
+def draw_readiness(tournament_id: str, competition_day_id: Optional[str] = None, db: Session = Depends(get_db)):
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        return {"success": False, "message": "Турнир не найден"}
+    return {"success": True, "readiness": _draw_readiness_summary(db, tournament_id, competition_day_id)}
+
 
 def draw_category_key(discipline, category_name):
     """The 'category' a registration draws/scores into. For ката this is the
@@ -660,13 +859,16 @@ def _apply_category_draw(db, tournament_id, discipline, gender, category_name, p
     }
 
 
-def _build_tournament_groups(db, tournament_id):
+def _build_tournament_groups(db, tournament_id, competition_day_id=None, only_ready=False):
     rank_order = {r.name: r.sort_order for r in db.query(Rank).all()}
-    regs = db.query(Registration).filter(
-        Registration.tournament_id == tournament_id
-    ).order_by(Registration.created_at, Registration.id).all()
+    q = db.query(Registration).filter(Registration.tournament_id == tournament_id)
+    if competition_day_id is not None:
+        q = q.filter(Registration.competition_day_id == competition_day_id)
+    regs = q.order_by(Registration.created_at, Registration.id).all()
     groups = {}
     for reg in regs:
+        if only_ready and not is_registration_draw_ready(reg):
+            continue
         athlete = db.query(Athlete).filter(Athlete.id == reg.athlete_id).first()
         if not athlete:
             continue
@@ -679,6 +881,98 @@ def _build_tournament_groups(db, tournament_id):
             "_reg": reg
         })
     return groups
+
+
+def _draw_readiness_summary(db, tournament_id, competition_day_id=None):
+    q = db.query(Registration).filter(Registration.tournament_id == tournament_id)
+    if competition_day_id is not None:
+        q = q.filter(Registration.competition_day_id == competition_day_id)
+    regs = q.all()
+    total = len(regs)
+    missing_mandate = 0
+    missing_weigh = 0
+    ready = 0
+    for r in regs:
+        info = registration_readiness(r)
+        if info["draw_ready"]:
+            ready += 1
+        if not info["mandate_ok"]:
+            missing_mandate += 1
+        if info["weigh_required"] and not info["weigh_ok"]:
+            missing_weigh += 1
+    return {
+        "total": total,
+        "ready": ready,
+        "missing_mandate": missing_mandate,
+        "missing_weigh": missing_weigh,
+        "all_ready": total > 0 and missing_mandate == 0 and missing_weigh == 0,
+    }
+
+
+def _competition_day_dict(day):
+    return {
+        "id": str(day.id),
+        "tournament_id": str(day.tournament_id),
+        "date": str(day.date),
+        "label": day.label,
+        "sort_order": day.sort_order,
+    }
+
+
+def _kumite_disciplines_on_day(db, tournament_id, day_id, exclude_reg_ids=None):
+    """Какие виды кумитэ уже привязаны к дню."""
+    exclude_reg_ids = exclude_reg_ids or set()
+    regs = db.query(Registration).filter(
+        Registration.tournament_id == tournament_id,
+        Registration.competition_day_id == day_id,
+    ).all()
+    found = set()
+    for r in regs:
+        if str(r.id) in exclude_reg_ids:
+            continue
+        if r.discipline in KUMITE_DISCIPLINES:
+            found.add(r.discipline)
+    return found
+
+
+def _validate_day_assignment(db, tournament_id, day_id, regs_to_assign):
+    """Нельзя иметь два разных вида кумитэ в одном дне."""
+    existing = _kumite_disciplines_on_day(
+        db, tournament_id, day_id,
+        exclude_reg_ids={str(r.id) for r in regs_to_assign},
+    )
+    incoming = {r.discipline for r in regs_to_assign if r.discipline in KUMITE_DISCIPLINES}
+    combined = existing | incoming
+    if len(combined) > 1:
+        labels = {
+            "kumite_ok": "Кумитэ ОК",
+            "kumite_pk": "Кумитэ ПК",
+            "kumite_sz": "Кумитэ СЗ",
+        }
+        names = ", ".join(labels.get(d, d) for d in sorted(combined))
+        return f"В один день нельзя ставить два кумитэ ({names})"
+    return None
+
+
+def _new_registration(**kwargs):
+    discipline = kwargs.get("discipline")
+    category_name = kwargs.get("category_name")
+    mandate = kwargs.get("mandate_status", kwargs.get("admission_status"))
+    weigh = kwargs.get("weigh_status")
+    if weigh is None:
+        weigh = default_weigh_status(discipline, category_name)
+    return Registration(
+        athlete_id=kwargs["athlete_id"],
+        tournament_id=kwargs["tournament_id"],
+        discipline=discipline,
+        category_name=category_name,
+        team_number=kwargs.get("team_number"),
+        admission_status=mandate,
+        mandate_status=mandate,
+        weigh_status=weigh,
+        weigh_in_kg=kwargs.get("weigh_in_kg"),
+        competition_day_id=kwargs.get("competition_day_id"),
+    )
 
 
 def _repair_stale_draws(db, tournament_id):
@@ -749,10 +1043,38 @@ def draw_tournament(tournament_id: str, body: DrawRequest = DrawRequest(), curre
     if not tournament:
         return {"success": False, "message": "Турнир не найден"}
 
-    groups = _build_tournament_groups(db, tournament_id)
+    day_id = body.competition_day_id
+    if day_id:
+        day = db.query(CompetitionDay).filter(
+            CompetitionDay.id == day_id,
+            CompetitionDay.tournament_id == tournament_id,
+        ).first()
+        if not day:
+            return {"success": False, "message": "День соревнований не найден"}
+
+    readiness = _draw_readiness_summary(db, tournament_id, day_id)
+    if readiness["total"] == 0:
+        return {
+            "success": False,
+            "message": "Нет участников" + (" в этом дне" if day_id else " в турнире"),
+            "readiness": readiness,
+        }
+    if not readiness["all_ready"]:
+        parts = []
+        if readiness["missing_mandate"]:
+            parts.append(f"без мандата: {readiness['missing_mandate']}")
+        if readiness["missing_weigh"]:
+            parts.append(f"не взвесились: {readiness['missing_weigh']}")
+        return {
+            "success": False,
+            "message": "Жеребьёвка недоступна, пока все участники не допущены (" + ", ".join(parts) + ")",
+            "readiness": readiness,
+        }
+
+    groups = _build_tournament_groups(db, tournament_id, competition_day_id=day_id, only_ready=True)
 
     if not groups:
-        return {"success": False, "message": "В турнире нет заявленных участников"}
+        return {"success": False, "message": "В турнире нет заявленных участников", "readiness": readiness}
 
     categories = []
     for (discipline, gender, category_name), participants in groups.items():
@@ -801,7 +1123,13 @@ def draw_tournament(tournament_id: str, body: DrawRequest = DrawRequest(), curre
 
     categories.sort(key=category_sort_key)
     db.commit()
-    return {"success": True, "tournament_id": tournament_id, "categories": categories}
+    return {
+        "success": True,
+        "tournament_id": tournament_id,
+        "competition_day_id": day_id,
+        "categories": categories,
+        "readiness": readiness,
+    }
 
 @app.post("/api/v1/tournaments/{tournament_id}/draw/swap-seed")
 def swap_draw_seed(tournament_id: str, data: SeedSwapRequest, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
@@ -920,13 +1248,14 @@ def create_athlete(data: AthleteCreate, current_user=Depends(get_current_user), 
         db.commit()
         db.refresh(athlete)
 
-    registration = Registration(
+    registration = _new_registration(
         athlete_id=athlete.id,
         tournament_id=data.tournament_id,
         discipline=data.discipline,
         category_name=data.category_name,
         team_number=data.team_number,
-        admission_status=data.admission_status
+        admission_status=data.admission_status,
+        mandate_status=data.admission_status,
     )
     db.add(registration)
     db.commit()
@@ -1120,7 +1449,7 @@ async def import_tournament_application(
             if already:
                 skipped_registrations += 1
                 continue
-            db.add(Registration(
+            db.add(_new_registration(
                 athlete_id=athlete.id,
                 tournament_id=tournament_id,
                 discipline=reg.discipline,
@@ -1169,6 +1498,11 @@ def list_athletes(tournament_id: str, db: Session = Depends(get_db)):
     for reg in regs:
         athlete = db.query(Athlete).filter(Athlete.id == reg.athlete_id).first()
         if athlete:
+            mandate = reg.mandate_status if reg.mandate_status is not None else reg.admission_status
+            ready = registration_readiness(reg)
+            weigh = reg.weigh_status
+            if weigh is None and not ready["weigh_required"]:
+                weigh = "not_required"
             result.append({
                 "id": str(athlete.id),
                 "registration_id": str(reg.id),
@@ -1183,7 +1517,13 @@ def list_athletes(tournament_id: str, db: Session = Depends(get_db)):
                 "category_name": reg.category_name,
                 "kata_name": reg.kata_name,
                 "team_number": reg.team_number,
-                "admission_status": reg.admission_status,
+                "admission_status": mandate,
+                "mandate_status": mandate,
+                "weigh_status": weigh,
+                "weigh_in_kg": float(reg.weigh_in_kg) if reg.weigh_in_kg is not None else None,
+                "weigh_required": ready["weigh_required"],
+                "competition_day_id": str(reg.competition_day_id) if reg.competition_day_id else None,
+                "draw_ready": ready["draw_ready"],
                 "age_group": compute_age_group(athlete.birth_date, tournament.event_date if tournament else None, athlete.gender, reg.discipline),
                 "seed": reg.seed,
                 "subgroup": reg.subgroup
@@ -1192,33 +1532,108 @@ def list_athletes(tournament_id: str, db: Session = Depends(get_db)):
 
 @app.post("/api/v1/registrations/{registration_id}/admit")
 def admit_registration(registration_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Совместимость: старый endpoint = мандатный допуск."""
+    return admit_mandate(registration_id, current_user=current_user, db=db)
+
+@app.post("/api/v1/registrations/{registration_id}/admit-mandate")
+def admit_mandate(registration_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     require_roles(current_user, {"admin", "owner"})
     reg = db.query(Registration).filter(Registration.id == registration_id).first()
     if not reg:
         return {"success": False, "message": "Заявка не найдена"}
+    reg.mandate_status = "approved"
     reg.admission_status = "approved"
+    if reg.weigh_status is None and not weigh_required(reg.discipline, reg.category_name):
+        reg.weigh_status = "not_required"
     db.commit()
-    return {"success": True, "admission_status": reg.admission_status}
+    return {
+        "success": True,
+        "mandate_status": reg.mandate_status,
+        "weigh_status": reg.weigh_status,
+        "admission_status": reg.admission_status,
+    }
+
+@app.post("/api/v1/registrations/{registration_id}/reject-mandate")
+def reject_mandate(registration_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
+    reg = db.query(Registration).filter(Registration.id == registration_id).first()
+    if not reg:
+        return {"success": False, "message": "Заявка не найдена"}
+    reg.mandate_status = "rejected"
+    reg.admission_status = "rejected"
+    db.commit()
+    return {"success": True, "mandate_status": reg.mandate_status, "admission_status": reg.admission_status}
+
+@app.post("/api/v1/registrations/{registration_id}/reset-mandate")
+def reset_mandate(registration_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
+    reg = db.query(Registration).filter(Registration.id == registration_id).first()
+    if not reg:
+        return {"success": False, "message": "Заявка не найдена"}
+    reg.mandate_status = None
+    reg.admission_status = None
+    db.commit()
+    return {"success": True, "mandate_status": None, "admission_status": None}
 
 @app.post("/api/v1/registrations/{registration_id}/reject-admission")
 def reject_admission(registration_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
-    require_roles(current_user, {"admin", "owner"})
-    reg = db.query(Registration).filter(Registration.id == registration_id).first()
-    if not reg:
-        return {"success": False, "message": "Заявка не найдена"}
-    reg.admission_status = "rejected"
-    db.commit()
-    return {"success": True, "admission_status": reg.admission_status}
+    return reject_mandate(registration_id, current_user=current_user, db=db)
 
 @app.post("/api/v1/registrations/{registration_id}/reset-admission")
 def reset_admission(registration_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    return reset_mandate(registration_id, current_user=current_user, db=db)
+
+@app.post("/api/v1/registrations/{registration_id}/admit-weigh")
+def admit_weigh(registration_id: str, body: WeighAdmitRequest = WeighAdmitRequest(), current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     require_roles(current_user, {"admin", "owner"})
     reg = db.query(Registration).filter(Registration.id == registration_id).first()
     if not reg:
         return {"success": False, "message": "Заявка не найдена"}
-    reg.admission_status = None
+    if not weigh_required(reg.discipline, reg.category_name):
+        reg.weigh_status = "not_required"
+        db.commit()
+        return {"success": True, "weigh_status": reg.weigh_status, "message": "Взвешивание для этой категории не требуется"}
+    reg.weigh_status = "approved"
+    if body.weigh_in_kg is not None:
+        reg.weigh_in_kg = body.weigh_in_kg
     db.commit()
-    return {"success": True, "admission_status": None}
+    return {
+        "success": True,
+        "weigh_status": reg.weigh_status,
+        "weigh_in_kg": float(reg.weigh_in_kg) if reg.weigh_in_kg is not None else None,
+    }
+
+@app.post("/api/v1/registrations/{registration_id}/reject-weigh")
+def reject_weigh(registration_id: str, body: WeighAdmitRequest = WeighAdmitRequest(), current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
+    reg = db.query(Registration).filter(Registration.id == registration_id).first()
+    if not reg:
+        return {"success": False, "message": "Заявка не найдена"}
+    if not weigh_required(reg.discipline, reg.category_name):
+        return {"success": False, "message": "Взвешивание для этой категории не требуется"}
+    reg.weigh_status = "rejected"
+    if body.weigh_in_kg is not None:
+        reg.weigh_in_kg = body.weigh_in_kg
+    db.commit()
+    return {
+        "success": True,
+        "weigh_status": reg.weigh_status,
+        "weigh_in_kg": float(reg.weigh_in_kg) if reg.weigh_in_kg is not None else None,
+    }
+
+@app.post("/api/v1/registrations/{registration_id}/reset-weigh")
+def reset_weigh(registration_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
+    reg = db.query(Registration).filter(Registration.id == registration_id).first()
+    if not reg:
+        return {"success": False, "message": "Заявка не найдена"}
+    if not weigh_required(reg.discipline, reg.category_name):
+        reg.weigh_status = "not_required"
+    else:
+        reg.weigh_status = None
+        reg.weigh_in_kg = None
+    db.commit()
+    return {"success": True, "weigh_status": reg.weigh_status}
 
 @app.get("/api/v1/athletes/{athlete_id}")
 def get_athlete(athlete_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):

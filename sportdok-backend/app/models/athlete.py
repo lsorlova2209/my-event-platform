@@ -34,7 +34,14 @@ class Registration(Base):
     # сетке ката при вводе результатов - см. kata_name.
     kata_name = Column(String, nullable=True)
     team_number = Column(String, nullable=True)
+    # Устаревшее поле: синхронизируется с mandate_status для совместимости
     admission_status = Column(String, nullable=True)
+    # Мандатная комиссия: null / approved / rejected
+    mandate_status = Column(String, nullable=True)
+    # Взвешивание: null / approved / rejected / not_required
+    weigh_status = Column(String, nullable=True)
+    weigh_in_kg = Column(Numeric, nullable=True)
+    competition_day_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     seed = Column(Integer, nullable=True)
     subgroup = Column(Integer, nullable=True)
     status = Column(String, nullable=False, default="active")
