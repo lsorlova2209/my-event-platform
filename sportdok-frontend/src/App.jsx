@@ -2033,6 +2033,7 @@ function TournamentDetail({ tournament, user, onBack }) {
   const [filterClub, setFilterClub] = useState("")
   const [filterCategory, setFilterCategory] = useState("")
   const [searchOpen, setSearchOpen] = useState({ surname: false, club: false, category: false })
+  const [expandedKeys, setExpandedKeys] = useState(() => new Set())
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
@@ -2219,6 +2220,16 @@ function TournamentDetail({ tournament, user, onBack }) {
     setFilterCategory("")
     setSearchOpen({ surname: false, club: false, category: false })
   }
+  const toggleCategory = (key) => setExpandedKeys(prev => {
+    const next = new Set(prev)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    return next
+  })
+
+  useEffect(() => {
+    if (filterCategory) setExpandedKeys(new Set([filterCategory]))
+  }, [filterCategory])
 
   const handleRunDraw = async (force = false) => {
     if (force && !window.confirm("Пережеребить все категории заново? Незавершённые бои будут удалены. Категории с уже введёнными результатами не изменятся.")) return
@@ -2508,13 +2519,32 @@ function TournamentDetail({ tournament, user, onBack }) {
           ) : Object.keys(filteredBracketGroups).length === 0 ? (
             <p style={{ color: "#4A4A48", textAlign: "center", padding: "24px 0" }}>Ничего не найдено. Измените или сбросьте фильтры.</p>
           ) : Object.values(filteredBracketGroups).map(group => {
+            const groupKey = `${group.discipline}|${group.gender}|${group.category_name}`
             const label = categoryLabel(group.discipline, group.gender, group.category_name)
+            const open = expandedKeys.has(groupKey)
             return (
-              <div key={label} style={{ marginBottom: "12px" }}>
-                <div style={{ padding: "10px 4px", background: "#f3f2ee", fontWeight: "bold", color: "#1A56A0", fontSize: "14px" }}>
-                  {label} ({group.athletes.length})
-                </div>
-                {[...group.athletes]
+              <div key={groupKey} style={{ marginBottom: "12px" }}>
+                <button
+                  type="button"
+                  onClick={() => toggleCategory(groupKey)}
+                  aria-expanded={open}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px",
+                    width: "100%", padding: "10px 4px", background: "#f3f2ee",
+                    fontWeight: "bold", color: "#1A56A0", fontSize: "14px",
+                    border: "none", cursor: "pointer", textAlign: "left",
+                  }}
+                >
+                  <span style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <span style={{
+                      display: "inline-block", width: "14px",
+                      transform: open ? "rotate(90deg)" : "rotate(0deg)",
+                      transition: "transform 0.15s ease", fontSize: "12px",
+                    }} aria-hidden>▸</span>
+                    {label} ({group.athletes.length})
+                  </span>
+                </button>
+                {open && [...group.athletes]
                   .sort((a, b) => (a.seed ?? 999) - (b.seed ?? 999) || (a.full_name || "").localeCompare(b.full_name || "", "ru"))
                   .map((a, i) => (
                   <div key={a.registration_id} style={{ padding: "16px 4px", borderBottom: "1px solid #f3f2ee", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
