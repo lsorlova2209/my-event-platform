@@ -16,5 +16,17 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script_stop: true
+          # Логика деплоя здесь (не только deploy.sh на диске):
+          # иначе правка scripts/deploy.sh применится только после pull,
+          # а пересборка уже будет пропущена старым скриптом.
           script: |
-            bash /opt/my-event-platform/scripts/deploy.sh
+            set -euo pipefail
+            cd /opt/my-event-platform
+            echo "==> Обновление кода..."
+            git fetch origin main
+            git reset --hard origin/main
+            echo "==> Пересборка api и web..."
+            export DOCKER_BUILDKIT=0
+            docker compose -f docker-compose.prod.yml up -d --build api web
+            docker compose -f docker-compose.prod.yml ps
+            echo "==> Готово."

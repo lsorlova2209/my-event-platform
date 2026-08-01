@@ -18,11 +18,12 @@ printf '%s\n' "${CHANGED_FILES}"
 NEEDS_API=0
 NEEDS_WEB=0
 
-if printf '%s\n' "${CHANGED_FILES}" | rg "^(sportdok-backend/|docker-compose\.prod\.yml$)"; then
+# grep, не rg: на VPS часто нет ripgrep; в if exit 1 = «нет совпадений», это ок
+if printf '%s\n' "${CHANGED_FILES}" | grep -E '^(sportdok-backend/|docker-compose\.prod\.yml$|scripts/)' >/dev/null; then
     NEEDS_API=1
 fi
 
-if printf '%s\n' "${CHANGED_FILES}" | rg "^(sportdok-frontend/|docker-compose\.prod\.yml$|certbot-www/)"; then
+if printf '%s\n' "${CHANGED_FILES}" | grep -E '^(sportdok-frontend/|docker-compose\.prod\.yml$|certbot-www/|scripts/)' >/dev/null; then
     NEEDS_WEB=1
 fi
 
