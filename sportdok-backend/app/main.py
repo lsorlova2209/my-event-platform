@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -29,6 +29,7 @@ from app.documents import build_category_excel_zip, build_pdf, build_participant
 from app.kata_registry import KATA_TYPES, KATA_STYLE_ORDER, kata_style
 from app.age_group import compute_age_group
 from app.notifications import send_email
+from app.application_import import parse_application_xlsx, preview_dict
 
 Base.metadata.create_all(bind=engine)
 
@@ -58,6 +59,11 @@ ALLOWED_COVER_TYPES = {
     "image/webp": ".webp",
 }
 MAX_COVER_BYTES = 20 * 1024 * 1024
+MAX_IMPORT_BYTES = 20 * 1024 * 1024
+APPLICATION_TEMPLATE_NAME = "Шаблон_заявки_СпортДок_по_образцу_ПР.xlsx"
+APPLICATION_TEMPLATE_PATH = (
+    Path(__file__).resolve().parents[2] / "docs" / "templates" / APPLICATION_TEMPLATE_NAME
+)
 
 
 def tournament_public_dict(t: Tournament) -> dict:
@@ -930,6 +936,166 @@ def create_athlete(data: AthleteCreate, current_user=Depends(get_current_user), 
                    f"Участник {full_name} ({data.discipline}, категория «{data.category_name}») успешно зарегистрирован на соревнование.")
 
     return {"success": True, "athlete_id": str(athlete.id)}
+
+
+async def _read_import_xlsx(file: UploadFile) -> tuple[Optional[bytes], Optional[str]]:
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".xlsx"):
+        return None, "Нужен файл Excel (.xlsx)"
+    data = await file.read()
+    if not data:
+        return None, "Пустой файл"
+    if len(data) > MAX_IMPORT_BYTES:
+        return None, "Файл больше 20 МБ"
+    return data, None
+
+
+def _club_name_for_user(current_user, db: Session) -> Optional[str]:
+    if current_user["role"] != "club":
+        return None
+    own_club = db.query(Club).filter(Club.id == current_user["user_id"]).first()
+    if not own_club:
+        return None
+    return own_club.short_name or own_club.full_name
+
+
+@app.get("/api/v1/templates/application")
+def download_application_template():
+    if not APPLICATION_TEMPLATE_PATH.is_file():
+        raise HTTPException(status_code=404, detail="Шаблон не найден")
+    return FileResponse(
+        path=str(APPLICATION_TEMPLATE_PATH),
+        filename=APPLICATION_TEMPLATE_NAME,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/import/preview")
+async def preview_tournament_import(
+    tournament_id: str,
+    file: UploadFile = File(...),
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_roles(current_user, {"admin", "owner", "club"})
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        return {"success": False, "message": "Турнир не найден"}
+
+    data, err = await _read_import_xlsx(file)
+    if err:
+        return {"success": False, "message": err}
+
+    club_override = _club_name_for_user(current_user, db)
+    result = parse_application_xlsx(data, club_name_override=club_override)
+    preview = preview_dict(result)
+    if result.file_errors:
+        preview["success"] = False
+        preview["message"] = result.file_errors[0]
+    return preview
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/import")
+async def import_tournament_application(
+    tournament_id: str,
+    file: UploadFile = File(...),
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_roles(current_user, {"admin", "owner", "club"})
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        return {"success": False, "message": "Турнир не найден"}
+
+    data, err = await _read_import_xlsx(file)
+    if err:
+        return {"success": False, "message": err}
+
+    club_override = _club_name_for_user(current_user, db)
+    result = parse_application_xlsx(data, club_name_override=club_override)
+    if result.file_errors:
+        return {"success": False, "message": result.file_errors[0], **{k: v for k, v in preview_dict(result).items() if k != "success"}}
+
+    created_athletes = 0
+    created_registrations = 0
+    skipped_registrations = 0
+    row_errors = []
+
+    for person in result.athletes:
+        if person.errors:
+            row_errors.append({
+                "row": person.row,
+                "name": f"{person.last_name} {person.first_name}".strip(),
+                "messages": person.errors,
+            })
+            continue
+        if not person.birth_date:
+            row_errors.append({
+                "row": person.row,
+                "name": f"{person.last_name} {person.first_name}".strip(),
+                "messages": ["нет даты рождения"],
+            })
+            continue
+
+        club_name = club_override or person.club_name
+        existing = find_duplicate_athlete(
+            db, tournament_id, person.last_name, person.first_name, person.middle_name, person.birth_date
+        )
+        if existing:
+            athlete = existing
+        else:
+            athlete = Athlete(
+                last_name=person.last_name,
+                first_name=person.first_name,
+                middle_name=person.middle_name,
+                gender=person.gender,
+                birth_date=person.birth_date,
+                age_years=person.age_years,
+                weight=person.weight,
+                rank=person.rank,
+                club_name=club_name,
+                trainer_name=person.trainer_name,
+            )
+            db.add(athlete)
+            db.flush()
+            created_athletes += 1
+
+        for reg in person.registrations:
+            already = db.query(Registration).filter(
+                Registration.tournament_id == tournament_id,
+                Registration.athlete_id == athlete.id,
+                Registration.discipline == reg.discipline,
+                Registration.category_name == reg.category_name,
+            ).first()
+            if already:
+                skipped_registrations += 1
+                continue
+            db.add(Registration(
+                athlete_id=athlete.id,
+                tournament_id=tournament_id,
+                discipline=reg.discipline,
+                category_name=reg.category_name,
+                team_number=reg.team_number,
+            ))
+            created_registrations += 1
+
+    db.commit()
+
+    return {
+        "success": True,
+        "club_name": club_override or result.club_name,
+        "created_athletes": created_athletes,
+        "created_registrations": created_registrations,
+        "skipped_registrations": skipped_registrations,
+        "error_rows": len(row_errors),
+        "errors": row_errors[:50],
+        "message": (
+            f"Добавлено участников: {created_athletes}, заявок: {created_registrations}"
+            + (f", пропущено дублей: {skipped_registrations}" if skipped_registrations else "")
+            + (f", строк с ошибками: {len(row_errors)}" if row_errors else "")
+        ),
+    }
+
 
 def _region_by_club_name(db):
     region_by_club_name = {}

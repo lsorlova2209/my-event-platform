@@ -1712,6 +1712,151 @@ function CategoryMultiSelect({ weightCategories, selectedKata, selectedKumite, o
   )
 }
 
+function ExcelImportPanel({ tournamentId, token, onImported }) {
+  const fileRef = useRef(null)
+  const [file, setFile] = useState(null)
+  const [preview, setPreview] = useState(null)
+  const [result, setResult] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState("")
+  const [open, setOpen] = useState(false)
+
+  const reset = () => {
+    setFile(null)
+    setPreview(null)
+    setResult(null)
+    setError("")
+    setBusy(false)
+    if (fileRef.current) fileRef.current.value = ""
+  }
+
+  const authHeaders = { Authorization: `Bearer ${token}` }
+
+  const runPreview = async (selected) => {
+    if (!selected) return
+    setBusy(true)
+    setError("")
+    setPreview(null)
+    setResult(null)
+    setFile(selected)
+    try {
+      const form = new FormData()
+      form.append("file", selected)
+      const r = await axios.post(`${API}/api/v1/tournaments/${tournamentId}/import/preview`, form, {
+        headers: { ...authHeaders, "Content-Type": "multipart/form-data" },
+      })
+      if (r.data.file_errors?.length || (r.data.success === false && r.data.message && r.data.rows == null)) {
+        setError(r.data.message || r.data.file_errors?.join("; ") || "Ошибка файла")
+      }
+      if (r.data.rows != null || r.data.people != null) {
+        setPreview(r.data)
+      }
+    } catch (e) {
+      setError(e.response?.data?.detail || e.message || "Ошибка чтения файла")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const runImport = async () => {
+    if (!file) return
+    setBusy(true)
+    setError("")
+    try {
+      const form = new FormData()
+      form.append("file", file)
+      const r = await axios.post(`${API}/api/v1/tournaments/${tournamentId}/import`, form, {
+        headers: { ...authHeaders, "Content-Type": "multipart/form-data" },
+      })
+      if (!r.data.success) {
+        setError(r.data.message || "Импорт не выполнен")
+        return
+      }
+      setResult(r.data)
+      setPreview(null)
+      onImported?.(r.data)
+    } catch (e) {
+      setError(e.response?.data?.detail || e.message || "Ошибка импорта")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+        <button
+          type="button"
+          onClick={() => { setOpen(o => !o); if (open) reset() }}
+          style={btnOutline}
+        >
+          {open ? "Скрыть загрузку" : "Загрузить заявку (Excel)"}
+        </button>
+        <a
+          href={`${API}/api/v1/templates/application`}
+          style={{ fontSize: "13px", color: "#1A56A0" }}
+        >
+          Скачать шаблон
+        </a>
+      </div>
+
+      {open && (
+        <div style={{ marginTop: "16px", padding: "16px", background: "#f9f8f4", borderRadius: "8px", border: "1px solid #E8E6DC" }}>
+          <p style={{ margin: "0 0 12px", color: "#4A4A48", fontSize: "14px" }}>
+            Формат «ПР»: один человек — одна строка, дисциплины в колонках поединков и ката. Сначала превью, затем подтверждение.
+          </p>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            onChange={e => runPreview(e.target.files?.[0])}
+            style={{ marginBottom: "12px" }}
+          />
+          {busy && <div style={{ color: "#4A4A48", fontSize: "14px", marginBottom: "8px" }}>Обработка…</div>}
+          {error && <div style={errorBox}>{error}</div>}
+          {preview && (
+            <div style={{ marginTop: "8px" }}>
+              <div style={{ ...successBox, marginBottom: "12px" }}>
+                Команда: {preview.club_name || "—"} · строк: {preview.rows} ·
+                участников к импорту: {preview.people} · заявок: {preview.registrations}
+                {preview.error_count ? ` · ошибок: ${preview.error_count}` : ""}
+              </div>
+              {preview.errors?.length > 0 && (
+                <div style={{ ...errorBox, marginBottom: "12px", maxHeight: "140px", overflowY: "auto" }}>
+                  {preview.errors.slice(0, 20).map((e, i) => (
+                    <div key={i}>Строка {e.row}: {e.name} — {e.messages.join("; ")}</div>
+                  ))}
+                  {preview.errors.length > 20 && <div>…и ещё {preview.errors.length - 20}</div>}
+                </div>
+              )}
+              {preview.people > 0 && (
+                <button type="button" onClick={runImport} disabled={busy} style={btnGreen}>
+                  Импортировать ({preview.people} чел., {preview.registrations} заявок)
+                </button>
+              )}
+            </div>
+          )}
+          {result && (
+            <div style={{ ...successBox, marginTop: "12px" }}>
+              {result.message}
+              {result.errors?.length > 0 && (
+                <div style={{ marginTop: "8px", fontSize: "13px" }}>
+                  {result.errors.slice(0, 10).map((e, i) => (
+                    <div key={i}>Строка {e.row}: {e.name} — {e.messages.join("; ")}</div>
+                  ))}
+                </div>
+              )}
+              <div style={{ marginTop: "10px" }}>
+                <button type="button" onClick={reset} style={btnOutline}>Загрузить другой файл</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function TournamentDetail({ tournament, user, onBack }) {
   const [athletes, setAthletes] = useState([])
   const [bouts, setBouts] = useState([])
@@ -2006,9 +2151,12 @@ function TournamentDetail({ tournament, user, onBack }) {
         )}
 
         <div style={card}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: showForm ? "24px" : 0 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "12px" }}>
             <h2 style={{ margin: 0, color: "#1A56A0" }}>Участники ({athletes.length})</h2>
             <button onClick={() => setShowForm(!showForm)} style={btnPrimary}>{showForm ? "Отмена" : "+ Добавить участника"}</button>
+          </div>
+          <div style={{ marginBottom: showForm ? "24px" : 0 }}>
+            <ExcelImportPanel tournamentId={tournament.id} token={user.token} onImported={() => loadAthletes()} />
           </div>
 
           {showForm && (
@@ -2421,9 +2569,16 @@ function ClubPanel({ user, onLogout }) {
           </div>
 
           <div style={card}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
               <h2 style={{ margin: 0, color: "#1A56A0" }}>Заявить участника</h2>
               <button onClick={() => { setShowForm(!showForm); setSuccess("") }} style={btnPrimary}>{showForm ? "Отмена" : "+ Добавить участника"}</button>
+            </div>
+            <div style={{ marginTop: "16px" }}>
+              <ExcelImportPanel
+                tournamentId={selectedTournament.id}
+                token={user.token}
+                onImported={(r) => setSuccess(r.message || "Заявка загружена")}
+              />
             </div>
 
             {success && <div style={{ ...successBox, marginTop: "16px" }}>{success}</div>}
