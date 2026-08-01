@@ -2907,44 +2907,44 @@ function TournamentDetail({ tournament, user, onBack }) {
                   ) : [...rows]
                   .sort((a, b) => (a.seed ?? 999) - (b.seed ?? 999) || (a.full_name || "").localeCompare(b.full_name || "", "ru"))
                   .map((a, i) => (
-                  <div key={a.registration_id} style={{ padding: "12px 4px", borderBottom: "1px solid #f3f2ee", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "12px", minWidth: 0 }}>
+                  <div key={a.registration_id} style={{ padding: "8px 4px", borderBottom: "1px solid #f3f2ee", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0 }}>
                       <div style={{
-                        flexShrink: 0, width: "28px", textAlign: "center", fontWeight: "bold",
-                        color: "#1A56A0", fontSize: "15px"
+                        flexShrink: 0, width: "22px", textAlign: "center", fontWeight: "bold",
+                        color: "#1A56A0", fontSize: "13px"
                       }}>
                         {i + 1}
                       </div>
                       <div style={{ minWidth: 0 }}>
-                        <div style={{ fontWeight: "bold", color: "#1A56A0" }}>{a.full_name}</div>
-                        <div style={{ color: "#4A4A48", fontSize: "14px" }}>
+                        <div style={{ fontWeight: "bold", color: "#1A56A0", fontSize: "13px", lineHeight: 1.25 }}>{a.full_name}</div>
+                        <div style={{ color: "#4A4A48", fontSize: "11px", lineHeight: 1.3 }}>
                           {[a.region || a.club_name, a.rank].filter(Boolean).join(" · ") || "—"}
                         </div>
                       </div>
                     </div>
-                    <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", gap: "4px", alignItems: "center", flexWrap: "wrap" }}>
                       {a.admission_status === "approved" ? (
                         <button type="button" onClick={() => handleResetAdmission(a.registration_id)} title="Сбросить допуск"
-                          style={{ ...btnOutline, padding: "6px 10px", fontSize: "12px", color: "#0F6E56", fontWeight: "bold", borderColor: "#0F6E56" }}>
+                          style={{ ...btnOutline, padding: "3px 8px", fontSize: "11px", borderRadius: "6px", color: "#0F6E56", fontWeight: "bold", borderColor: "#0F6E56", minWidth: 0 }}>
                           ✓ Допущен
                         </button>
                       ) : (
-                        <button onClick={() => handleAdmit(a.registration_id)} style={{ ...btnGreen, padding: "6px 10px", fontSize: "12px" }}>✓ Допустить</button>
+                        <button onClick={() => handleAdmit(a.registration_id)} style={{ ...btnGreen, padding: "3px 8px", fontSize: "11px", borderRadius: "6px", minWidth: 0 }}>✓ Допустить</button>
                       )}
                       {needsWeighAdmit(a) && (
                         a.weigh_status === "approved" ? (
                           <button type="button" onClick={() => handleResetWeigh(a.registration_id)} title="Сбросить весовой допуск"
-                            style={{ ...btnOutline, padding: "6px 10px", fontSize: "12px", color: "#0F6E56", fontWeight: "bold", borderColor: "#0F6E56" }}>
+                            style={{ ...btnOutline, padding: "3px 8px", fontSize: "11px", borderRadius: "6px", color: "#0F6E56", fontWeight: "bold", borderColor: "#0F6E56", minWidth: 0 }}>
                             ✓ По весу
                           </button>
                         ) : (
-                          <button onClick={() => handleAdmitWeigh(a.registration_id)} style={{ ...btnGreen, padding: "6px 10px", fontSize: "12px" }}>✓ Допустить по весу</button>
+                          <button onClick={() => handleAdmitWeigh(a.registration_id)} style={{ ...btnGreen, padding: "3px 8px", fontSize: "11px", borderRadius: "6px", minWidth: 0 }}>✓ Допустить по весу</button>
                         )
                       )}
                       <button onClick={() => setEditingAthleteId(a.id)} title="Изменить"
-                        style={{ ...btnOutline, padding: "4px 8px", fontSize: "11px", minWidth: 0 }}>Изменить</button>
+                        style={{ ...btnOutline, padding: "3px 8px", fontSize: "11px", borderRadius: "6px", minWidth: 0 }}>Изменить</button>
                       <button onClick={() => handleDeleteAthlete(a.id)} title="Удалить"
-                        style={{ ...btnDanger, padding: "4px 8px", fontSize: "11px", minWidth: 0 }}>Удалить</button>
+                        style={{ ...btnDanger, padding: "3px 8px", fontSize: "11px", borderRadius: "6px", minWidth: 0 }}>Удалить</button>
                     </div>
                   </div>
                 ))
