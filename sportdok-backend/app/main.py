@@ -1005,9 +1005,11 @@ def download_tournament_application_template(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Не удалось сформировать шаблон: {exc}") from exc
 
-    safe_name = "".join(ch if ch.isalnum() or ch in " _-" else "_" for ch in (tournament.name or "turnir"))[:40]
-    filename = f"Zayavka_{safe_name.strip() or 'turnir'}.xlsx"
-    starred = quote(f"Заявка_{safe_name.strip() or 'турнир'}.xlsx")
+    # Только ASCII в filename= — иначе nginx/uvicorn могут отдать 500 на кириллице в заголовке
+    ascii_name = "".join(ch if (ch.isascii() and (ch.isalnum() or ch in " _-")) else "_" for ch in (tournament.name or "turnir"))[:40]
+    ascii_name = ascii_name.strip("_ ") or "turnir"
+    filename = f"Zayavka_{ascii_name}.xlsx"
+    starred = quote(f"Заявка_{(tournament.name or 'турнир').strip()[:40]}.xlsx")
     return StreamingResponse(
         BytesIO(payload),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

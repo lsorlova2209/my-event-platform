@@ -209,7 +209,9 @@ def fill_application_template(
     team_name: Optional[str] = None,
 ) -> bytes:
     """Подставить данные турнира в шаблон и вернуть .xlsx как bytes."""
-    wb = load_workbook(template_path)
+    # Читаем в память — на Linux путь с кириллицей иногда ломает openpyxl.open
+    raw = Path(template_path).read_bytes()
+    wb = load_workbook(BytesIO(raw))
     ws = wb[SHEET_NAME]
     name = (tournament_name or "").strip() or "________________"
     loc = (location or "").strip() or "____________________"
