@@ -951,6 +951,7 @@ function AdminPanel({ user, onLogout }) {
 // ─── СТРАНИЦА ТУРНИРА ─────────────────────────────────────────────────────────
 const DISCIPLINE_LABELS = { kata: "Ката", kumite_ok: "Кумитэ ОК", kumite_pk: "Кумитэ ПК", kumite_sz: "Кумитэ СЗ" }
 const GENDER_LABELS = { male: "муж.", female: "жен." }
+const GENDER_SHORT = { male: "М", female: "Ж" }
 const DRAW_SYSTEM_LABELS = {
   round_robin: "Круговая система",
   single_elimination_repechage: "Олимпийская с утешительной сеткой",
@@ -996,8 +997,17 @@ function normalizeGlobalDrawNumbers(participants) {
   }))
 }
 
-const categoryLabel = (discipline, gender, category_name) =>
-  [DISCIPLINE_LABELS[discipline] || discipline, GENDER_LABELS[gender] || gender, category_name].filter(Boolean).join(" / ")
+const categoryFullName = (discipline, category_name) =>
+  [DISCIPLINE_LABELS[discipline] || discipline, category_name].filter(Boolean).join(" ")
+
+/** Заголовок категории: полное название · М/Ж · возрастная группа */
+const categoryLabel = (discipline, gender, category_name, age_group) =>
+  [categoryFullName(discipline, category_name), GENDER_SHORT[gender] || GENDER_LABELS[gender] || gender, age_group]
+    .filter(Boolean).join(" / ")
+
+const competitionCategoryKey = (a, categoryName) =>
+  `${a.discipline}|${a.gender}|${categoryName}|${a.age_group || ""}`
+
 const nameInList = (participants, id) => (participants.find(p => p.registration_id === id) || {}).full_name || "?"
 
 // ─── ПУБЛИЧНАЯ СТРАНИЦА ТУРНИРА: УЧАСТНИКИ ПО КАТЕГОРИЯМ ───────────────────────
@@ -1054,13 +1064,14 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
   }
 
   const groupAthletes = (list) => Object.values(list.reduce((groups, a) => {
-    const key = `${a.discipline}|${a.gender}|${a.category_name}`
+    const key = competitionCategoryKey(a, a.category_name)
     if (!groups[key]) {
       groups[key] = {
         key,
         discipline: a.discipline,
         gender: a.gender,
         category_name: a.category_name,
+        age_group: a.age_group || null,
         athletes: [],
       }
     }
@@ -1075,8 +1086,8 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
       return String(a.full_name || "").localeCompare(String(b.full_name || ""), "ru")
     }),
   })).sort((a, b) =>
-    categoryLabel(a.discipline, a.gender, a.category_name)
-      .localeCompare(categoryLabel(b.discipline, b.gender, b.category_name), "ru")
+    categoryLabel(a.discipline, a.gender, a.category_name, a.age_group)
+      .localeCompare(categoryLabel(b.discipline, b.gender, b.category_name, b.age_group), "ru")
   )
 
   const allCategories = groupAthletes(athletes)
@@ -1085,7 +1096,7 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
     .sort((a, b) => a.localeCompare(b, "ru"))
   const categoryOptions = allCategories.map(g => ({
     key: g.key,
-    label: categoryLabel(g.discipline, g.gender, g.category_name),
+    label: `${categoryLabel(g.discipline, g.gender, g.category_name, g.age_group)} (${g.athletes.length})`,
   }))
 
   const filteredAthletes = athletes.filter(a => {
@@ -1098,7 +1109,7 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
       if ((a.club_name || "").trim() !== filterClub) return false
     }
     if (filterCategory) {
-      const key = `${a.discipline}|${a.gender}|${a.category_name}`
+      const key = competitionCategoryKey(a, a.category_name)
       if (key !== filterCategory) return false
     }
     return true
@@ -1311,7 +1322,7 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
                       transform: open ? "rotate(90deg)" : "rotate(0deg)",
                       transition: "transform 0.15s ease", fontSize: "16px",
                     }} aria-hidden>▸</span>
-                    {categoryLabel(cat.discipline, cat.gender, cat.category_name)}
+                    {categoryLabel(cat.discipline, cat.gender, cat.category_name, cat.age_group)}
                   </h2>
                   <span style={{ color: "rgba(244,245,247,0.55)", fontSize: "14px" }}>
                     {cat.athletes.length}
@@ -2178,13 +2189,30 @@ function TournamentDetail({ tournament, user, onBack }) {
     return groups
   }, {})
 
+  // Список участников: категория = дисциплина+название + пол + возрастная группа
+  const listGroupsAll = athletes.reduce((groups, a) => {
+    const categoryName = drawCategoryName(a)
+    const key = competitionCategoryKey(a, categoryName)
+    if (!groups[key]) {
+      groups[key] = {
+        discipline: a.discipline,
+        gender: a.gender,
+        category_name: categoryName,
+        age_group: a.age_group || null,
+        athletes: [],
+      }
+    }
+    groups[key].athletes.push(a)
+    return groups
+  }, {})
+
   const surnameQ = filterSurname.trim().toLowerCase()
   const clubOptions = [...new Set(athletes.map(a => (a.club_name || "").trim()).filter(Boolean))]
     .sort((a, b) => a.localeCompare(b, "ru"))
-  const categoryOptions = Object.values(bracketGroups)
+  const categoryOptions = Object.values(listGroupsAll)
     .map(g => ({
-      key: `${g.discipline}|${g.gender}|${g.category_name}`,
-      label: categoryLabel(g.discipline, g.gender, g.category_name),
+      key: `${g.discipline}|${g.gender}|${g.category_name}|${g.age_group || ""}`,
+      label: `${categoryLabel(g.discipline, g.gender, g.category_name, g.age_group)} (${g.athletes.length})`,
     }))
     .sort((a, b) => a.label.localeCompare(b.label, "ru"))
 
@@ -2198,7 +2226,7 @@ function TournamentDetail({ tournament, user, onBack }) {
       if ((a.club_name || "").trim() !== filterClub) return false
     }
     if (filterCategory) {
-      const key = `${a.discipline}|${a.gender}|${drawCategoryName(a)}`
+      const key = competitionCategoryKey(a, drawCategoryName(a))
       if (key !== filterCategory) return false
     }
     return true
@@ -2206,8 +2234,16 @@ function TournamentDetail({ tournament, user, onBack }) {
 
   const filteredBracketGroups = filteredAthletes.reduce((groups, a) => {
     const categoryName = drawCategoryName(a)
-    const key = `${a.discipline}|${a.gender}|${categoryName}`
-    if (!groups[key]) groups[key] = { discipline: a.discipline, gender: a.gender, category_name: categoryName, athletes: [] }
+    const key = competitionCategoryKey(a, categoryName)
+    if (!groups[key]) {
+      groups[key] = {
+        discipline: a.discipline,
+        gender: a.gender,
+        category_name: categoryName,
+        age_group: a.age_group || null,
+        athletes: [],
+      }
+    }
     groups[key].athletes.push(a)
     return groups
   }, {})
@@ -2518,9 +2554,14 @@ function TournamentDetail({ tournament, user, onBack }) {
             <p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Участников пока нет. Добавьте первого!</p>
           ) : Object.keys(filteredBracketGroups).length === 0 ? (
             <p style={{ color: "#4A4A48", textAlign: "center", padding: "24px 0" }}>Ничего не найдено. Измените или сбросьте фильтры.</p>
-          ) : Object.values(filteredBracketGroups).map(group => {
-            const groupKey = `${group.discipline}|${group.gender}|${group.category_name}`
-            const label = categoryLabel(group.discipline, group.gender, group.category_name)
+          ) : Object.values(filteredBracketGroups)
+            .sort((a, b) =>
+              categoryLabel(a.discipline, a.gender, a.category_name, a.age_group)
+                .localeCompare(categoryLabel(b.discipline, b.gender, b.category_name, b.age_group), "ru")
+            )
+            .map(group => {
+            const groupKey = `${group.discipline}|${group.gender}|${group.category_name}|${group.age_group || ""}`
+            const label = categoryLabel(group.discipline, group.gender, group.category_name, group.age_group)
             const open = expandedKeys.has(groupKey)
             return (
               <div key={groupKey} style={{ marginBottom: "12px" }}>
