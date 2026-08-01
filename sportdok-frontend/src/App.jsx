@@ -538,7 +538,6 @@ function AdminPanel({ user, onLogout }) {
   const [clubs, setClubs] = useState([])
   const [selectedTournament, setSelectedTournament] = useState(null)
   const [showForm, setShowForm] = useState(false)
-  const [editingId, setEditingId] = useState(null)
   const [name, setName] = useState("")
   const [location, setLocation] = useState("")
   const [eventDate, setEventDate] = useState("")
@@ -551,13 +550,6 @@ function AdminPanel({ user, onLogout }) {
   const [showSecretaryForm, setShowSecretaryForm] = useState(false)
   const [secretaryForm, setSecretaryForm] = useState({ name: "", email: "", password: "" })
   const [secretaryError, setSecretaryError] = useState("")
-
-  const resetTournamentForm = () => {
-    setEditingId(null)
-    setName(""); setLocation(""); setEventDate(""); setClosesDate("")
-    setCompetitionLevel("municipal"); setChiefJudge(""); setChiefSecretary("")
-    setError(""); setShowForm(false)
-  }
 
   const loadTournaments = async () => {
     try { const r = await axios.get(`${API}/api/v1/tournaments/`); setTournaments(r.data) } catch { setTournaments([]) }
@@ -608,46 +600,21 @@ function AdminPanel({ user, onLogout }) {
     }
   }
 
-  const handleSaveTournament = async () => {
+  const handleCreate = async () => {
     if (!name || !eventDate) { setError("Заполните название и дату"); return }
-    const headers = { Authorization: `Bearer ${user.token}` }
     try {
-      if (editingId) {
-        const r = await axios.patch(`${API}/api/v1/tournaments/${editingId}`, {
-          name, location, event_date: eventDate,
-          registration_closes_at: closesDate || null,
-          competition_level: competitionLevel,
-          chief_judge: chiefJudge || null,
-          chief_secretary: chiefSecretary || null,
-        }, { headers })
-        if (r.data.success === false) { setError(r.data.message || "Ошибка при сохранении"); return }
-      } else {
-        await axios.post(`${API}/api/v1/tournaments/`, {
-          name, location, event_date: eventDate,
-          registration_closes_at: closesDate || null,
-          admin_user_id: user.user_id,
-          competition_level: competitionLevel,
-          chief_judge: chiefJudge || null,
-          chief_secretary: chiefSecretary || null,
-        }, { headers })
-      }
-      resetTournamentForm(); loadTournaments()
-    } catch { setError(editingId ? "Ошибка при сохранении" : "Ошибка при создании") }
-  }
-
-  const handleEditTournament = (t, e) => {
-    e.stopPropagation()
-    setEditingId(t.id)
-    setName(t.name || "")
-    setLocation(t.location || "")
-    setEventDate(String(t.event_date || "").slice(0, 10))
-    setClosesDate(t.registration_closes_at ? String(t.registration_closes_at).slice(0, 10) : "")
-    setCompetitionLevel(t.competition_level === "club" ? "municipal" : t.competition_level === "region" ? "regional" : (t.competition_level || "municipal"))
-    setChiefJudge(t.chief_judge || "")
-    setChiefSecretary(t.chief_secretary || "")
-    setError("")
-    setShowForm(true)
-    window.scrollTo({ top: 0, behavior: "smooth" })
+      await axios.post(`${API}/api/v1/tournaments/`, {
+        name, location, event_date: eventDate,
+        registration_closes_at: closesDate || null,
+        admin_user_id: user.user_id,
+        competition_level: competitionLevel,
+        chief_judge: chiefJudge || null,
+        chief_secretary: chiefSecretary || null,
+      }, { headers: { Authorization: `Bearer ${user.token}` } })
+      setName(""); setLocation(""); setEventDate(""); setClosesDate(""); setCompetitionLevel("municipal")
+      setChiefJudge(""); setChiefSecretary("")
+      setShowForm(false); setError(""); loadTournaments()
+    } catch { setError("Ошибка при создании") }
   }
 
   const handleApprove = async (id) => {
@@ -663,7 +630,6 @@ function AdminPanel({ user, onLogout }) {
     e.stopPropagation()
     if (!window.confirm("Удалить турнир? Это действие необратимо.")) return
     await axios.delete(`${API}/api/v1/tournaments/${id}`, { headers: { Authorization: `Bearer ${user.token}` } })
-    if (editingId === id) resetTournamentForm()
     loadTournaments()
   }
 
@@ -713,8 +679,8 @@ function AdminPanel({ user, onLogout }) {
           <>
             <div style={card}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: showForm ? "24px" : 0 }}>
-                <h2 style={{ margin: 0, color: "#1A56A0" }}>{editingId ? "Редактирование турнира" : "Турниры"}</h2>
-                <button onClick={() => { if (showForm) resetTournamentForm(); else { setEditingId(null); setShowForm(true) } }} style={btnPrimary}>
+                <h2 style={{ margin: 0, color: "#1A56A0" }}>Турниры</h2>
+                <button onClick={() => setShowForm(!showForm)} style={btnPrimary}>
                   {showForm ? "Отмена" : "+ Создать турнир"}
                 </button>
               </div>
@@ -757,9 +723,7 @@ function AdminPanel({ user, onLogout }) {
                     </div>
                   </div>
                   {error && <div style={errorBox}>{error}</div>}
-                  <button onClick={handleSaveTournament} style={btnGreen}>
-                    {editingId ? "Сохранить изменения" : "Создать турнир"}
-                  </button>
+                  <button onClick={handleCreate} style={btnGreen}>Создать турнир</button>
                 </div>
               )}
             </div>
@@ -770,26 +734,15 @@ function AdminPanel({ user, onLogout }) {
                 <div key={t.id} onClick={() => setSelectedTournament(t)} style={{
                   padding: "16px", borderBottom: "1px solid #f3f2ee",
                   display: "flex", justifyContent: "space-between",
-                  alignItems: "center", cursor: "pointer", gap: "12px", flexWrap: "wrap"
+                  alignItems: "center", cursor: "pointer"
                 }}>
-                  <div style={{ flex: "1 1 200px", minWidth: 0 }}>
+                  <div>
                     <div style={{ fontWeight: "bold", color: "#1A56A0" }}>{t.name}</div>
                     <div style={{ color: "#4A4A48", fontSize: "14px" }}>{t.location && `${t.location} · `}{t.event_date}</div>
                   </div>
-                  <div style={{ display: "flex", gap: "10px", alignItems: "center", flexShrink: 0 }}>
+                  <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
                     <span style={{ padding: "4px 12px", background: "#f3f2ee", borderRadius: "6px", fontSize: "13px", color: "#4A4A48" }}>{t.status}</span>
-                    <button
-                      onClick={(e) => handleEditTournament(t, e)}
-                      style={{ ...btnGreen, padding: "12px 22px", fontSize: "15px" }}
-                    >
-                      Редактировать
-                    </button>
-                    <button
-                      onClick={(e) => handleDeleteTournament(t.id, e)}
-                      style={{ ...btnDanger, padding: "4px 10px", fontSize: "12px", fontWeight: "normal" }}
-                    >
-                      Удалить
-                    </button>
+                    <button onClick={(e) => handleDeleteTournament(t.id, e)} style={{ ...btnDanger, padding: "6px 12px", fontSize: "13px" }}>✗ Удалить</button>
                   </div>
                 </div>
               ))}
