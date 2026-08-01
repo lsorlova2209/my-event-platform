@@ -1010,6 +1010,7 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
   const [filterClub, setFilterClub] = useState("")
   const [filterCategory, setFilterCategory] = useState("")
   const [searchOpen, setSearchOpen] = useState({ surname: false, club: false, category: false })
+  const [expandedKeys, setExpandedKeys] = useState(() => new Set())
   const today = todayISO()
   const timing = tournamentTiming(tournament, today)
 
@@ -1112,6 +1113,17 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
     setFilterCategory("")
     setSearchOpen({ surname: false, club: false, category: false })
   }
+  const toggleCategory = (key) => setExpandedKeys(prev => {
+    const next = new Set(prev)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    return next
+  })
+
+  // При выборе одной категории в фильтре — сразу раскрыть её
+  useEffect(() => {
+    if (filterCategory) setExpandedKeys(new Set([filterCategory]))
+  }, [filterCategory])
 
   const showRegion = usesRegionOrg(tournament.competition_level)
   const filterBtn = (active) => ({
@@ -1271,23 +1283,41 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
               <div style={{ ...arenaPanel, textAlign: "center", color: "rgba(244,245,247,0.65)" }}>
                 Ничего не найдено. Измените или сбросьте фильтры.
               </div>
-            ) : categories.map(cat => (
-              <section key={cat.key} style={arenaPanel}>
-                <div style={{
-                  display: "flex", justifyContent: "space-between", alignItems: "baseline",
-                  gap: "12px", flexWrap: "wrap", marginBottom: "16px",
-                  paddingBottom: "12px", borderBottom: "1px solid rgba(255,255,255,0.1)",
-                }}>
+            ) : categories.map(cat => {
+              const open = expandedKeys.has(cat.key)
+              return (
+              <section key={cat.key} style={{ ...arenaPanel, padding: open ? "28px" : "16px 28px" }}>
+                <button
+                  type="button"
+                  onClick={() => toggleCategory(cat.key)}
+                  aria-expanded={open}
+                  style={{
+                    display: "flex", justifyContent: "space-between", alignItems: "center",
+                    gap: "12px", flexWrap: "wrap", width: "100%",
+                    margin: 0, padding: 0, border: "none", background: "transparent",
+                    color: "inherit", cursor: "pointer", textAlign: "left",
+                    marginBottom: open ? "16px" : 0,
+                    paddingBottom: open ? "12px" : 0,
+                    borderBottom: open ? "1px solid rgba(255,255,255,0.1)" : "none",
+                  }}
+                >
                   <h2 style={{
                     margin: 0, fontFamily: "var(--font-display)", fontSize: "22px",
                     fontWeight: 600, letterSpacing: "0.03em", textTransform: "uppercase",
+                    display: "flex", alignItems: "center", gap: "10px",
                   }}>
+                    <span style={{
+                      display: "inline-block", width: "18px", color: "#9ec0ef",
+                      transform: open ? "rotate(90deg)" : "rotate(0deg)",
+                      transition: "transform 0.15s ease", fontSize: "16px",
+                    }} aria-hidden>▸</span>
                     {categoryLabel(cat.discipline, cat.gender, cat.category_name)}
                   </h2>
                   <span style={{ color: "rgba(244,245,247,0.55)", fontSize: "14px" }}>
                     {cat.athletes.length}
                   </span>
-                </div>
+                </button>
+                {open && (
                 <div style={{ overflowX: "auto" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "15px" }}>
                     <thead>
@@ -1326,8 +1356,10 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
                     </tbody>
                   </table>
                 </div>
+                )}
               </section>
-            ))}
+              )
+            })}
           </div>
         )}
       </main>
