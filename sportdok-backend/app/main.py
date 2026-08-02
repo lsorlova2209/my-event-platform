@@ -32,9 +32,11 @@ from app.age_group import compute_age_group
 from app.notifications import send_email, club_confirm_email_body, smtp_configured
 from app.application_import import parse_application_xlsx, preview_dict, fill_application_template
 from app.kata_teams import (
-    is_kata_group_category,
-    assign_kata_group_teams,
+    is_kumite_team_category,
+    is_club_team_category,
+    assign_club_teams,
     collapse_kata_group_for_draw,
+    collapse_kumite_team_for_draw,
     apply_team_seeds,
 )
 
@@ -815,9 +817,14 @@ def _clear_category_draw(db, tournament_id, discipline, gender, category_name, p
 
 def _apply_category_draw(db, tournament_id, discipline, gender, category_name, participants):
     draw_list = participants
-    kata_group = discipline == "kata" and is_kata_group_category(category_name)
-    if kata_group:
-        draw_list = collapse_kata_group_for_draw(participants)
+    club_team = is_club_team_category(discipline, category_name)
+    if club_team:
+        if is_kumite_team_category(discipline, category_name):
+            draw_list = collapse_kumite_team_for_draw(participants)
+            empty_msg = "Нет полных команд (3 или 4 человека одного клуба)"
+        else:
+            draw_list = collapse_kata_group_for_draw(participants)
+            empty_msg = "Нет полных команд (по 3 человека одного клуба)"
         if not draw_list:
             for p in participants:
                 if "_reg" in p:
@@ -827,14 +834,14 @@ def _apply_category_draw(db, tournament_id, discipline, gender, category_name, p
                 "gender": gender,
                 "category_name": category_name,
                 "participant_count": 0,
-                "system": "kata_order",
+                "system": "kata_order" if discipline == "kata" else "single_elimination_repechage",
                 "participants": [],
-                "message": "Нет полных команд (по 3 человека одного клуба)",
+                "message": empty_msg,
             }
 
     result = build_category_draw(discipline, draw_list)
     flat = result.get("participants") or [p for sub in result.get("subgroups") or [] for p in sub["participants"]]
-    if kata_group:
+    if club_team:
         apply_team_seeds(flat)
         for p in flat:
             p.pop("_regs", None)
@@ -961,7 +968,7 @@ def draw_tournament(tournament_id: str, body: DrawRequest = DrawRequest(), curre
     if not tournament:
         return {"success": False, "message": "Турнир не найден"}
 
-    assign_kata_group_teams(db, tournament_id, _region_by_club_name(db))
+    assign_club_teams(db, tournament_id, _region_by_club_name(db))
     db.flush()
 
     groups = _build_tournament_groups(db, tournament_id)
@@ -1429,7 +1436,7 @@ async def import_tournament_application(
         .filter(Registration.tournament_id == tournament_id).all()
         if a.club_name
     }
-    team_stats = assign_kata_group_teams(db, tournament_id, _region_by_club_name(db, club_names))
+    team_stats = assign_club_teams(db, tournament_id, _region_by_club_name(db, club_names))
     db.commit()
 
     msg = (
@@ -1438,7 +1445,7 @@ async def import_tournament_application(
         + (f", строк с ошибками: {len(row_errors)}" if row_errors else "")
     )
     if team_stats.get("teams"):
-        msg += f"; команд ката-группы: {team_stats['teams']}"
+        msg += f"; командных составов: {team_stats['teams']}"
 
     return {
         "success": True,
@@ -1459,19 +1466,20 @@ def assign_kata_group_teams_endpoint(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Собрать команды ката-группы: по 3 человека одного клуба."""
+    """Собрать команды ката-группы (по 3) и командного кумитэ (по 3 или 4) по клубу."""
     require_roles(current_user, {"admin", "owner", "secretary"})
     tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
     if not tournament:
         return {"success": False, "message": "Турнир не найден"}
-    stats = assign_kata_group_teams(db, tournament_id, _region_by_club_name(db))
+    stats = assign_club_teams(db, tournament_id, _region_by_club_name(db))
     db.commit()
     return {
         "success": True,
         **stats,
         "message": (
             f"Собрано команд: {stats['teams']} "
-            f"(участников в ката-группе: {stats['people']}, обновлено записей: {stats['updated']})"
+            f"(участников в командных категориях: {stats['people']}, "
+            f"вне команды: {stats.get('leftovers', 0)}, обновлено записей: {stats['updated']})"
         ),
     }
 
@@ -1584,8 +1592,8 @@ def list_athletes(
 ):
     # Repair жеребьёвки не делаем здесь — только POST .../draw/repair.
     tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
-    # Всегда пересобираем тройки ката-группы, иначе UI показывает весь регион одной «командой»
-    assign_kata_group_teams(db, tournament_id, _region_by_club_name(db))
+    # Всегда пересобираем командные категории (ката-группа и командное кумитэ)
+    assign_club_teams(db, tournament_id, _region_by_club_name(db))
     db.commit()
 
     rows = _registration_athlete_rows(db, tournament_id, discipline=discipline, gender=gender)

@@ -1,21 +1,69 @@
-"""Ката-группа: ровно 3 человека из одного клуба = одна команда.
+"""Командные категории: тройки/четвёрки из одного клуба.
 
-Если в клубе 4+ заявленных в ту же категорию — следующие полные тройки
-этого же клуба (команда 2, 3, …). Остаток 1–2 человека — не команда
-(team_number сбрасывается), в жеребьёвку не входят.
+- Ката-группа: ровно 3 человека.
+- Командное кумитэ («командные соревнования»): 3 или 4 человека.
+Остаток, который нельзя уложить в допустимый размер — вне команды
+(team_number = None), в жеребьёвку не входит.
 """
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Sequence
 
 KATA_GROUP_MARKERS = ("ката-группа", "ката группа")
-KATA_GROUP_TEAM_SIZE = 3
+KUMITE_TEAM_CATEGORY = "командные соревнования"
+KUMITE_DISCIPLINES = {"kumite_ok", "kumite_pk", "kumite_sz"}
 
 
 def is_kata_group_category(category_name: Optional[str]) -> bool:
     name = (category_name or "").strip().lower().replace("ё", "е")
     return any(m in name for m in KATA_GROUP_MARKERS)
+
+
+def is_kumite_team_category(discipline: Optional[str], category_name: Optional[str]) -> bool:
+    if (discipline or "") not in KUMITE_DISCIPLINES:
+        return False
+    return (category_name or "").strip().lower() == KUMITE_TEAM_CATEGORY
+
+
+def is_club_team_category(discipline: Optional[str], category_name: Optional[str]) -> bool:
+    if discipline == "kata" and is_kata_group_category(category_name):
+        return True
+    return is_kumite_team_category(discipline, category_name)
+
+
+def allowed_team_sizes(discipline: Optional[str], category_name: Optional[str]) -> tuple[int, ...]:
+    if is_kumite_team_category(discipline, category_name):
+        return (3, 4)
+    if discipline == "kata" and is_kata_group_category(category_name):
+        return (3,)
+    return ()
+
+
+def pack_team_sizes(n: int, allowed: Sequence[int]) -> list[int]:
+    """Максимум людей в команды размеров из allowed; остаток отбрасывается."""
+    if n <= 0 or not allowed:
+        return []
+    allowed = tuple(sorted(set(int(x) for x in allowed if int(x) > 0), reverse=True))
+    best_s = 0
+    best_counts = None
+    # counts[i] = сколько команд размера allowed[i]
+    from itertools import product
+
+    maxes = [n // s + 1 for s in allowed]
+    for combo in product(*[range(m) for m in maxes]):
+        total = sum(c * s for c, s in zip(combo, allowed))
+        if total <= n and total > best_s:
+            best_s = total
+            best_counts = combo
+    if not best_counts or best_s == 0:
+        return []
+    sizes: list[int] = []
+    for count, size in zip(best_counts, allowed):
+        sizes.extend([size] * count)
+    # сначала более крупные команды
+    sizes.sort(reverse=True)
+    return sizes
 
 
 def _club_key(club_name: Optional[str], region: Optional[str] = None) -> str:
@@ -26,12 +74,8 @@ def _club_key(club_name: Optional[str], region: Optional[str] = None) -> str:
     return r or "Без клуба"
 
 
-def assign_kata_group_teams(db, tournament_id, region_lookup: Optional[dict] = None) -> dict:
-    """Пронумеровать только полные тройки по клубу.
-
-    Внутри (discipline, gender, category_name, club): сортировка по ФИО,
-    куски по 3 → team_number «1», «2», …; хвост 1–2 → team_number = None.
-    """
+def assign_club_teams(db, tournament_id, region_lookup: Optional[dict] = None) -> dict:
+    """Пронумеровать команды ката-группы и командного кумитэ по клубу."""
     from app.models.athlete import Athlete, Registration
 
     if region_lookup is None:
@@ -46,8 +90,10 @@ def assign_kata_group_teams(db, tournament_id, region_lookup: Optional[dict] = N
     )
 
     buckets: dict[tuple, list] = defaultdict(list)
+    size_by_bucket: dict[tuple, tuple[int, ...]] = {}
     for reg, athlete in rows:
-        if reg.discipline != "kata" or not is_kata_group_category(reg.category_name):
+        sizes = allowed_team_sizes(reg.discipline, reg.category_name)
+        if not sizes:
             continue
         region = region_lookup.get(athlete.club_name) if athlete.club_name else None
         key = (
@@ -57,21 +103,26 @@ def assign_kata_group_teams(db, tournament_id, region_lookup: Optional[dict] = N
             _club_key(athlete.club_name, region),
         )
         buckets[key].append(reg)
+        size_by_bucket[key] = sizes
 
     updated = 0
     teams = 0
     leftovers = 0
-    for members in buckets.values():
-        full_count = (len(members) // KATA_GROUP_TEAM_SIZE) * KATA_GROUP_TEAM_SIZE
-        for i in range(0, full_count, KATA_GROUP_TEAM_SIZE):
-            chunk = members[i : i + KATA_GROUP_TEAM_SIZE]
-            team_no = str(i // KATA_GROUP_TEAM_SIZE + 1)
+    for key, members in buckets.items():
+        sizes = pack_team_sizes(len(members), size_by_bucket[key])
+        idx = 0
+        team_no = 0
+        for size in sizes:
+            team_no += 1
+            chunk = members[idx : idx + size]
+            idx += size
             teams += 1
+            num = str(team_no)
             for reg in chunk:
-                if reg.team_number != team_no:
-                    reg.team_number = team_no
+                if reg.team_number != num:
+                    reg.team_number = num
                     updated += 1
-        for reg in members[full_count:]:
+        for reg in members[idx:]:
             leftovers += 1
             if reg.team_number is not None:
                 reg.team_number = None
@@ -86,14 +137,22 @@ def assign_kata_group_teams(db, tournament_id, region_lookup: Optional[dict] = N
     }
 
 
+# Обратная совместимость со старыми импортами
+def assign_kata_group_teams(db, tournament_id, region_lookup: Optional[dict] = None) -> dict:
+    return assign_club_teams(db, tournament_id, region_lookup)
+
+
 def team_display_label(team_number: str, club_name: Optional[str], region: Optional[str]) -> str:
-    """Команда Алтайского края 1 — регион предпочтительнее названия клуба."""
     org = (region or "").strip() or (club_name or "").strip() or "без клуба"
     return f"Команда {org} {team_number}"
 
 
-def collapse_kata_group_for_draw(participants: list[dict]) -> list[dict]:
-    """Свернуть только полные тройки (ровно 3) одного клуба для жеребьёвки."""
+def collapse_club_teams_for_draw(
+    participants: list[dict],
+    allowed_sizes: Sequence[int] = (3,),
+) -> list[dict]:
+    """Свернуть полные команды (размер из allowed_sizes) для жеребьёвки."""
+    allowed = set(int(x) for x in allowed_sizes)
     by_team: dict[tuple, list] = defaultdict(list)
     for p in participants:
         reg = p.get("_reg")
@@ -107,11 +166,13 @@ def collapse_kata_group_for_draw(participants: list[dict]) -> list[dict]:
 
     collapsed = []
     for key, members in by_team.items():
-        if len(members) != KATA_GROUP_TEAM_SIZE:
-            if len(members) > KATA_GROUP_TEAM_SIZE:
-                members = members[:KATA_GROUP_TEAM_SIZE]
-            else:
+        n = len(members)
+        if n not in allowed:
+            # если почему-то больше — обрежем до максимального допустимого
+            max_ok = max((s for s in allowed if s <= n), default=0)
+            if max_ok == 0:
                 continue
+            members = members[:max_ok]
         lead = members[0]
         names = [m.get("full_name") or "" for m in members]
         team_no, club = key
@@ -137,6 +198,14 @@ def collapse_kata_group_for_draw(participants: list[dict]) -> list[dict]:
         int(p["team_number"]) if str(p.get("team_number") or "").isdigit() else 999,
     ))
     return collapsed
+
+
+def collapse_kata_group_for_draw(participants: list[dict]) -> list[dict]:
+    return collapse_club_teams_for_draw(participants, allowed_sizes=(3,))
+
+
+def collapse_kumite_team_for_draw(participants: list[dict]) -> list[dict]:
+    return collapse_club_teams_for_draw(participants, allowed_sizes=(3, 4))
 
 
 def apply_team_seeds(team_participants: Iterable[dict]) -> None:

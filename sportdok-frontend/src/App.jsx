@@ -1280,8 +1280,49 @@ const isKataGroupCategory = (categoryName) => {
   return n.includes("ката-группа") || n.includes("ката группа")
 }
 
-/** Собрать ката-группу: ровно по 3 человека клуба = команда; хвост 1–2 — «вне команды». */
-const groupKataTeams = (athletes) => {
+const isKumiteTeamCategory = (discipline, categoryName) => {
+  if (!["kumite_ok", "kumite_pk", "kumite_sz"].includes(discipline)) return false
+  return String(categoryName || "").trim().toLowerCase() === "командные соревнования"
+}
+
+const isClubTeamCategory = (discipline, categoryName) =>
+  isKataGroupCategory(categoryName) || isKumiteTeamCategory(discipline, categoryName)
+
+const packTeamSizes = (n, allowed) => {
+  const sizes = [...new Set(allowed.map(Number).filter(s => s > 0))].sort((a, b) => b - a)
+  if (n <= 0 || sizes.length === 0) return []
+  let bestUsed = 0
+  let bestCounts = null
+  const maxes = sizes.map(s => Math.floor(n / s) + 1)
+  const walk = (i, rem, counts) => {
+    if (i >= sizes.length) {
+      const used = n - rem
+      if (used > bestUsed) {
+        bestUsed = used
+        bestCounts = counts.slice()
+      }
+      return
+    }
+    const s = sizes[i]
+    for (let c = 0; c < maxes[i]; c++) {
+      const need = c * s
+      if (need > rem) break
+      counts[i] = c
+      walk(i + 1, rem - need, counts)
+    }
+  }
+  walk(0, n, sizes.map(() => 0))
+  if (!bestCounts) return []
+  const out = []
+  bestCounts.forEach((c, i) => {
+    for (let k = 0; k < c; k++) out.push(sizes[i])
+  })
+  out.sort((a, b) => b - a)
+  return out
+}
+
+/** Команды по клубу: ката-группа = 3; командное кумитэ = 3 или 4. */
+const groupClubTeams = (athletes, { allowedSizes = [3], unassignedHint = "команда только из 3 человек одного клуба" } = {}) => {
   const byClub = new Map()
   for (const a of athletes || []) {
     const region = (a.region || "").trim()
@@ -1299,10 +1340,13 @@ const groupKataTeams = (athletes) => {
       (a.full_name || "").localeCompare(b.full_name || "", "ru")
       || String(a.registration_id || "").localeCompare(String(b.registration_id || ""))
     )
+    const sizes = packTeamSizes(sorted.length, allowedSizes)
+    let idx = 0
     let localIdx = 0
-    for (let i = 0; i + 3 <= sorted.length; i += 3) {
+    for (const size of sizes) {
       localIdx += 1
-      const members = sorted.slice(i, i + 3)
+      const members = sorted.slice(idx, idx + size)
+      idx += size
       teams.push({
         key: `${bucket.club_name}|${localIdx}`,
         team_number: String(localIdx),
@@ -1313,11 +1357,9 @@ const groupKataTeams = (athletes) => {
         seed: members.find(m => m.seed != null)?.seed ?? null,
       })
     }
-    const rest = sorted.length % 3
-    if (rest) unassigned.push(...sorted.slice(sorted.length - rest))
+    if (idx < sorted.length) unassigned.push(...sorted.slice(idx))
   }
 
-  // Нумерация в названии по региону: «Команда Алтайского края 1», «… 2»
   const regionCounters = new Map()
   for (const t of teams) {
     const org = (t.region || t.club_name || "без клуба").trim()
@@ -1337,7 +1379,7 @@ const groupKataTeams = (athletes) => {
       members: unassigned,
       complete: false,
       seed: null,
-      label: `Вне команды (${unassigned.length} чел. — команда только из 3 человек одного клуба)`,
+      label: `Вне команды (${unassigned.length} чел. — ${unassignedHint})`,
       unassigned: true,
     })
   }
@@ -1353,6 +1395,25 @@ const groupKataTeams = (athletes) => {
     return String(a.team_number || "").localeCompare(String(b.team_number || ""), "ru", { numeric: true })
   })
 }
+
+const groupTeamsForCategory = (discipline, categoryName, athletes) => {
+  if (isKumiteTeamCategory(discipline, categoryName)) {
+    return groupClubTeams(athletes, {
+      allowedSizes: [3, 4],
+      unassignedHint: "команда из 3 или 4 человек одного клуба",
+    })
+  }
+  if (isKataGroupCategory(categoryName)) {
+    return groupClubTeams(athletes, {
+      allowedSizes: [3],
+      unassignedHint: "команда только из 3 человек одного клуба",
+    })
+  }
+  return null
+}
+
+/** @deprecated alias */
+const groupKataTeams = (athletes) => groupClubTeams(athletes, { allowedSizes: [3] })
 const needsWeighAdmit = (a) => {
   if (a.weigh_required === true) return true
   if (a.weigh_required === false) return false
@@ -1877,8 +1938,8 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
                           <span style={{ color: "rgba(244,245,247,0.55)", fontSize: "13px" }}>
                             {(() => {
                               const n = athletesReady ? (cat.athletes?.length || 0) : (cat.count || lazyRows?.length || 0)
-                              if (isKataGroupCategory(cat.category_name) && athletesReady) {
-                                const teams = groupKataTeams(cat.athletes || [])
+                              if (isClubTeamCategory(cat.discipline, cat.category_name) && athletesReady) {
+                                const teams = groupTeamsForCategory(cat.discipline, cat.category_name, cat.athletes || []) || []
                                 const full = teams.filter(t => t.complete).length
                                 return `${full} ком. · ${n} чел.`
                               }
@@ -1889,10 +1950,10 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
                         {open && (
                         rowsLoading ? (
                           <p style={{ color: "rgba(244,245,247,0.55)", margin: 0 }}>Загрузка списка…</p>
-                        ) : isKataGroupCategory(cat.category_name) ? (
+                        ) : isClubTeamCategory(cat.discipline, cat.category_name) ? (
                         <>
                         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                          {groupKataTeams(rows).map((team, ti) => (
+                          {(groupTeamsForCategory(cat.discipline, cat.category_name, rows) || []).map((team, ti) => (
                             <div key={team.key} style={{
                               border: "1px solid rgba(255,255,255,0.1)",
                               borderRadius: "8px",
@@ -3499,8 +3560,8 @@ function TournamentDetail({ tournament, user, onBack }) {
                                 transition: "transform 0.15s ease", fontSize: "12px",
                               }} aria-hidden>▸</span>
                               {label} ({
-                                isKataGroupCategory(group.category_name) && athletesReady
-                                  ? `${groupKataTeams(rows).filter(t => t.complete).length} ком. · ${count}`
+                                isClubTeamCategory(group.discipline, group.category_name) && athletesReady
+                                  ? `${(groupTeamsForCategory(group.discipline, group.category_name, rows) || []).filter(t => t.complete).length} ком. · ${count}`
                                   : count
                               })
                             </span>
@@ -3508,8 +3569,8 @@ function TournamentDetail({ tournament, user, onBack }) {
                           {open && (
                             rowsLoading ? (
                               <p style={{ color: "#4A4A48", padding: "12px 4px", fontSize: "14px" }}>Загрузка списка…</p>
-                            ) : isKataGroupCategory(group.category_name) ? (
-                              groupKataTeams(rows).map((team, ti) => (
+                            ) : isClubTeamCategory(group.discipline, group.category_name) ? (
+                              (groupTeamsForCategory(group.discipline, group.category_name, rows) || []).map((team, ti) => (
                                 <div key={team.key} style={{
                                   margin: "6px 0 10px", padding: "8px",
                                   background: "#f9f8f4", borderRadius: "6px", border: "1px solid #E8E6DC",
@@ -3681,7 +3742,7 @@ function TournamentDetail({ tournament, user, onBack }) {
           <p style={{ margin: "10px 0 0", color: "#4A4A48", fontSize: "13px", lineHeight: 1.4 }}>
             В жеребьёвку попадают только допущенные: для ката, АБС, двоеборья и команд — кнопка «Допустить»;
             для весовых категорий кумитэ — «Допустить» и «Допустить по весу».
-            В ката-группе жеребится команда до 3 человек одного клуба (если в клубе больше — следующие команды этого клуба; неполные не входят).
+            В ката-группе — команда из 3 человек одного клуба; в командном кумитэ — из 3 или 4 (неполные не входят).
             На публичной странице жеребьёвка видна только после публикации.
             {drawPublished ? " Сейчас опубликована." : " Сейчас не опубликована."}
           </p>
