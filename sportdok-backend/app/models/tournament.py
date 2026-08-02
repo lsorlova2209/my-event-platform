@@ -21,6 +21,8 @@ class Tournament(Base):
     chief_secretary = Column(String, nullable=True)
     # Путь вида /uploads/tournaments/<id>.jpg
     cover_image = Column(String, nullable=True)
+    # Путь вида /uploads/tournaments/<id>_regulations.pdf
+    regulations_pdf = Column(String, nullable=True)
     # Жеребьёвка на публичной странице только после публикации админом
     draw_published = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)

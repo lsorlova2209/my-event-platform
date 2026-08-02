@@ -564,6 +564,10 @@ function AdminPanel({ user, onLogout }) {
   const [coverFile, setCoverFile] = useState(null)
   const [coverPreview, setCoverPreview] = useState("")
   const coverInputRef = useRef(null)
+  const [regulationsFile, setRegulationsFile] = useState(null)
+  const [regulationsName, setRegulationsName] = useState("")
+  const [regulationsUrl, setRegulationsUrl] = useState("")
+  const regulationsInputRef = useRef(null)
   const [error, setError] = useState("")
   const [secretaries, setSecretaries] = useState([])
   const [showSecretaryForm, setShowSecretaryForm] = useState(false)
@@ -575,8 +579,10 @@ function AdminPanel({ user, onLogout }) {
     setName(""); setLocation(""); setEventDate(""); setClosesDate("")
     setCompetitionLevel("municipal"); setChiefJudge(""); setChiefSecretary("")
     setCoverFile(null); setCoverPreview("")
+    setRegulationsFile(null); setRegulationsName(""); setRegulationsUrl("")
     setError(""); setShowForm(false)
     if (coverInputRef.current) coverInputRef.current.value = ""
+    if (regulationsInputRef.current) regulationsInputRef.current.value = ""
   }
 
   const handleCoverPick = (e) => {
@@ -591,6 +597,21 @@ function AdminPanel({ user, onLogout }) {
     setError("")
     setCoverFile(file)
     setCoverPreview(URL.createObjectURL(file))
+  }
+
+  const handleRegulationsPick = (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name)
+    if (!isPdf) {
+      setError("Нужен файл PDF"); return
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      setError("Файл больше 20 МБ"); return
+    }
+    setError("")
+    setRegulationsFile(file)
+    setRegulationsName(file.name)
   }
 
   const loadTournaments = async () => {
@@ -676,6 +697,14 @@ function AdminPanel({ user, onLogout }) {
         })
         if (up.data.success === false) { setError(up.data.message || "Ошибка загрузки фото"); return }
       }
+      if (regulationsFile && tournamentId) {
+        const form = new FormData()
+        form.append("file", regulationsFile)
+        const up = await axios.post(`${API}/api/v1/tournaments/${tournamentId}/regulations`, form, {
+          headers: { Authorization: `Bearer ${user.token}` },
+        })
+        if (up.data.success === false) { setError(up.data.message || "Ошибка загрузки положения"); return }
+      }
       resetTournamentForm(); loadTournaments()
     } catch { setError(editingId ? "Ошибка при сохранении" : "Ошибка при создании") }
   }
@@ -697,6 +726,10 @@ function AdminPanel({ user, onLogout }) {
     setCoverFile(null)
     setCoverPreview(t.cover_image ? mediaUrl(t.cover_image) : "")
     if (coverInputRef.current) coverInputRef.current.value = ""
+    setRegulationsFile(null)
+    setRegulationsName("")
+    setRegulationsUrl(t.regulations_pdf ? mediaUrl(t.regulations_pdf) : "")
+    if (regulationsInputRef.current) regulationsInputRef.current.value = ""
     setError("")
     setShowForm(true)
     window.scrollTo({ top: 0, behavior: "smooth" })
@@ -833,6 +866,58 @@ function AdminPanel({ user, onLogout }) {
                       )}
                     </div>
                     <div style={{ color: "#4A4A48", fontSize: "12px", marginTop: "6px" }}>JPG, PNG или WebP, до 20 МБ</div>
+                  </div>
+                  <div style={{ marginBottom: "16px" }}>
+                    <label style={labelStyle}>Положение о соревнованиях (PDF)</label>
+                    <input
+                      ref={regulationsInputRef}
+                      type="file"
+                      accept="application/pdf,.pdf"
+                      onChange={handleRegulationsPick}
+                      style={{ display: "none" }}
+                    />
+                    <div style={{ display: "flex", gap: "12px", alignItems: "center", flexWrap: "wrap" }}>
+                      <button type="button" onClick={() => regulationsInputRef.current?.click()} style={btnOutline}>
+                        {regulationsFile || regulationsUrl ? "Сменить PDF" : "Добавить PDF"}
+                      </button>
+                      {regulationsUrl && !regulationsFile && editingId && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              const r = await axios.delete(`${API}/api/v1/tournaments/${editingId}/regulations`, {
+                                headers: { Authorization: `Bearer ${user.token}` },
+                              })
+                              if (r.data.success === false) { setError(r.data.message || "Не удалось удалить"); return }
+                              setRegulationsUrl("")
+                              setRegulationsName("")
+                              loadTournaments()
+                            } catch {
+                              setError("Не удалось удалить положение")
+                            }
+                          }}
+                          style={{ ...btnOutline, color: "#B42318", borderColor: "#F5C2C0" }}
+                        >
+                          Удалить PDF
+                        </button>
+                      )}
+                      {(regulationsFile || regulationsUrl) && (
+                        <span style={{ color: "#1A56A0", fontSize: "14px" }}>
+                          {regulationsName || "Файл загружен"}
+                          {regulationsUrl && !regulationsFile && (
+                            <>
+                              {" · "}
+                              <a href={regulationsUrl} target="_blank" rel="noreferrer" style={{ color: "#1A56A0" }}>
+                                открыть
+                              </a>
+                            </>
+                          )}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ color: "#4A4A48", fontSize: "12px", marginTop: "6px" }}>
+                      PDF до 20 МБ — появится кнопкой на странице турнира
+                    </div>
                   </div>
                   {error && <div style={errorBox}>{error}</div>}
                   <button onClick={handleSaveTournament} style={btnGreen}>
@@ -1425,6 +1510,24 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
           ← К турнирам
         </button>
         <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+          {tournament.regulations_pdf && (
+            <a
+              href={mediaUrl(tournament.regulations_pdf)}
+              target="_blank"
+              rel="noreferrer"
+              className="arena-btn"
+              style={{
+                ...arenaBtnGhost,
+                padding: "10px 18px",
+                fontSize: "14px",
+                textDecoration: "none",
+                display: "inline-flex",
+                alignItems: "center",
+              }}
+            >
+              Положение о соревнованиях
+            </a>
+          )}
           <button
             onClick={downloadPdf}
             disabled={pdfLoading || loading || displayTotal === 0}

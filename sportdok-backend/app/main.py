@@ -61,6 +61,10 @@ ALLOWED_COVER_TYPES = {
 }
 MAX_COVER_BYTES = 20 * 1024 * 1024
 MAX_IMPORT_BYTES = 20 * 1024 * 1024
+MAX_REGULATIONS_BYTES = 20 * 1024 * 1024
+ALLOWED_REGULATIONS_TYPES = {
+    "application/pdf": ".pdf",
+}
 APPLICATION_TEMPLATE_NAME = "Шаблон_заявки_СпортДок_по_образцу_ПР.xlsx"
 APPLICATION_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[2] / "docs" / "templates" / APPLICATION_TEMPLATE_NAME
@@ -79,19 +83,24 @@ def tournament_public_dict(t: Tournament) -> dict:
         "chief_judge": t.chief_judge,
         "chief_secretary": t.chief_secretary,
         "cover_image": t.cover_image,
+        "regulations_pdf": getattr(t, "regulations_pdf", None),
         "draw_published": bool(getattr(t, "draw_published", False)),
     }
 
 
-def _unlink_cover(cover_image: Optional[str]) -> None:
-    if not cover_image or not cover_image.startswith("/uploads/tournaments/"):
+def _unlink_tournament_upload(relative_path: Optional[str]) -> None:
+    if not relative_path or not relative_path.startswith("/uploads/tournaments/"):
         return
-    path = UPLOAD_ROOT / cover_image.removeprefix("/uploads/")
+    path = UPLOAD_ROOT / relative_path.removeprefix("/uploads/")
     try:
         if path.is_file() and path.resolve().is_relative_to(TOURNAMENT_UPLOAD_DIR.resolve()):
             path.unlink()
     except OSError:
         pass
+
+
+def _unlink_cover(cover_image: Optional[str]) -> None:
+    _unlink_tournament_upload(cover_image)
 
 
 # ─── СХЕМЫ ────────────────────────────────────────────────────────────────────
@@ -236,6 +245,9 @@ def apply_schema_patches():
         ))
         conn.execute(text(
             "ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS draw_published BOOLEAN DEFAULT FALSE NOT NULL"
+        ))
+        conn.execute(text(
+            "ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS regulations_pdf VARCHAR"
         ))
 
 @app.on_event("startup")
@@ -548,6 +560,61 @@ async def upload_tournament_cover(
     return {"success": True, **tournament_public_dict(tournament)}
 
 
+@app.post("/api/v1/tournaments/{tournament_id}/regulations")
+async def upload_tournament_regulations(
+    tournament_id: str,
+    file: UploadFile = File(...),
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_roles(current_user, {"admin", "owner"})
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        return {"success": False, "message": "Турнир не найден"}
+
+    content_type = (file.content_type or "").split(";")[0].strip().lower()
+    filename_hint = (file.filename or "").lower()
+    is_pdf = content_type in ALLOWED_REGULATIONS_TYPES or filename_hint.endswith(".pdf")
+    if not is_pdf:
+        return {"success": False, "message": "Нужен файл PDF"}
+
+    data = await file.read()
+    if not data:
+        return {"success": False, "message": "Пустой файл"}
+    if len(data) > MAX_REGULATIONS_BYTES:
+        return {"success": False, "message": "Файл больше 20 МБ"}
+    if not data.startswith(b"%PDF"):
+        return {"success": False, "message": "Файл не похож на PDF"}
+
+    _unlink_tournament_upload(getattr(tournament, "regulations_pdf", None))
+    filename = f"{tournament.id}_regulations.pdf"
+    dest = TOURNAMENT_UPLOAD_DIR / filename
+    with dest.open("wb") as out:
+        out.write(data)
+
+    tournament.regulations_pdf = f"/uploads/tournaments/{filename}"
+    db.commit()
+    db.refresh(tournament)
+    return {"success": True, **tournament_public_dict(tournament)}
+
+
+@app.delete("/api/v1/tournaments/{tournament_id}/regulations")
+def delete_tournament_regulations(
+    tournament_id: str,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_roles(current_user, {"admin", "owner"})
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        return {"success": False, "message": "Турнир не найден"}
+    _unlink_tournament_upload(getattr(tournament, "regulations_pdf", None))
+    tournament.regulations_pdf = None
+    db.commit()
+    db.refresh(tournament)
+    return {"success": True, **tournament_public_dict(tournament)}
+
+
 @app.delete("/api/v1/tournaments/{tournament_id}")
 def delete_tournament(tournament_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     require_roles(current_user, {"admin", "owner"})
@@ -556,10 +623,12 @@ def delete_tournament(tournament_id: str, current_user=Depends(get_current_user)
         return {"success": False, "message": "Турнир не найден"}
     name = tournament.name
     cover = tournament.cover_image
+    regulations = getattr(tournament, "regulations_pdf", None)
     db.query(Registration).filter(Registration.tournament_id == tournament_id).delete()
     db.delete(tournament)
     db.commit()
     _unlink_cover(cover)
+    _unlink_tournament_upload(regulations)
     return {"success": True, "message": f"Турнир {name} удалён"}
 
 def draw_category_key(discipline, category_name):
