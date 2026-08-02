@@ -1015,6 +1015,22 @@ const competitionCategoryKey = (a, categoryName) =>
 const AGE_GROUP_FALLBACK = "Без возрастной группы"
 const ageGroupBucketKey = (age_group) => `age|${(age_group || "").trim() || AGE_GROUP_FALLBACK}`
 
+/** Сортировка возрастных групп: 10-11 → 12-13 → … → взрослые */
+const ageGroupSortKey = (label) => {
+  const s = (label || "").trim()
+  if (!s || s === AGE_GROUP_FALLBACK) return [9999, s || AGE_GROUP_FALLBACK]
+  const m = s.match(/(\d+)/)
+  if (m) return [parseInt(m[1], 10), s]
+  return [100, s] // Мужчины / Женщины
+}
+
+const compareAgeGroups = (a, b) => {
+  const [ka, sa] = ageGroupSortKey(a)
+  const [kb, sb] = ageGroupSortKey(b)
+  if (ka !== kb) return ka - kb
+  return sa.localeCompare(sb, "ru")
+}
+
 const groupCategoriesByAge = (categories) => {
   const map = new Map()
   for (const cat of categories) {
@@ -1025,7 +1041,15 @@ const groupCategoriesByAge = (categories) => {
     bucket.categories.push(cat)
     bucket.count += cat.athletes?.length || cat.count || 0
   }
-  return [...map.values()].sort((a, b) => a.age_group.localeCompare(b.age_group, "ru"))
+  return [...map.values()]
+    .map(bucket => ({
+      ...bucket,
+      categories: [...bucket.categories].sort((a, b) =>
+        categoryLabelInAge(a.discipline, a.gender, a.category_name)
+          .localeCompare(categoryLabelInAge(b.discipline, b.gender, b.category_name), "ru")
+      ),
+    }))
+    .sort((a, b) => compareAgeGroups(a.age_group, b.age_group))
 }
 
 const NO_WEIGH_CATEGORIES = new Set(["абсолютная категория", "двоеборье", "командные соревнования"])
