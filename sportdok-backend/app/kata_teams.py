@@ -1,4 +1,8 @@
-"""Ката-группа: 3 участника одного региона = одна команда."""
+"""Ката-группа: максимум 3 человека из одного клуба = одна команда.
+
+Если в клубе больше 3 заявленных в ту же категорию — из остальных
+собираются следующие команды этого же клуба (4–6 → команда 2 и т.д.).
+"""
 from __future__ import annotations
 
 from collections import defaultdict
@@ -13,27 +17,22 @@ def is_kata_group_category(category_name: Optional[str]) -> bool:
     return any(m in name for m in KATA_GROUP_MARKERS)
 
 
-def _region_key(region: Optional[str], club_name: Optional[str]) -> str:
-    r = (region or "").strip()
-    if r:
-        return r
-    c = (club_name or "").strip()
-    return c or "Без региона"
+def _club_key(club_name: Optional[str]) -> str:
+    return (club_name or "").strip() or "Без клуба"
 
 
 def assign_kata_group_teams(db, tournament_id, region_lookup: Optional[dict] = None) -> dict:
-    """Пронумеровать команды в категориях ката-группа.
+    """Пронумеровать команды в категориях ката-группа по клубу.
 
-    Внутри (discipline, gender, category_name, region) участники сортируются
+    Внутри (discipline, gender, category_name, club) участники сортируются
     по ФИО и режутся тройками: 1–3 → команда «1», 4–6 → «2» и т.д.
     Неполная последняя тройка тоже получает номер (для отображения).
 
-    Возвращает {updated, categories, teams}.
+    region_lookup не влияет на состав команд (оставлен для совместимости вызовов).
+
+    Возвращает {updated, categories, teams, people}.
     """
     from app.models.athlete import Athlete, Registration
-
-    if region_lookup is None:
-        region_lookup = {}
 
     rows = (
         db.query(Registration, Athlete)
@@ -47,12 +46,11 @@ def assign_kata_group_teams(db, tournament_id, region_lookup: Optional[dict] = N
     for reg, athlete in rows:
         if reg.discipline != "kata" or not is_kata_group_category(reg.category_name):
             continue
-        region = region_lookup.get(athlete.club_name) if athlete.club_name else None
         key = (
             reg.discipline,
             athlete.gender or "",
             (reg.category_name or "").strip(),
-            _region_key(region, athlete.club_name),
+            _club_key(athlete.club_name),
         )
         buckets[key].append(reg)
 
@@ -70,17 +68,15 @@ def assign_kata_group_teams(db, tournament_id, region_lookup: Optional[dict] = N
 
     return {
         "updated": updated,
-        "categories": len({(d, g, c) for (d, g, c, _r) in buckets.keys()}),
+        "categories": len({(d, g, c) for (d, g, c, _club) in buckets.keys()}),
         "teams": teams,
         "people": sum(len(v) for v in buckets.values()),
     }
 
 
 def collapse_kata_group_for_draw(participants: list[dict]) -> list[dict]:
-    """Свернуть полные тройки в одну запись для жеребьёвки.
+    """Свернуть полные тройки одного клуба в одну запись для жеребьёвки.
 
-    participants: dicts with registration_id, club_name, region?, team_number?,
-    full_name, rank_sort_order, _reg.
     Неполные команды (<3) в жеребьёвку не входят.
     """
     by_team: dict[tuple, list] = defaultdict(list)
@@ -89,26 +85,26 @@ def collapse_kata_group_for_draw(participants: list[dict]) -> list[dict]:
         team_no = (getattr(reg, "team_number", None) if reg is not None else None) or p.get("team_number")
         if not team_no:
             continue
-        region = (p.get("region") or "").strip() or _region_key(None, p.get("club_name"))
-        key = (str(team_no), region)
+        club = _club_key(p.get("club_name"))
+        key = (str(team_no), club)
         by_team[key].append(p)
 
     collapsed = []
     for key, members in by_team.items():
         if len(members) < KATA_GROUP_TEAM_SIZE:
             continue
-        # берём ровно первые 3 (на случай >3 с одним номером)
         members = members[:KATA_GROUP_TEAM_SIZE]
         lead = members[0]
         names = [m.get("full_name") or "" for m in members]
-        region = key[1]
-        team_no = key[0]
+        team_no, club = key
+        region = (lead.get("region") or "").strip()
+        label_org = f"{club}" + (f" · {region}" if region else "")
         collapsed.append({
             **{k: v for k, v in lead.items() if k != "_reg"},
             "registration_id": lead["registration_id"],
-            "full_name": f"Команда {team_no} · {region}",
-            "club_name": lead.get("club_name") or region,
-            "region": region if isinstance(region, str) else lead.get("region"),
+            "full_name": f"Команда {team_no} · {label_org}",
+            "club_name": club,
+            "region": region or lead.get("region"),
             "team_number": team_no,
             "team_member_ids": [m["registration_id"] for m in members],
             "team_member_names": names,
@@ -119,8 +115,10 @@ def collapse_kata_group_for_draw(participants: list[dict]) -> list[dict]:
             "_regs": [m["_reg"] for m in members if "_reg" in m],
             "_reg": lead.get("_reg"),
         })
-    # стабильный порядок: регион, номер команды
-    collapsed.sort(key=lambda p: ((p.get("region") or ""), int(p["team_number"]) if str(p.get("team_number") or "").isdigit() else 999))
+    collapsed.sort(key=lambda p: (
+        (p.get("club_name") or ""),
+        int(p["team_number"]) if str(p.get("team_number") or "").isdigit() else 999,
+    ))
     return collapsed
 
 

@@ -1280,17 +1280,19 @@ const isKataGroupCategory = (categoryName) => {
   return n.includes("ката-группа") || n.includes("ката группа")
 }
 
-/** Собрать участников ката-группы в команды (team_number + регион). */
+/** Собрать участников ката-группы в команды (team_number + клуб, макс. 3). */
 const groupKataTeams = (athletes) => {
   const map = new Map()
   for (const a of athletes || []) {
-    const region = (a.region || a.club_name || "Без региона").trim()
+    const club = (a.club_name || "Без клуба").trim()
+    const region = (a.region || "").trim()
     const num = String(a.team_number || "").trim() || "?"
-    const key = `${num}|${region}`
+    const key = `${num}|${club}`
     if (!map.has(key)) {
       map.set(key, {
         key,
         team_number: num === "?" ? null : num,
+        club_name: club,
         region,
         members: [],
       })
@@ -1302,13 +1304,18 @@ const groupKataTeams = (athletes) => {
       ...t,
       complete: t.members.length >= 3,
       seed: t.members.find(m => m.seed != null)?.seed ?? null,
+      label: [
+        t.team_number ? `Команда ${t.team_number}` : "Команда",
+        t.club_name,
+        t.region,
+      ].filter(Boolean).join(" · "),
     }))
     .sort((a, b) => {
       const sa = a.seed ?? 9999
       const sb = b.seed ?? 9999
       if (sa !== sb) return sa - sb
-      const ra = (a.region || "").localeCompare(b.region || "", "ru")
-      if (ra) return ra
+      const ca = (a.club_name || "").localeCompare(b.club_name || "", "ru")
+      if (ca) return ca
       return String(a.team_number || "").localeCompare(String(b.team_number || ""), "ru", { numeric: true })
     })
 }
@@ -1864,7 +1871,7 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
                               }}>
                                 <span>
                                   {team.seed != null ? `№${team.seed} · ` : `${ti + 1}. `}
-                                  Команда {team.team_number || "—"} · {team.region}
+                                  {team.label}
                                   {!team.complete && (
                                     <span style={{ color: "#f0a8a8", fontWeight: 600 }}>
                                       {` · неполная (${team.members.length}/3)`}
@@ -3473,7 +3480,7 @@ function TournamentDetail({ tournament, user, onBack }) {
                                   }}>
                                     <span>
                                       {team.seed != null ? `№${team.seed} · ` : `${ti + 1}. `}
-                                      Команда {team.team_number || "—"} · {team.region}
+                                      {team.label}
                                       {!team.complete && (
                                         <span style={{ color: "#A32D2D", fontWeight: "normal" }}>
                                           {` · неполная (${team.members.length}/3)`}
@@ -3626,7 +3633,7 @@ function TournamentDetail({ tournament, user, onBack }) {
           <p style={{ margin: "10px 0 0", color: "#4A4A48", fontSize: "13px", lineHeight: 1.4 }}>
             В жеребьёвку попадают только допущенные: для ката, АБС, двоеборья и команд — кнопка «Допустить»;
             для весовых категорий кумитэ — «Допустить» и «Допустить по весу».
-            В ката-группе жеребится команда из 3 человек одного региона (неполные тройки не входят).
+            В ката-группе жеребится команда до 3 человек одного клуба (если в клубе больше — следующие команды этого клуба; неполные не входят).
             На публичной странице жеребьёвка видна только после публикации.
             {drawPublished ? " Сейчас опубликована." : " Сейчас не опубликована."}
           </p>

@@ -829,7 +829,7 @@ def _apply_category_draw(db, tournament_id, discipline, gender, category_name, p
                 "participant_count": 0,
                 "system": "kata_order",
                 "participants": [],
-                "message": "Нет полных команд (по 3 человека одного региона)",
+                "message": "Нет полных команд (по 3 человека одного клуба)",
             }
 
     result = build_category_draw(discipline, draw_list)
@@ -1459,7 +1459,7 @@ def assign_kata_group_teams_endpoint(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Собрать команды ката-группы: по 3 человека одного региона."""
+    """Собрать команды ката-группы: по 3 человека одного клуба."""
     require_roles(current_user, {"admin", "owner", "secretary"})
     tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
     if not tournament:
