@@ -1921,6 +1921,12 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
                                 }}>
                                   <span style={{ fontWeight: 600 }}>{a.full_name}</span>
                                   {a.rank ? <span style={{ color: "rgba(244,245,247,0.55)" }}>{` · ${a.rank}`}</span> : null}
+                                  {team.unassigned && (a.club_name || a.region) ? (
+                                    <span style={{ color: "rgba(244,245,247,0.55)" }}>
+                                      {` · ${a.club_name || a.region}`}
+                                      {a.club_name && a.region && a.club_name !== a.region ? ` (${a.region})` : ""}
+                                    </span>
+                                  ) : null}
                                 </div>
                               ))}
                             </div>
@@ -3538,10 +3544,18 @@ function TournamentDetail({ tournament, user, onBack }) {
                                       padding: "4px 2px", borderTop: "1px solid #E8E6DC",
                                       display: "flex", justifyContent: "space-between", alignItems: "center", gap: "6px",
                                     }}>
-                                      <div style={{ fontSize: "11px", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                      <div style={{ fontSize: "11px", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                                        title={[a.full_name, a.rank, a.club_name, a.region].filter(Boolean).join(" · ")}
+                                      >
                                         <span style={{ color: "#4A4A48", marginRight: "4px" }}>{i + 1}.</span>
                                         <span style={{ fontWeight: "bold", color: "#1A56A0" }}>{a.full_name}</span>
                                         {a.rank ? <span style={{ color: "#4A4A48" }}>{` · ${a.rank}`}</span> : null}
+                                        {team.unassigned && (a.club_name || a.region) ? (
+                                          <span style={{ color: "#4A4A48" }}>
+                                            {` · ${a.club_name || a.region}`}
+                                            {a.club_name && a.region && a.club_name !== a.region ? ` (${a.region})` : ""}
+                                          </span>
+                                        ) : null}
                                       </div>
                                       <div style={{ display: "flex", gap: "3px", flexShrink: 0 }}>
                                         {a.admission_status === "approved" ? (
