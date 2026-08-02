@@ -1509,43 +1509,9 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
         <button onClick={onBack} className="arena-btn" style={{ ...arenaBtnGhost, padding: "10px 16px", fontSize: "14px" }}>
           ← К турнирам
         </button>
-        <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
-          {tournament.regulations_pdf && (
-            <a
-              href={mediaUrl(tournament.regulations_pdf)}
-              target="_blank"
-              rel="noreferrer"
-              className="arena-btn"
-              style={{
-                ...arenaBtnGhost,
-                padding: "10px 18px",
-                fontSize: "14px",
-                textDecoration: "none",
-                display: "inline-flex",
-                alignItems: "center",
-              }}
-            >
-              Положение о соревнованиях
-            </a>
-          )}
-          <button
-            onClick={downloadPdf}
-            disabled={pdfLoading || loading || displayTotal === 0}
-            className="arena-btn"
-            style={{
-              ...arenaBtnPrimary,
-              padding: "10px 18px",
-              fontSize: "14px",
-              opacity: (pdfLoading || loading || displayTotal === 0) ? 0.55 : 1,
-              cursor: (pdfLoading || loading || displayTotal === 0) ? "not-allowed" : "pointer",
-            }}
-          >
-            {pdfLoading ? "Готовим PDF…" : "Скачать PDF"}
-          </button>
-          <button onClick={onLoginClick} className="arena-btn" style={{ ...arenaBtnGhost, padding: "10px 18px", fontSize: "14px" }}>
-            Войти
-          </button>
-        </div>
+        <button onClick={onLoginClick} className="arena-btn" style={{ ...arenaBtnGhost, padding: "10px 18px", fontSize: "14px" }}>
+          Войти
+        </button>
       </div>
 
       <main style={{ maxWidth: "1100px", margin: "0 auto", padding: "36px clamp(16px, 3vw, 28px) 72px" }}>
@@ -1584,6 +1550,40 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
                   : `${displayTotal} участников · ${displayCatCount} категорий`}
               </span>
             )}
+          </div>
+          <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginTop: "16px" }}>
+            {tournament.regulations_pdf && (
+              <a
+                href={mediaUrl(tournament.regulations_pdf)}
+                target="_blank"
+                rel="noreferrer"
+                className="arena-btn"
+                style={{
+                  ...arenaBtnGhost,
+                  padding: "10px 18px",
+                  fontSize: "14px",
+                  textDecoration: "none",
+                  display: "inline-flex",
+                  alignItems: "center",
+                }}
+              >
+                Положение о соревнованиях
+              </a>
+            )}
+            <button
+              onClick={downloadPdf}
+              disabled={pdfLoading || loading || displayTotal === 0}
+              className="arena-btn"
+              style={{
+                ...arenaBtnPrimary,
+                padding: "10px 18px",
+                fontSize: "14px",
+                opacity: (pdfLoading || loading || displayTotal === 0) ? 0.55 : 1,
+                cursor: (pdfLoading || loading || displayTotal === 0) ? "not-allowed" : "pointer",
+              }}
+            >
+              {pdfLoading ? "Готовим PDF…" : "Скачать PDF"}
+            </button>
           </div>
           {pdfError && (
             <div style={{ ...errorBox, background: "rgba(163,45,45,0.28)", color: "#f0a8a8", marginTop: "14px" }}>
