@@ -1537,7 +1537,7 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
                               transform: open ? "rotate(90deg)" : "rotate(0deg)",
                               transition: "transform 0.15s ease", fontSize: "13px",
                             }} aria-hidden>▸</span>
-                            {categoryLabelInAge(cat.discipline, cat.gender, cat.category_name)}
+                            {categoryLabel(cat.discipline, cat.gender, cat.category_name, cat.age_group)}
                           </h3>
                           <span style={{ color: "rgba(244,245,247,0.55)", fontSize: "13px" }}>
                             {athletesReady ? (cat.athletes?.length || 0) : (cat.count || lazyRows?.length || 0)}
@@ -1554,6 +1554,7 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
                                 <th style={{ padding: "8px 10px", fontWeight: 600, width: "48px" }}>№</th>
                                 <th style={{ padding: "8px 10px", fontWeight: 600 }}>ФИО</th>
                                 <th style={{ padding: "8px 10px", fontWeight: 600 }}>{showRegion ? "Регион" : "Клуб"}</th>
+                                <th style={{ padding: "8px 10px", fontWeight: 600 }}>Разряд</th>
                                 <th style={{ padding: "8px 10px", fontWeight: 600 }}>Возраст</th>
                                 {cat.discipline !== "kata" && (
                                   <th style={{ padding: "8px 10px", fontWeight: 600 }}>Вес</th>
@@ -1571,6 +1572,9 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
                                   <td style={{ padding: "10px", fontWeight: 600 }}>{a.full_name}</td>
                                   <td style={{ padding: "10px", color: "rgba(244,245,247,0.72)" }}>
                                     {showRegion ? (a.region || a.club_name || "—") : (a.club_name || "—")}
+                                  </td>
+                                  <td style={{ padding: "10px", color: "rgba(244,245,247,0.72)" }}>
+                                    {a.rank || "—"}
                                   </td>
                                   <td style={{ padding: "10px", color: "rgba(244,245,247,0.72)" }}>
                                     {a.age_group || "—"}
@@ -3024,7 +3028,7 @@ function TournamentDetail({ tournament, user, onBack }) {
                   <div style={{ marginTop: "6px", paddingLeft: "6px" }}>
                     {ageBucket.categories.map(group => {
                       const groupKey = group.key || `${group.discipline}|${group.gender}|${group.category_name}|${group.age_group || ""}`
-                      const label = categoryLabelInAge(group.discipline, group.gender, group.category_name)
+                      const label = categoryLabel(group.discipline, group.gender, group.category_name, group.age_group)
                       const open = expandedKeys.has(groupKey)
                       const lazyRows = lazyByKey[groupKey]
                       const rows = athletesReady
