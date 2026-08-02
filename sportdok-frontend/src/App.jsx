@@ -2744,6 +2744,11 @@ function TournamentDetail({ tournament, user, onBack }) {
   const [lazyByKey, setLazyByKey] = useState({})
   const lazyInflightRef = useRef(new Set())
   const lazyLoadedRef = useRef(new Set())
+  const [rosterOrgs, setRosterOrgs] = useState([])
+  const [rosterOrgLabel, setRosterOrgLabel] = useState("Команда")
+  const [rosterOrg, setRosterOrg] = useState("")
+  const [rosterLoading, setRosterLoading] = useState(false)
+  const [rosterError, setRosterError] = useState("")
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
@@ -2785,6 +2790,59 @@ function TournamentDetail({ tournament, user, onBack }) {
       lazyLoadedRef.current = new Set()
     } catch { setAthletes([]) }
     finally { setAthletesLoading(false) }
+    loadRosterOrgs()
+  }
+  const loadRosterOrgs = async () => {
+    try {
+      const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/documents/team-roster/orgs`)
+      const orgs = Array.isArray(r.data?.orgs) ? r.data.orgs : []
+      setRosterOrgs(orgs)
+      setRosterOrgLabel(r.data?.org_label || (usesRegionOrg(tournament.competition_level) ? "Регион" : "Команда"))
+      setRosterOrg(prev => (prev && orgs.includes(prev) ? prev : (orgs[0] || "")))
+    } catch {
+      setRosterOrgs([])
+      setRosterOrg("")
+    }
+  }
+  const downloadTeamRoster = async () => {
+    if (!rosterOrg) return
+    setRosterError("")
+    setRosterLoading(true)
+    try {
+      const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/documents/team-roster`, {
+        params: { org: rosterOrg },
+        responseType: "blob",
+        headers: user?.token ? { Authorization: `Bearer ${user.token}` } : {},
+      })
+      if (r.data?.type === "application/json") {
+        const text = await r.data.text()
+        const parsed = JSON.parse(text)
+        setRosterError(parsed.message || "Не удалось скачать справку")
+        return
+      }
+      const url = window.URL.createObjectURL(r.data)
+      const a = document.createElement("a")
+      a.href = url
+      const safeOrg = String(rosterOrg).replace(/[\\/:*?"<>|]/g, "_").slice(0, 40)
+      a.download = `справка_${safeOrg}_${(tournament.name || "tournament").replace(/[\\/:*?"<>|]/g, "_").slice(0, 40)}.xlsx`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      window.URL.revokeObjectURL(url)
+    } catch (e) {
+      let msg = "Не удалось скачать справку"
+      try {
+        if (e.response?.data instanceof Blob) {
+          const parsed = JSON.parse(await e.response.data.text())
+          msg = parsed.message || msg
+        } else if (e.response?.data?.message) {
+          msg = e.response.data.message
+        }
+      } catch { /* ignore */ }
+      setRosterError(msg)
+    } finally {
+      setRosterLoading(false)
+    }
   }
   const loadBouts = async () => {
     try { const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/bouts`); setBouts(r.data) } catch { setBouts([]) }
@@ -3203,6 +3261,7 @@ function TournamentDetail({ tournament, user, onBack }) {
     try {
       const r = await axios.post(`${API}/api/v1/registrations/${registrationId}/admit`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
       if (r.data?.success === false) patchRegistrationLocal(registrationId, { admission_status: null })
+      else loadRosterOrgs()
     } catch {
       patchRegistrationLocal(registrationId, { admission_status: null })
     }
@@ -3212,6 +3271,7 @@ function TournamentDetail({ tournament, user, onBack }) {
     try {
       const r = await axios.post(`${API}/api/v1/registrations/${registrationId}/reset-admission`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
       if (r.data?.success === false) patchRegistrationLocal(registrationId, { admission_status: "approved" })
+      else loadRosterOrgs()
     } catch {
       patchRegistrationLocal(registrationId, { admission_status: "approved" })
     }
@@ -3305,6 +3365,46 @@ function TournamentDetail({ tournament, user, onBack }) {
             <button onClick={() => window.open(`${API}/api/v1/tournaments/${tournament.id}/documents/excel`, "_blank")} style={btnOutline}>Скачать Excel (по категориям)</button>
             <button onClick={() => window.open(`${API}/api/v1/tournaments/${tournament.id}/documents/pdf`, "_blank")} style={btnOutline}>Скачать PDF</button>
           </div>
+        </div>
+
+        <div style={{ ...card, marginBottom: "16px" }}>
+          <h2 style={{ margin: "0 0 8px", color: "#1A56A0", fontSize: "18px" }}>Справка по команде</h2>
+          <p style={{ margin: "0 0 14px", color: "#4A4A48", fontSize: "14px" }}>
+            Допущенные участники и виды программы — как в образце ФВКР
+            ({rosterOrgLabel === "Регион" ? "по региону" : "по команде"}).
+          </p>
+          <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "flex-end" }}>
+            <div style={{ flex: "1 1 220px", minWidth: "180px" }}>
+              <label style={labelStyle}>{rosterOrgLabel}</label>
+              <select
+                value={rosterOrg}
+                onChange={e => setRosterOrg(e.target.value)}
+                style={inputStyle}
+                disabled={rosterOrgs.length === 0}
+              >
+                {rosterOrgs.length === 0 ? (
+                  <option value="">Нет допущенных участников</option>
+                ) : (
+                  rosterOrgs.map(o => <option key={o} value={o}>{o}</option>)
+                )}
+              </select>
+            </div>
+            <button
+              type="button"
+              onClick={downloadTeamRoster}
+              disabled={!rosterOrg || rosterLoading}
+              style={{
+                ...btnPrimary,
+                opacity: (!rosterOrg || rosterLoading) ? 0.55 : 1,
+                cursor: (!rosterOrg || rosterLoading) ? "not-allowed" : "pointer",
+              }}
+            >
+              {rosterLoading ? "Готовим…" : "Скачать справку (Excel)"}
+            </button>
+          </div>
+          {rosterError && (
+            <div style={{ ...errorBox, marginTop: "12px" }}>{rosterError}</div>
+          )}
         </div>
 
         {(user?.role === "admin" || user?.role === "owner") && (

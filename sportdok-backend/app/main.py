@@ -10,6 +10,7 @@ from typing import Optional, List
 from io import BytesIO
 from pathlib import Path
 import os
+import re
 import secrets
 from urllib.parse import quote
 
@@ -26,7 +27,16 @@ from app.auth import hash_password, verify_password, create_token, get_current_u
 from app.draw import build_category_draw, subgroup_for_draw_number
 from app.kumite_protocol import determine_winner
 from app.kata_protocol import ROUND_SCALES, validate_scores, compute_total, determine_round_result
-from app.documents import build_category_excel_zip, build_pdf, build_participants_list_pdf, team_standings
+from app.documents import (
+    build_category_excel_zip,
+    build_pdf,
+    build_participants_list_pdf,
+    build_team_roster_xlsx,
+    format_program_type,
+    team_standings,
+    _uses_region_org,
+    _full_years,
+)
 from app.kata_registry import KATA_TYPES, KATA_STYLE_ORDER, kata_style
 from app.age_group import compute_age_group
 from app.notifications import send_email, club_confirm_email_body, smtp_configured
@@ -2405,6 +2415,124 @@ def export_participants_pdf(tournament_id: str, db: Session = Depends(get_db)):
         media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename=sportdok_participants_{tournament_id[:8]}.pdf"}
     )
+
+
+def _team_roster_org_options(tournament, db):
+    """Список регионов или клубов, у которых есть хотя бы один допущенный."""
+    level = (tournament.competition_level or "municipal")
+    use_region = _uses_region_org(level)
+    rows = _registration_athlete_rows(db, tournament.id)
+    club_names = {athlete.club_name for _, athlete in rows if athlete.club_name}
+    region_lookup = _region_by_club_name(db, club_names)
+    orgs = set()
+    for reg, athlete in rows:
+        if getattr(reg, "admission_status", None) != "approved":
+            continue
+        if use_region:
+            org = (region_lookup.get(athlete.club_name) if athlete.club_name else None) or athlete.club_name
+        else:
+            org = athlete.club_name or (region_lookup.get(athlete.club_name) if athlete.club_name else None)
+        if org and str(org).strip():
+            orgs.add(str(org).strip())
+    return sorted(orgs, key=lambda s: s.casefold()), ("Регион" if use_region else "Команда")
+
+
+@app.get("/api/v1/tournaments/{tournament_id}/documents/team-roster/orgs")
+def list_team_roster_orgs(tournament_id: str, db: Session = Depends(get_db)):
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        return {"success": False, "message": "Турнир не найден", "orgs": [], "org_label": "Команда"}
+    orgs, label = _team_roster_org_options(tournament, db)
+    return {"success": True, "orgs": orgs, "org_label": label}
+
+
+@app.get("/api/v1/tournaments/{tournament_id}/documents/team-roster")
+def export_team_roster(
+    tournament_id: str,
+    org: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_optional_user),
+):
+    """Справка по команде/региону: допущенные и виды программы (как образец ФВКР)."""
+    org_value = (org or "").strip()
+    if not org_value:
+        return {"success": False, "message": "Укажите команду или регион (параметр org)"}
+
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        return {"success": False, "message": "Турнир не найден"}
+
+    level = tournament.competition_level or "municipal"
+    use_region = _uses_region_org(level)
+    org_label = "Регион" if use_region else "Команда"
+
+    rows = _registration_athlete_rows(db, tournament_id)
+    club_names = {athlete.club_name for _, athlete in rows if athlete.club_name}
+    region_lookup = _region_by_club_name(db, club_names)
+
+    # athlete_id → block
+    blocks = {}
+    order = []
+    for reg, athlete in rows:
+        if getattr(reg, "admission_status", None) != "approved":
+            continue
+        if use_region:
+            person_org = (region_lookup.get(athlete.club_name) if athlete.club_name else None) or athlete.club_name
+        else:
+            person_org = athlete.club_name or (region_lookup.get(athlete.club_name) if athlete.club_name else None)
+        if (person_org or "").strip() != org_value:
+            continue
+
+        aid = str(athlete.id)
+        if aid not in blocks:
+            full_name = f"{athlete.last_name} {athlete.first_name} {athlete.middle_name or ''}".strip()
+            age = athlete.age_years or _full_years(athlete.birth_date, tournament.event_date)
+            blocks[aid] = {
+                "full_name": full_name,
+                "age_years": age,
+                "entries": [],
+                "_sort": (athlete.last_name or "", athlete.first_name or "", athlete.middle_name or ""),
+            }
+            order.append(aid)
+        blocks[aid]["entries"].append({
+            "program": format_program_type(reg.discipline, reg.category_name),
+            "trainer_name": athlete.trainer_name or "",
+            "_disc": reg.discipline or "",
+            "_cat": reg.category_name or "",
+        })
+
+    if not blocks:
+        return {
+            "success": False,
+            "message": f"Нет допущенных участников для «{org_value}»",
+        }
+
+    athletes_blocks = []
+    for aid in sorted(order, key=lambda i: blocks[i]["_sort"]):
+        block = blocks[aid]
+        entries = sorted(block["entries"], key=lambda e: (e["_disc"], e["_cat"]))
+        athletes_blocks.append({
+            "full_name": block["full_name"],
+            "age_years": block["age_years"],
+            "entries": [{"program": e["program"], "trainer_name": e["trainer_name"]} for e in entries],
+        })
+
+    tournament_info = {
+        "name": tournament.name,
+        "location": tournament.location,
+        "event_date": str(tournament.event_date) if tournament.event_date else None,
+        "competition_level": level,
+    }
+    buffer = build_team_roster_xlsx(tournament_info, athletes_blocks, org_label, org_value)
+    safe_org = re.sub(r"[^\w\-]+", "_", org_value, flags=re.UNICODE)[:40] or "team"
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename=sportdok_team_{safe_org}_{tournament_id[:8]}.xlsx"
+        },
+    )
+
 
 # ─── СПРАВОЧНИКИ ──────────────────────────────────────────────────────────────
 

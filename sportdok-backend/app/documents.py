@@ -5,7 +5,8 @@ from datetime import date, datetime
 from io import BytesIO
 from pathlib import Path
 from openpyxl import Workbook, load_workbook
-from openpyxl.styles import Font, Alignment
+from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+from openpyxl.utils import get_column_letter
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -2272,5 +2273,166 @@ def build_participants_list_pdf(tournament, categories):
             story.append(table)
 
     doc.build(story)
+    buffer.seek(0)
+    return buffer
+
+
+def format_program_type(discipline, category_name):
+    """Вид программы как в справке команды: «ОК - ката группа», «ОК - 50кг»."""
+    raw = (category_name or "").strip()
+    if not raw:
+        return "—"
+    if discipline == "kata" or raw.upper().startswith(("ОК-", "ПК-", "СЗ-", "ОК ", "ПК ", "СЗ ")):
+        m = re.match(r"^(ОК|ПК|СЗ)[\s\-]+(.+)$", raw, re.IGNORECASE)
+        if m:
+            rest = m.group(2).replace("-", " ").strip()
+            return f"{m.group(1).upper()} - {rest}"
+        return raw.replace("-", " - ", 1) if "-" in raw else raw
+
+    short = DISCIPLINE_SHORT.get(discipline or "")
+    if not short:
+        return raw
+    low = raw.lower()
+    special = {
+        "командные соревнования": "команды",
+        "двоеборье": "двоеборье",
+        "абсолютная категория": "АБС",
+    }
+    if low in special:
+        return f"{short} - {special[low]}"
+    if re.fullmatch(r"\d+", raw):
+        return f"{short} - {raw}кг"
+    if re.fullmatch(r"\d+\s*кг", low):
+        return f"{short} - {raw.replace(' ', '')}"
+    return f"{short} - {raw}"
+
+
+def _full_years(birth_date, event_date):
+    if not birth_date or not event_date:
+        return ""
+    b = birth_date if isinstance(birth_date, date) else None
+    e = event_date if isinstance(event_date, date) else None
+    if b is None:
+        try:
+            b = date.fromisoformat(str(birth_date)[:10])
+        except ValueError:
+            return ""
+    if e is None:
+        try:
+            e = date.fromisoformat(str(event_date)[:10])
+        except ValueError:
+            return ""
+    years = e.year - b.year - ((e.month, e.day) < (b.month, b.day))
+    return str(years) if years >= 0 else ""
+
+
+def build_team_roster_xlsx(tournament, athletes_blocks, org_label, org_value):
+    """Справка по команде/региону: допущенные участники и виды программы.
+
+    athletes_blocks: [
+      {
+        "full_name", "age_years",
+        "entries": [{"program", "trainer_name"}, ...]
+      }, ...
+    ]
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Справка"
+
+    thin = Border(
+        left=Side(style="thin", color="B0B0B0"),
+        right=Side(style="thin", color="B0B0B0"),
+        top=Side(style="thin", color="B0B0B0"),
+        bottom=Side(style="thin", color="B0B0B0"),
+    )
+    header_fill = PatternFill("solid", fgColor="F2F2F2")
+    alt_fill = PatternFill("solid", fgColor="F7F7F7")
+    bold = Font(name="Arial", bold=True, size=14)
+    normal = Font(name="Arial", size=11)
+    small_bold = Font(name="Arial", bold=True, size=10)
+    small = Font(name="Arial", size=10)
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    left = Alignment(horizontal="left", vertical="center", wrap_text=True)
+
+    title = (tournament.get("name") or "Турнир").strip()
+    ws.merge_cells("A1:F1")
+    c = ws["A1"]
+    c.value = title
+    c.font = bold
+    c.alignment = Alignment(horizontal="center", vertical="center")
+
+    loc = (tournament.get("location") or "").strip()
+    dt = _fmt_date(tournament.get("event_date"))
+    ws.merge_cells("A2:C2")
+    ws["A2"].value = loc
+    ws["A2"].font = normal
+    ws["A2"].alignment = Alignment(horizontal="left", vertical="center")
+    ws.merge_cells("D2:F2")
+    ws["D2"].value = f"{dt} г." if dt else ""
+    ws["D2"].font = normal
+    ws["D2"].alignment = Alignment(horizontal="right", vertical="center")
+
+    ws["A3"].value = org_label
+    ws["A3"].font = small_bold
+    ws["A3"].alignment = left
+    ws.merge_cells("B3:F3")
+    ws["B3"].value = org_value or "—"
+    ws["B3"].font = normal
+    ws["B3"].fill = header_fill
+    ws["B3"].alignment = left
+
+    headers = ["№", "Ф.И.О.", "Полных л", "Вид программы", "Тренер", "Кол-во"]
+    header_row = 5
+    for col, h in enumerate(headers, start=1):
+        cell = ws.cell(header_row, col, h)
+        cell.font = small_bold
+        cell.alignment = center
+        cell.fill = header_fill
+        cell.border = thin
+
+    widths = [5, 32, 10, 28, 22, 8]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    row = header_row + 1
+    for idx, block in enumerate(athletes_blocks, start=1):
+        entries = block.get("entries") or []
+        if not entries:
+            continue
+        for ei, entry in enumerate(entries):
+            is_first = ei == 0
+            ws.cell(row, 1, idx if is_first else "").font = small
+            ws.cell(row, 1).alignment = center
+            ws.cell(row, 2, block["full_name"] if is_first else "").font = small_bold if is_first else small
+            ws.cell(row, 2).alignment = left
+            ws.cell(row, 3, block.get("age_years") if is_first else "").font = small
+            ws.cell(row, 3).alignment = center
+            ws.cell(row, 4, entry.get("program") or "—").font = small
+            ws.cell(row, 4).alignment = left
+            ws.cell(row, 5, entry.get("trainer_name") or "—").font = small
+            ws.cell(row, 5).alignment = left
+            ws.cell(row, 6, 1).font = small
+            ws.cell(row, 6).alignment = center
+            for col in range(1, 7):
+                cell = ws.cell(row, col)
+                cell.border = thin
+                if idx % 2 == 0:
+                    cell.fill = alt_fill
+            row += 1
+        for col in range(1, 7):
+            ws.cell(row - 1, col).border = Border(
+                left=Side(style="thin", color="B0B0B0"),
+                right=Side(style="thin", color="B0B0B0"),
+                top=Side(style="thin", color="B0B0B0"),
+                bottom=Side(style="medium", color="888888"),
+            )
+
+    ws.row_dimensions[1].height = 22
+    ws.row_dimensions[2].height = 18
+    ws.row_dimensions[header_row].height = 20
+
+    buffer = BytesIO()
+    wb.save(buffer)
     buffer.seek(0)
     return buffer
