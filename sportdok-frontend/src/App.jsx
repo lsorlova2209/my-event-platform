@@ -1570,6 +1570,20 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
                 Положение о соревнованиях
               </a>
             )}
+            <a
+              href={`${API}/api/v1/tournaments/${tournament.id}/templates/application`}
+              className="arena-btn"
+              style={{
+                ...arenaBtnGhost,
+                padding: "10px 18px",
+                fontSize: "14px",
+                textDecoration: "none",
+                display: "inline-flex",
+                alignItems: "center",
+              }}
+            >
+              Образец заявки
+            </a>
             <button
               onClick={downloadPdf}
               disabled={pdfLoading || loading || displayTotal === 0}
@@ -1582,7 +1596,7 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
                 cursor: (pdfLoading || loading || displayTotal === 0) ? "not-allowed" : "pointer",
               }}
             >
-              {pdfLoading ? "Готовим PDF…" : "Скачать PDF"}
+              {pdfLoading ? "Готовим PDF…" : "Скачать список участников"}
             </button>
           </div>
           {pdfError && (
