@@ -1274,6 +1274,44 @@ const groupCategoriesByAge = (categories) => {
 }
 
 const NO_WEIGH_CATEGORIES = new Set(["абсолютная категория", "двоеборье", "командные соревнования"])
+
+const isKataGroupCategory = (categoryName) => {
+  const n = String(categoryName || "").toLowerCase().replace(/ё/g, "е")
+  return n.includes("ката-группа") || n.includes("ката группа")
+}
+
+/** Собрать участников ката-группы в команды (team_number + регион). */
+const groupKataTeams = (athletes) => {
+  const map = new Map()
+  for (const a of athletes || []) {
+    const region = (a.region || a.club_name || "Без региона").trim()
+    const num = String(a.team_number || "").trim() || "?"
+    const key = `${num}|${region}`
+    if (!map.has(key)) {
+      map.set(key, {
+        key,
+        team_number: num === "?" ? null : num,
+        region,
+        members: [],
+      })
+    }
+    map.get(key).members.push(a)
+  }
+  return [...map.values()]
+    .map(t => ({
+      ...t,
+      complete: t.members.length >= 3,
+      seed: t.members.find(m => m.seed != null)?.seed ?? null,
+    }))
+    .sort((a, b) => {
+      const sa = a.seed ?? 9999
+      const sb = b.seed ?? 9999
+      if (sa !== sb) return sa - sb
+      const ra = (a.region || "").localeCompare(b.region || "", "ru")
+      if (ra) return ra
+      return String(a.team_number || "").localeCompare(String(b.team_number || ""), "ru", { numeric: true })
+    })
+}
 const needsWeighAdmit = (a) => {
   if (a.weigh_required === true) return true
   if (a.weigh_required === false) return false
@@ -1796,12 +1834,61 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
                             {categoryLabel(cat.discipline, cat.gender, cat.category_name, cat.age_group)}
                           </h3>
                           <span style={{ color: "rgba(244,245,247,0.55)", fontSize: "13px" }}>
-                            {athletesReady ? (cat.athletes?.length || 0) : (cat.count || lazyRows?.length || 0)}
+                            {(() => {
+                              const n = athletesReady ? (cat.athletes?.length || 0) : (cat.count || lazyRows?.length || 0)
+                              if (isKataGroupCategory(cat.category_name) && athletesReady) {
+                                const teams = groupKataTeams(cat.athletes || [])
+                                const full = teams.filter(t => t.complete).length
+                                return `${full} ком. · ${n} чел.`
+                              }
+                              return n
+                            })()}
                           </span>
                         </button>
                         {open && (
                         rowsLoading ? (
                           <p style={{ color: "rgba(244,245,247,0.55)", margin: 0 }}>Загрузка списка…</p>
+                        ) : isKataGroupCategory(cat.category_name) ? (
+                        <>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                          {groupKataTeams(rows).map((team, ti) => (
+                            <div key={team.key} style={{
+                              border: "1px solid rgba(255,255,255,0.1)",
+                              borderRadius: "8px",
+                              padding: "12px 14px",
+                              background: "rgba(255,255,255,0.02)",
+                            }}>
+                              <div style={{
+                                display: "flex", justifyContent: "space-between", gap: "10px", flexWrap: "wrap",
+                                marginBottom: "8px", fontWeight: 700, color: "#9ec0ef", fontSize: "14px",
+                              }}>
+                                <span>
+                                  {team.seed != null ? `№${team.seed} · ` : `${ti + 1}. `}
+                                  Команда {team.team_number || "—"} · {team.region}
+                                  {!team.complete && (
+                                    <span style={{ color: "#f0a8a8", fontWeight: 600 }}>
+                                      {` · неполная (${team.members.length}/3)`}
+                                    </span>
+                                  )}
+                                </span>
+                              </div>
+                              {team.members.map(a => (
+                                <div key={a.registration_id || a.id} style={{
+                                  padding: "4px 0", fontSize: "14px",
+                                  color: "rgba(244,245,247,0.85)",
+                                  borderTop: "1px solid rgba(255,255,255,0.06)",
+                                }}>
+                                  <span style={{ fontWeight: 600 }}>{a.full_name}</span>
+                                  {a.rank ? <span style={{ color: "rgba(244,245,247,0.55)" }}>{` · ${a.rank}`}</span> : null}
+                                </div>
+                              ))}
+                            </div>
+                          ))}
+                        </div>
+                        {drawPublished && rows.some(a => a.seed != null) && (
+                          <PublicCategoryDraw athletes={rows} discipline={cat.discipline} dark />
+                        )}
+                        </>
                         ) : (
                         <>
                         <div style={{ overflowX: "auto" }}>
@@ -2575,6 +2662,13 @@ function TournamentDetail({ tournament, user, onBack }) {
 
   const loadAthletes = async () => {
     try {
+      try {
+        await axios.post(
+          `${API}/api/v1/tournaments/${tournament.id}/kata-group/assign-teams`,
+          {},
+          { headers: { Authorization: `Bearer ${user.token}` } },
+        )
+      } catch { /* кнопка/старые роли — список всё равно загрузим */ }
       const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/athletes`)
       setAthletes(Array.isArray(r.data) ? r.data : [])
       setAthletesTotal(Array.isArray(r.data) ? r.data.length : 0)
@@ -3357,12 +3451,75 @@ function TournamentDetail({ tournament, user, onBack }) {
                                 transform: open ? "rotate(90deg)" : "rotate(0deg)",
                                 transition: "transform 0.15s ease", fontSize: "12px",
                               }} aria-hidden>▸</span>
-                              {label} ({count})
+                              {label} ({
+                                isKataGroupCategory(group.category_name) && athletesReady
+                                  ? `${groupKataTeams(rows).filter(t => t.complete).length} ком. · ${count}`
+                                  : count
+                              })
                             </span>
                           </button>
                           {open && (
                             rowsLoading ? (
                               <p style={{ color: "#4A4A48", padding: "12px 4px", fontSize: "14px" }}>Загрузка списка…</p>
+                            ) : isKataGroupCategory(group.category_name) ? (
+                              groupKataTeams(rows).map((team, ti) => (
+                                <div key={team.key} style={{
+                                  margin: "6px 0 10px", padding: "8px",
+                                  background: "#f9f8f4", borderRadius: "6px", border: "1px solid #E8E6DC",
+                                }}>
+                                  <div style={{
+                                    fontWeight: "bold", color: "#1A56A0", fontSize: "12px", marginBottom: "6px",
+                                    display: "flex", justifyContent: "space-between", gap: "8px", flexWrap: "wrap",
+                                  }}>
+                                    <span>
+                                      {team.seed != null ? `№${team.seed} · ` : `${ti + 1}. `}
+                                      Команда {team.team_number || "—"} · {team.region}
+                                      {!team.complete && (
+                                        <span style={{ color: "#A32D2D", fontWeight: "normal" }}>
+                                          {` · неполная (${team.members.length}/3)`}
+                                        </span>
+                                      )}
+                                    </span>
+                                    {team.complete && team.members.some(m => m.admission_status !== "approved") && (
+                                      <button
+                                        type="button"
+                                        onClick={() => team.members.forEach(m => {
+                                          if (m.admission_status !== "approved") handleAdmit(m.registration_id)
+                                        })}
+                                        style={{ ...btnGreen, padding: "2px 8px", fontSize: "10px", borderRadius: "4px" }}
+                                      >
+                                        Допустить команду
+                                      </button>
+                                    )}
+                                  </div>
+                                  {team.members.map((a, i) => (
+                                    <div key={a.registration_id} style={{
+                                      padding: "4px 2px", borderTop: "1px solid #E8E6DC",
+                                      display: "flex", justifyContent: "space-between", alignItems: "center", gap: "6px",
+                                    }}>
+                                      <div style={{ fontSize: "11px", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                        <span style={{ color: "#4A4A48", marginRight: "4px" }}>{i + 1}.</span>
+                                        <span style={{ fontWeight: "bold", color: "#1A56A0" }}>{a.full_name}</span>
+                                        {a.rank ? <span style={{ color: "#4A4A48" }}>{` · ${a.rank}`}</span> : null}
+                                      </div>
+                                      <div style={{ display: "flex", gap: "3px", flexShrink: 0 }}>
+                                        {a.admission_status === "approved" ? (
+                                          <button type="button" onClick={() => handleResetAdmission(a.registration_id)} title="Сбросить допуск"
+                                            style={{ ...btnOutline, padding: "2px 6px", fontSize: "10px", borderRadius: "4px", color: "#0F6E56", fontWeight: "bold", borderColor: "#0F6E56", minWidth: 0, lineHeight: 1.2 }}>
+                                            ✓ Допущен
+                                          </button>
+                                        ) : (
+                                          <button onClick={() => handleAdmit(a.registration_id)} style={{ ...btnGreen, padding: "2px 6px", fontSize: "10px", borderRadius: "4px", minWidth: 0, lineHeight: 1.2 }}>✓ Допустить</button>
+                                        )}
+                                        <button onClick={() => setEditingAthleteId(a.id)} title="Изменить"
+                                          style={{ ...btnOutline, padding: "2px 6px", fontSize: "10px", borderRadius: "4px", minWidth: 0, lineHeight: 1.2 }}>Изменить</button>
+                                        <button onClick={() => handleDeleteAthlete(a.id)} title="Удалить"
+                                          style={{ ...btnDanger, padding: "2px 6px", fontSize: "10px", borderRadius: "4px", minWidth: 0, lineHeight: 1.2 }}>Удалить</button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ))
                             ) : [...rows]
                             .sort((a, b) => (a.seed ?? 999) - (b.seed ?? 999) || (a.full_name || "").localeCompare(b.full_name || "", "ru"))
                             .map((a, i) => (
@@ -3469,6 +3626,7 @@ function TournamentDetail({ tournament, user, onBack }) {
           <p style={{ margin: "10px 0 0", color: "#4A4A48", fontSize: "13px", lineHeight: 1.4 }}>
             В жеребьёвку попадают только допущенные: для ката, АБС, двоеборья и команд — кнопка «Допустить»;
             для весовых категорий кумитэ — «Допустить» и «Допустить по весу».
+            В ката-группе жеребится команда из 3 человек одного региона (неполные тройки не входят).
             На публичной странице жеребьёвка видна только после публикации.
             {drawPublished ? " Сейчас опубликована." : " Сейчас не опубликована."}
           </p>

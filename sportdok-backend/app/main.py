@@ -31,6 +31,12 @@ from app.kata_registry import KATA_TYPES, KATA_STYLE_ORDER, kata_style
 from app.age_group import compute_age_group
 from app.notifications import send_email, club_confirm_email_body, smtp_configured
 from app.application_import import parse_application_xlsx, preview_dict, fill_application_template
+from app.kata_teams import (
+    is_kata_group_category,
+    assign_kata_group_teams,
+    collapse_kata_group_for_draw,
+    apply_team_seeds,
+)
 
 Base.metadata.create_all(bind=engine)
 
@@ -808,17 +814,43 @@ def _clear_category_draw(db, tournament_id, discipline, gender, category_name, p
 
 
 def _apply_category_draw(db, tournament_id, discipline, gender, category_name, participants):
-    result = build_category_draw(discipline, participants)
-    flat = result.get("participants") or [p for sub in result["subgroups"] for p in sub["participants"]]
-    for p in flat:
-        p["_reg"].seed = p["seed"]
-        p["_reg"].subgroup = p.get("subgroup")
-        del p["_reg"]
+    draw_list = participants
+    kata_group = discipline == "kata" and is_kata_group_category(category_name)
+    if kata_group:
+        draw_list = collapse_kata_group_for_draw(participants)
+        if not draw_list:
+            for p in participants:
+                if "_reg" in p:
+                    del p["_reg"]
+            return {
+                "discipline": discipline,
+                "gender": gender,
+                "category_name": category_name,
+                "participant_count": 0,
+                "system": "kata_order",
+                "participants": [],
+                "message": "Нет полных команд (по 3 человека одного региона)",
+            }
+
+    result = build_category_draw(discipline, draw_list)
+    flat = result.get("participants") or [p for sub in result.get("subgroups") or [] for p in sub["participants"]]
+    if kata_group:
+        apply_team_seeds(flat)
+        for p in flat:
+            p.pop("_regs", None)
+            p.pop("_reg", None)
+        for p in participants:
+            p.pop("_reg", None)
+    else:
+        for p in flat:
+            p["_reg"].seed = p["seed"]
+            p["_reg"].subgroup = p.get("subgroup")
+            del p["_reg"]
     return {
         "discipline": discipline,
         "gender": gender,
         "category_name": category_name,
-        "participant_count": len(participants),
+        "participant_count": len(draw_list),
         **result,
     }
 
@@ -832,6 +864,8 @@ def _build_tournament_groups(db, tournament_id):
         .order_by(Registration.created_at, Registration.id)
         .all()
     )
+    club_names = {athlete.club_name for _, athlete in rows if athlete.club_name}
+    region_lookup = _region_by_club_name(db, club_names)
     groups = {}
     for reg, athlete in rows:
         key = (reg.discipline, athlete.gender, draw_category_key(reg.discipline, reg.category_name))
@@ -839,6 +873,8 @@ def _build_tournament_groups(db, tournament_id):
             "registration_id": str(reg.id),
             "full_name": f"{athlete.last_name} {athlete.first_name} {athlete.middle_name or ''}".strip(),
             "club_name": athlete.club_name,
+            "region": region_lookup.get(athlete.club_name) if athlete.club_name else None,
+            "team_number": reg.team_number,
             "rank_sort_order": rank_order.get(athlete.rank),
             "_reg": reg
         })
@@ -924,6 +960,9 @@ def draw_tournament(tournament_id: str, body: DrawRequest = DrawRequest(), curre
     tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
     if not tournament:
         return {"success": False, "message": "Турнир не найден"}
+
+    assign_kata_group_teams(db, tournament_id, _region_by_club_name(db))
+    db.flush()
 
     groups = _build_tournament_groups(db, tournament_id)
 
@@ -1383,7 +1422,23 @@ async def import_tournament_application(
             ))
             created_registrations += 1
 
+    db.flush()
+    club_names = {
+        a.club_name
+        for a in db.query(Athlete).join(Registration, Registration.athlete_id == Athlete.id)
+        .filter(Registration.tournament_id == tournament_id).all()
+        if a.club_name
+    }
+    team_stats = assign_kata_group_teams(db, tournament_id, _region_by_club_name(db, club_names))
     db.commit()
+
+    msg = (
+        f"Добавлено участников: {created_athletes}, заявок: {created_registrations}"
+        + (f", пропущено дублей: {skipped_registrations}" if skipped_registrations else "")
+        + (f", строк с ошибками: {len(row_errors)}" if row_errors else "")
+    )
+    if team_stats.get("teams"):
+        msg += f"; команд ката-группы: {team_stats['teams']}"
 
     return {
         "success": True,
@@ -1393,10 +1448,30 @@ async def import_tournament_application(
         "skipped_registrations": skipped_registrations,
         "error_rows": len(row_errors),
         "errors": row_errors[:50],
+        "kata_group_teams": team_stats,
+        "message": msg,
+    }
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/kata-group/assign-teams")
+def assign_kata_group_teams_endpoint(
+    tournament_id: str,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Собрать команды ката-группы: по 3 человека одного региона."""
+    require_roles(current_user, {"admin", "owner", "secretary"})
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        return {"success": False, "message": "Турнир не найден"}
+    stats = assign_kata_group_teams(db, tournament_id, _region_by_club_name(db))
+    db.commit()
+    return {
+        "success": True,
+        **stats,
         "message": (
-            f"Добавлено участников: {created_athletes}, заявок: {created_registrations}"
-            + (f", пропущено дублей: {skipped_registrations}" if skipped_registrations else "")
-            + (f", строк с ошибками: {len(row_errors)}" if row_errors else "")
+            f"Собрано команд: {stats['teams']} "
+            f"(участников в ката-группе: {stats['people']}, обновлено записей: {stats['updated']})"
         ),
     }
 
