@@ -2804,6 +2804,7 @@ function TournamentDetail({ tournament, user, onBack }) {
   const [lazyByKey, setLazyByKey] = useState({})
   const lazyInflightRef = useRef(new Set())
   const lazyLoadedRef = useRef(new Set())
+  const athletesLoadGen = useRef(0)
   const [rosterOrgs, setRosterOrgs] = useState([])
   const [rosterOrgLabel, setRosterOrgLabel] = useState("Команда")
   const [rosterOrg, setRosterOrg] = useState("")
@@ -2834,6 +2835,7 @@ function TournamentDetail({ tournament, user, onBack }) {
   const duplicateKeys = new Set((duplicateInfo?.existing_registrations || []).map(r => `${r.discipline}|${r.category_name}`))
 
   const loadAthletes = async () => {
+    const gen = ++athletesLoadGen.current
     try {
       try {
         await axios.post(
@@ -2843,13 +2845,18 @@ function TournamentDetail({ tournament, user, onBack }) {
         )
       } catch { /* кнопка/старые роли — список всё равно загрузим */ }
       const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/athletes`)
+      if (gen !== athletesLoadGen.current) return
       setAthletes(Array.isArray(r.data) ? r.data : [])
       setAthletesTotal(Array.isArray(r.data) ? r.data.length : 0)
       setLazyByKey({})
       lazyInflightRef.current = new Set()
       lazyLoadedRef.current = new Set()
-    } catch { setAthletes([]) }
-    finally { setAthletesLoading(false) }
+    } catch {
+      if (gen === athletesLoadGen.current) setAthletes([])
+    }
+    finally {
+      if (gen === athletesLoadGen.current) setAthletesLoading(false)
+    }
     loadRosterOrgs()
   }
   const loadRosterOrgs = async () => {
@@ -2947,6 +2954,7 @@ function TournamentDetail({ tournament, user, onBack }) {
 
   useEffect(() => {
     let cancelled = false
+    const gen = ++athletesLoadGen.current
     setAthletesLoading(true)
     setCategoriesPreview([])
     setClubsPreview([])
@@ -2973,13 +2981,17 @@ function TournamentDetail({ tournament, user, onBack }) {
     // 2) Полный список участников (в фоне; раскрытие категории не ждёт)
     axios.get(`${API}/api/v1/tournaments/${tid}/athletes`)
       .then(r => {
-        if (cancelled) return
+        if (cancelled || gen !== athletesLoadGen.current) return
         const list = Array.isArray(r.data) ? r.data : []
         setAthletes(list)
         setAthletesTotal(list.length)
       })
-      .catch(() => { if (!cancelled) setAthletes([]) })
-      .finally(() => { if (!cancelled) setAthletesLoading(false) })
+      .catch(() => {
+        if (!cancelled && gen === athletesLoadGen.current) setAthletes([])
+      })
+      .finally(() => {
+        if (!cancelled && gen === athletesLoadGen.current) setAthletesLoading(false)
+      })
 
     // 3) Всё остальное — после тика, не конкурирует с участниками
     const deferred = setTimeout(() => {
@@ -3338,16 +3350,23 @@ function TournamentDetail({ tournament, user, onBack }) {
 
   const handleAdmit = async (registrationId) => {
     patchRegistrationLocal(registrationId, { admission_status: "approved" })
+    // Не даём устаревшему GET /athletes затереть локальный допуск
+    athletesLoadGen.current += 1
     try {
       const r = await axios.post(`${API}/api/v1/registrations/${registrationId}/admit`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
       if (r.data?.success === false) patchRegistrationLocal(registrationId, { admission_status: null })
       else loadRosterOrgs()
-    } catch {
+    } catch (e) {
       patchRegistrationLocal(registrationId, { admission_status: null })
+      const detail = e.response?.data?.detail
+      if (e.response?.status === 401 || e.response?.status === 403) {
+        setError(typeof detail === "string" ? detail : "Сессия истекла — войдите снова, иначе допуск не сохранится")
+      }
     }
   }
   const handleResetAdmission = async (registrationId) => {
     patchRegistrationLocal(registrationId, { admission_status: null })
+    athletesLoadGen.current += 1
     try {
       const r = await axios.post(`${API}/api/v1/registrations/${registrationId}/reset-admission`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
       if (r.data?.success === false) patchRegistrationLocal(registrationId, { admission_status: "approved" })
@@ -3358,6 +3377,7 @@ function TournamentDetail({ tournament, user, onBack }) {
   }
   const handleAdmitWeigh = async (registrationId) => {
     patchRegistrationLocal(registrationId, { weigh_status: "approved" })
+    athletesLoadGen.current += 1
     try {
       const r = await axios.post(`${API}/api/v1/registrations/${registrationId}/admit-weigh`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
       if (r.data?.success === false) patchRegistrationLocal(registrationId, { weigh_status: null })
@@ -3367,6 +3387,7 @@ function TournamentDetail({ tournament, user, onBack }) {
   }
   const handleResetWeigh = async (registrationId) => {
     patchRegistrationLocal(registrationId, { weigh_status: null })
+    athletesLoadGen.current += 1
     try {
       const r = await axios.post(`${API}/api/v1/registrations/${registrationId}/reset-weigh`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
       if (r.data?.success === false) patchRegistrationLocal(registrationId, { weigh_status: "approved" })

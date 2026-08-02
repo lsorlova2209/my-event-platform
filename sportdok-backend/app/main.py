@@ -262,6 +262,9 @@ def apply_schema_patches():
             "ALTER TABLE registrations ADD COLUMN IF NOT EXISTS weigh_status VARCHAR"
         ))
         conn.execute(text(
+            "ALTER TABLE registrations ADD COLUMN IF NOT EXISTS admission_status VARCHAR"
+        ))
+        conn.execute(text(
             "ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS draw_published BOOLEAN DEFAULT FALSE NOT NULL"
         ))
         conn.execute(text(
@@ -1600,11 +1603,10 @@ def list_athletes(
     db: Session = Depends(get_db),
     current_user=Depends(get_optional_user),
 ):
-    # Repair жеребьёвки не делаем здесь — только POST .../draw/repair.
+    # Не вызываем assign_club_teams здесь: пересборка на каждый GET тормозит
+    # ответ (тысячи участников) и даёт гонку с допуском — устаревший ответ
+    # затирает только что сохранённый admission_status на фронте.
     tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
-    # Всегда пересобираем командные категории (ката-группа и командное кумитэ)
-    assign_club_teams(db, tournament_id, _region_by_club_name(db))
-    db.commit()
 
     rows = _registration_athlete_rows(db, tournament_id, discipline=discipline, gender=gender)
     club_names = {athlete.club_name for _, athlete in rows if athlete.club_name}

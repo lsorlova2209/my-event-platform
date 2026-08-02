@@ -7,7 +7,8 @@ import os
 
 SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey123456789")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 12  # 12 часов — смена секретаря/допуск не должна сбрасываться через час
+
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer_scheme = HTTPBearer(auto_error=False)
