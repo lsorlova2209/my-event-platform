@@ -567,6 +567,26 @@ def draw_category_key(discipline, category_name):
     return kata_style(category_name) if discipline == "kata" else category_name
 
 
+NO_WEIGH_CATEGORIES = {"абсолютная категория", "двоеборье", "командные соревнования"}
+KUMITE_DISCIPLINES = {"kumite_ok", "kumite_pk", "kumite_sz"}
+
+
+def weigh_admit_required(discipline, category_name):
+    if discipline not in KUMITE_DISCIPLINES:
+        return False
+    return (category_name or "").strip().lower() not in NO_WEIGH_CATEGORIES
+
+
+def registration_eligible_for_draw(reg):
+    """Ката / АБС / двоеборье / команды — только мандатный допуск.
+    Весовые категории кумитэ — мандатный и весовой допуск."""
+    if getattr(reg, "admission_status", None) != "approved":
+        return False
+    if weigh_admit_required(reg.discipline, reg.category_name):
+        return getattr(reg, "weigh_status", None) == "approved"
+    return True
+
+
 def category_sort_key(cat):
     """Groups ката categories together in official style order (Ашихара,
     Косики, ...); leaves everything else in its original relative order."""
@@ -642,9 +662,28 @@ def _clear_category_draw(db, tournament_id, discipline, gender, category_name, p
         Bout.category_name == category_name,
         Bout.status != "completed",
     ).delete(synchronize_session=False)
+    seen = set()
     for p in participants:
-        p["_reg"].seed = None
-        p["_reg"].subgroup = None
+        reg = p["_reg"]
+        reg.seed = None
+        reg.subgroup = None
+        seen.add(str(reg.id))
+    # Сбрасываем № жребья и у недопущенных (их нет в списке жеребьёвки)
+    rows = (
+        db.query(Registration, Athlete)
+        .join(Athlete, Registration.athlete_id == Athlete.id)
+        .filter(Registration.tournament_id == tournament_id, Registration.discipline == discipline)
+        .all()
+    )
+    for reg, athlete in rows:
+        if str(reg.id) in seen:
+            continue
+        if athlete.gender != gender:
+            continue
+        if draw_category_key(reg.discipline, reg.category_name) != category_name:
+            continue
+        reg.seed = None
+        reg.subgroup = None
 
 
 def _apply_category_draw(db, tournament_id, discipline, gender, category_name, participants):
@@ -689,20 +728,26 @@ def _repair_stale_draws(db, tournament_id):
     """Fix categories that still have duplicate № жребья (old per-subgroup draw). Returns count repaired."""
     groups = _build_tournament_groups(db, tournament_id)
     repaired = 0
-    for (discipline, gender, category_name), participants in groups.items():
-        if not _draw_needs_repair(participants, discipline):
-            for p in participants:
-                del p["_reg"]
+    for (discipline, gender, category_name), all_participants in groups.items():
+        participants = [p for p in all_participants if registration_eligible_for_draw(p["_reg"])]
+        if not participants or not _draw_needs_repair(participants, discipline):
+            for p in all_participants:
+                if "_reg" in p:
+                    del p["_reg"]
             continue
         if _category_has_completed_bouts(db, tournament_id, discipline, gender, category_name):
             if _renumber_category_seeds(participants):
                 repaired += 1
-            for p in participants:
-                del p["_reg"]
+            for p in all_participants:
+                if "_reg" in p:
+                    del p["_reg"]
             continue
-        _clear_category_draw(db, tournament_id, discipline, gender, category_name, participants)
+        _clear_category_draw(db, tournament_id, discipline, gender, category_name, all_participants)
         _apply_category_draw(db, tournament_id, discipline, gender, category_name, participants)
         repaired += 1
+        for p in all_participants:
+            if "_reg" in p:
+                del p["_reg"]
     if repaired:
         db.commit()
     return repaired
@@ -718,10 +763,12 @@ def repair_draw(tournament_id: str, current_user=Depends(get_current_user), db: 
 
     groups = _build_tournament_groups(db, tournament_id)
     repaired, skipped = [], []
-    for (discipline, gender, category_name), participants in groups.items():
-        if not _draw_needs_repair(participants, discipline):
-            for p in participants:
-                del p["_reg"]
+    for (discipline, gender, category_name), all_participants in groups.items():
+        participants = [p for p in all_participants if registration_eligible_for_draw(p["_reg"])]
+        if not participants or not _draw_needs_repair(participants, discipline):
+            for p in all_participants:
+                if "_reg" in p:
+                    del p["_reg"]
             continue
         if _category_has_completed_bouts(db, tournament_id, discipline, gender, category_name):
             if _renumber_category_seeds(participants):
@@ -735,11 +782,15 @@ def repair_draw(tournament_id: str, current_user=Depends(get_current_user), db: 
                     "discipline": discipline, "gender": gender, "category_name": category_name,
                     "message": "Есть завершённые бои — пережеребить нельзя",
                 })
-            for p in participants:
-                del p["_reg"]
+            for p in all_participants:
+                if "_reg" in p:
+                    del p["_reg"]
             continue
-        _clear_category_draw(db, tournament_id, discipline, gender, category_name, participants)
+        _clear_category_draw(db, tournament_id, discipline, gender, category_name, all_participants)
         repaired.append(_apply_category_draw(db, tournament_id, discipline, gender, category_name, participants))
+        for p in all_participants:
+            if "_reg" in p:
+                del p["_reg"]
 
     if repaired or skipped:
         db.commit()
@@ -759,22 +810,55 @@ def draw_tournament(tournament_id: str, body: DrawRequest = DrawRequest(), curre
         return {"success": False, "message": "В турнире нет заявленных участников"}
 
     categories = []
-    for (discipline, gender, category_name), participants in groups.items():
-        already_seeded = all(p["_reg"].seed is not None for p in participants)
+    for (discipline, gender, category_name), all_participants in groups.items():
+        eligible = [p for p in all_participants if registration_eligible_for_draw(p["_reg"])]
+        ineligible = [p for p in all_participants if not registration_eligible_for_draw(p["_reg"])]
+        excluded_count = len(ineligible)
 
-        if already_seeded and not body.force and not _draw_needs_repair(participants, discipline):
-            for p in participants:
-                del p["_reg"]
+        def _drop_regs(plist):
+            for p in plist:
+                if "_reg" in p:
+                    del p["_reg"]
+
+        if not eligible:
+            if any(p["_reg"].seed is not None for p in all_participants) and not _category_has_completed_bouts(
+                db, tournament_id, discipline, gender, category_name
+            ):
+                _clear_category_draw(db, tournament_id, discipline, gender, category_name, all_participants)
+            _drop_regs(all_participants)
+            categories.append({
+                "discipline": discipline,
+                "gender": gender,
+                "category_name": category_name,
+                "participant_count": 0,
+                "excluded_count": excluded_count,
+                "skipped": True,
+                "message": "Нет допущенных участников",
+            })
+            continue
+
+        participants = eligible
+        already_seeded = all(p["_reg"].seed is not None for p in participants)
+        ineligible_have_seeds = any(p["_reg"].seed is not None for p in ineligible)
+        needs_refresh = (
+            (not already_seeded)
+            or ineligible_have_seeds
+            or _draw_needs_repair(participants, discipline)
+        )
+
+        if already_seeded and not body.force and not needs_refresh:
+            _drop_regs(all_participants)
             categories.append({
                 "discipline": discipline,
                 "gender": gender,
                 "category_name": category_name,
                 "participant_count": len(participants),
+                "excluded_count": excluded_count,
                 "already_drawn": True
             })
             continue
 
-        if already_seeded and (body.force or _draw_needs_repair(participants, discipline)):
+        if (already_seeded or ineligible_have_seeds) and (body.force or needs_refresh):
             if _category_has_completed_bouts(db, tournament_id, discipline, gender, category_name):
                 if not body.force and _draw_needs_repair(participants, discipline) and _renumber_category_seeds(participants):
                     categories.append({
@@ -782,26 +866,29 @@ def draw_tournament(tournament_id: str, body: DrawRequest = DrawRequest(), curre
                         "gender": gender,
                         "category_name": category_name,
                         "participant_count": len(participants),
+                        "excluded_count": excluded_count,
                         "renumbered": True,
                         "message": "Номера жребья исправлены (1…N), бои не тронуты",
                     })
-                    for p in participants:
-                        del p["_reg"]
+                    _drop_regs(all_participants)
                     continue
-                for p in participants:
-                    del p["_reg"]
+                _drop_regs(all_participants)
                 categories.append({
                     "discipline": discipline,
                     "gender": gender,
                     "category_name": category_name,
                     "participant_count": len(participants),
+                    "excluded_count": excluded_count,
                     "skipped": True,
                     "message": "Есть завершённые бои — пережеребить нельзя",
                 })
                 continue
-            _clear_category_draw(db, tournament_id, discipline, gender, category_name, participants)
+            _clear_category_draw(db, tournament_id, discipline, gender, category_name, all_participants)
 
-        categories.append(_apply_category_draw(db, tournament_id, discipline, gender, category_name, participants))
+        drawn = _apply_category_draw(db, tournament_id, discipline, gender, category_name, participants)
+        drawn["excluded_count"] = excluded_count
+        categories.append(drawn)
+        _drop_regs(ineligible)
 
     categories.sort(key=category_sort_key)
     db.commit()
@@ -1178,16 +1265,6 @@ def _registration_athlete_rows(db, tournament_id, discipline=None, gender=None):
     if gender:
         q = q.filter(Athlete.gender == gender)
     return q.all()
-
-
-NO_WEIGH_CATEGORIES = {"абсолютная категория", "двоеборье", "командные соревнования"}
-KUMITE_DISCIPLINES = {"kumite_ok", "kumite_pk", "kumite_sz"}
-
-
-def weigh_admit_required(discipline, category_name):
-    if discipline not in KUMITE_DISCIPLINES:
-        return False
-    return (category_name or "").strip().lower() not in NO_WEIGH_CATEGORIES
 
 
 def _athlete_list_item(reg, athlete, event_date, region_lookup):

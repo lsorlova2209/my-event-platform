@@ -2993,6 +2993,10 @@ function TournamentDetail({ tournament, user, onBack }) {
               </button>
             </div>
           </div>
+          <p style={{ margin: "10px 0 0", color: "#4A4A48", fontSize: "13px", lineHeight: 1.4 }}>
+            В жеребьёвку попадают только допущенные: для ката, АБС, двоеборья и команд — кнопка «Допустить»;
+            для весовых категорий кумитэ — «Допустить» и «Допустить по весу».
+          </p>
 
           {drawError && <div style={{ ...errorBox, marginTop: "16px" }}>{drawError}</div>}
 
@@ -3044,7 +3048,13 @@ function TournamentDetail({ tournament, user, onBack }) {
                 <div key={i} style={{ marginBottom: "16px" }}>
                   <div style={{ fontWeight: "bold" }}>{categoryLabel(cat.discipline, cat.gender, cat.category_name)}</div>
                   <div style={{ fontSize: "13px", color: "#4A4A48", marginBottom: "6px" }}>
-                    {cat.already_drawn ? "Уже проведена ранее — не тронута (нажмите «Пережеребить заново»)" : cat.skipped ? cat.message : (DRAW_SYSTEM_LABELS[cat.system] || cat.system)}
+                    {cat.already_drawn
+                      ? "Уже проведена ранее — не тронута (нажмите «Пережеребить заново»)"
+                      : cat.skipped
+                        ? cat.message
+                        : (DRAW_SYSTEM_LABELS[cat.system] || cat.system)}
+                    {typeof cat.participant_count === "number" ? ` · в сетке: ${cat.participant_count}` : ""}
+                    {cat.excluded_count ? ` · без допуска: ${cat.excluded_count}` : ""}
                   </div>
 
                   {cat.system === "kata_order" && cat.participants.map(p => (
