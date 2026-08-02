@@ -29,7 +29,7 @@ from app.kata_protocol import ROUND_SCALES, validate_scores, compute_total, dete
 from app.documents import build_category_excel_zip, build_pdf, build_participants_list_pdf, team_standings
 from app.kata_registry import KATA_TYPES, KATA_STYLE_ORDER, kata_style
 from app.age_group import compute_age_group
-from app.notifications import send_email
+from app.notifications import send_email, club_confirm_email_body, smtp_configured
 from app.application_import import parse_application_xlsx, preview_dict, fill_application_template
 
 Base.metadata.create_all(bind=engine)
@@ -374,12 +374,22 @@ def register_club(data: ClubRegister, db: Session = Depends(get_db)):
     db.commit()
 
     confirm_link = f"{FRONTEND_URL}/?confirm_email={token}"
-    send_email(club.email, "Подтвердите email — СпортДок",
-               f"Здравствуйте, {club.responsible_name}!\n\n"
-               f"Для завершения регистрации клуба «{club.full_name}» подтвердите email, перейдя по ссылке:\n{confirm_link}\n\n"
-               f"После подтверждения заявка будет передана администратору соревнования на одобрение.")
-
-    return {"success": True, "message": "Заявка подана. Проверьте email для подтверждения регистрации."}
+    sent = send_email(
+        club.email,
+        "Подтвердите email — СпортДок",
+        club_confirm_email_body(club.responsible_name, club.full_name, confirm_link),
+    )
+    if sent:
+        return {"success": True, "message": "Заявка подана. Проверьте email для подтверждения регистрации."}
+    if smtp_configured():
+        return {
+            "success": True,
+            "message": "Заявка сохранена, но письмо не удалось отправить. Напишите администратору — он вышлет ссылку повторно.",
+        }
+    return {
+        "success": True,
+        "message": "Заявка подана. На сервере ещё не настроена отправка почты — администратор подтвердит заявку вручную.",
+    }
 
 @app.post("/api/v1/clubs/confirm-email")
 def confirm_club_email(token: str, db: Session = Depends(get_db)):
@@ -416,6 +426,44 @@ def list_clubs(db: Session = Depends(get_db)):
         }
         for c in clubs
     ]
+
+@app.post("/api/v1/clubs/{club_id}/resend-verification")
+def resend_club_verification(club_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
+    club = db.query(Club).filter(Club.id == club_id).first()
+    if not club:
+        return {"success": False, "message": "Клуб не найден"}
+    if club.email_verified:
+        return {"success": False, "message": "Email уже подтверждён"}
+    token = secrets.token_urlsafe(32)
+    club.email_verification_token = token
+    db.commit()
+    confirm_link = f"{FRONTEND_URL}/?confirm_email={token}"
+    sent = send_email(
+        club.email,
+        "Подтвердите email — СпортДок",
+        club_confirm_email_body(club.responsible_name, club.full_name, confirm_link),
+    )
+    if not sent:
+        return {
+            "success": False,
+            "message": "Не удалось отправить письмо. Проверьте SMTP_* в .env на сервере.",
+        }
+    return {"success": True, "message": f"Письмо отправлено на {club.email}"}
+
+
+@app.post("/api/v1/clubs/{club_id}/force-verify-email")
+def force_verify_club_email(club_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Админ вручную отмечает email подтверждённым (если письмо не дошло)."""
+    require_roles(current_user, {"admin", "owner"})
+    club = db.query(Club).filter(Club.id == club_id).first()
+    if not club:
+        return {"success": False, "message": "Клуб не найден"}
+    club.email_verified = True
+    club.email_verification_token = None
+    db.commit()
+    return {"success": True, "message": f"Email клуба {club.full_name} отмечен как подтверждённый"}
+
 
 @app.post("/api/v1/clubs/{club_id}/approve")
 def approve_club(club_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):

@@ -743,6 +743,28 @@ function AdminPanel({ user, onLogout }) {
     await axios.post(`${API}/api/v1/clubs/${id}/reject`, {}, { headers: { Authorization: `Bearer ${user.token}` } })
     loadClubs()
   }
+  const handleResendVerification = async (id) => {
+    try {
+      const r = await axios.post(`${API}/api/v1/clubs/${id}/resend-verification`, {}, {
+        headers: { Authorization: `Bearer ${user.token}` },
+      })
+      alert(r.data.message || (r.data.success ? "Письмо отправлено" : "Не удалось отправить"))
+    } catch (e) {
+      alert(e.response?.data?.message || e.response?.data?.detail || "Не удалось отправить письмо")
+    }
+  }
+  const handleForceVerifyEmail = async (id) => {
+    if (!window.confirm("Отметить email клуба как подтверждённый без письма?")) return
+    try {
+      const r = await axios.post(`${API}/api/v1/clubs/${id}/force-verify-email`, {}, {
+        headers: { Authorization: `Bearer ${user.token}` },
+      })
+      if (r.data.success === false) { alert(r.data.message || "Ошибка"); return }
+      loadClubs()
+    } catch (e) {
+      alert(e.response?.data?.message || e.response?.data?.detail || "Ошибка")
+    }
+  }
 
   const handleDeleteTournament = async (id, e) => {
     e.stopPropagation()
@@ -977,7 +999,27 @@ function AdminPanel({ user, onLogout }) {
                       {c.responsible_name} · {c.email}
                     </div>
                     {c.trainers && <div style={{ color: "#4A4A48", fontSize: "13px", marginTop: "4px" }}>Тренеры: {c.trainers}</div>}
-                    {!c.email_verified && <div style={{ color: "#A32D2D", fontSize: "13px", marginTop: "4px" }}>Email ещё не подтверждён клубом</div>}
+                    {!c.email_verified && (
+                      <div style={{ marginTop: "8px" }}>
+                        <div style={{ color: "#A32D2D", fontSize: "13px", marginBottom: "6px" }}>
+                          Email ещё не подтверждён клубом
+                        </div>
+                        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                          <button
+                            onClick={() => handleResendVerification(c.id)}
+                            style={{ ...btnOutline, padding: "6px 12px", fontSize: "12px" }}
+                          >
+                            Отправить письмо снова
+                          </button>
+                          <button
+                            onClick={() => handleForceVerifyEmail(c.id)}
+                            style={{ ...btnOutline, padding: "6px 12px", fontSize: "12px" }}
+                          >
+                            Подтвердить вручную
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                   <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
                     {c.status === "pending" && (

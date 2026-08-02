@@ -23,6 +23,31 @@ nano .env
 - `POSTGRES_PASSWORD`
 - `SECRET_KEY` (длинная случайная строка)
 - `FRONTEND_URL` и `CORS_ORIGINS` на домен, например `https://sportdoc24.ru`
+- `SMTP_*` — иначе письма клубам только в лог API и до почты не доходят
+
+## Почта (подтверждение клуба)
+
+В панели Timeweb создайте ящик на домене сайта (например `noreply@sportdoc24.ru`) и пропишите в `.env`:
+
+```bash
+SMTP_HOST=smtp.timeweb.ru
+SMTP_PORT=465
+SMTP_USER=noreply@sportdoc24.ru
+SMTP_PASSWORD=пароль_ящика
+SMTP_FROM=СпортДок <noreply@sportdoc24.ru>
+SMTP_USE_SSL=true
+SMTP_USE_TLS=false
+```
+
+После правки `.env`:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --no-build --force-recreate api
+```
+
+Проверка в логах API при регистрации клуба: `EMAIL sent ok to=...`. Если видите `SMTP не настроен` — переменные не попали в контейнер.
+
+В админке → Клубы: для неподтверждённых есть «Отправить письмо снова» и «Подтвердить вручную».
 
 Сгенерировать SECRET_KEY:
 
