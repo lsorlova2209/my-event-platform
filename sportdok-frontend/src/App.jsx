@@ -2908,22 +2908,34 @@ function TournamentDetail({ tournament, user, onBack }) {
                   .sort((a, b) => (a.seed ?? 999) - (b.seed ?? 999) || (a.full_name || "").localeCompare(b.full_name || "", "ru"))
                   .map((a, i) => (
                   <div key={a.registration_id} style={{ padding: "5px 4px", borderBottom: "1px solid #f3f2ee", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "6px", flexWrap: "nowrap" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0, flex: "1 1 auto" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0, flex: "1 1 auto", overflow: "hidden" }}>
                       <div style={{
                         flexShrink: 0, width: "18px", textAlign: "center", fontWeight: "bold",
                         color: "#1A56A0", fontSize: "11px"
                       }}>
                         {i + 1}
                       </div>
-                      <div style={{
-                        minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                        fontSize: "11px", lineHeight: 1.3, color: "#1A56A0",
-                      }}>
-                        <span style={{ fontWeight: "bold" }}>{a.full_name}</span>
-                        <span style={{ color: "#4A4A48", fontWeight: "normal" }}>
-                          {" · "}{[a.region || a.club_name, a.rank].filter(Boolean).join(" · ") || "—"}
-                        </span>
-                      </div>
+                      {(() => {
+                        const meta = [a.region || a.club_name, a.rank].filter(Boolean).join(" · ") || "—"
+                        const line = `${a.full_name} · ${meta}`
+                        return (
+                          <div
+                            title={line}
+                            style={{
+                              flex: "1 1 auto",
+                              minWidth: 0,
+                              fontSize: "11px",
+                              lineHeight: "16px",
+                              whiteSpace: "nowrap",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                            }}
+                          >
+                            <span style={{ fontWeight: "bold", color: "#1A56A0" }}>{a.full_name}</span>
+                            <span style={{ color: "#4A4A48" }}>{" · "}{meta}</span>
+                          </div>
+                        )
+                      })()}
                     </div>
                     <div style={{ display: "flex", gap: "3px", alignItems: "center", flexShrink: 0, flexWrap: "nowrap" }}>
                       {a.admission_status === "approved" ? (
