@@ -1,7 +1,8 @@
-"""Ката-группа: максимум 3 человека из одного клуба = одна команда.
+"""Ката-группа: ровно 3 человека из одного клуба = одна команда.
 
-Если в клубе больше 3 заявленных в ту же категорию — из остальных
-собираются следующие команды этого же клуба (4–6 → команда 2 и т.д.).
+Если в клубе 4+ заявленных в ту же категорию — следующие полные тройки
+этого же клуба (команда 2, 3, …). Остаток 1–2 человека — не команда
+(team_number сбрасывается), в жеребьёвку не входят.
 """
 from __future__ import annotations
 
@@ -17,22 +18,24 @@ def is_kata_group_category(category_name: Optional[str]) -> bool:
     return any(m in name for m in KATA_GROUP_MARKERS)
 
 
-def _club_key(club_name: Optional[str]) -> str:
-    return (club_name or "").strip() or "Без клуба"
+def _club_key(club_name: Optional[str], region: Optional[str] = None) -> str:
+    c = (club_name or "").strip()
+    if c:
+        return c
+    r = (region or "").strip()
+    return r or "Без клуба"
 
 
 def assign_kata_group_teams(db, tournament_id, region_lookup: Optional[dict] = None) -> dict:
-    """Пронумеровать команды в категориях ката-группа по клубу.
+    """Пронумеровать только полные тройки по клубу.
 
-    Внутри (discipline, gender, category_name, club) участники сортируются
-    по ФИО и режутся тройками: 1–3 → команда «1», 4–6 → «2» и т.д.
-    Неполная последняя тройка тоже получает номер (для отображения).
-
-    region_lookup не влияет на состав команд (оставлен для совместимости вызовов).
-
-    Возвращает {updated, categories, teams, people}.
+    Внутри (discipline, gender, category_name, club): сортировка по ФИО,
+    куски по 3 → team_number «1», «2», …; хвост 1–2 → team_number = None.
     """
     from app.models.athlete import Athlete, Registration
+
+    if region_lookup is None:
+        region_lookup = {}
 
     rows = (
         db.query(Registration, Athlete)
@@ -46,18 +49,21 @@ def assign_kata_group_teams(db, tournament_id, region_lookup: Optional[dict] = N
     for reg, athlete in rows:
         if reg.discipline != "kata" or not is_kata_group_category(reg.category_name):
             continue
+        region = region_lookup.get(athlete.club_name) if athlete.club_name else None
         key = (
             reg.discipline,
             athlete.gender or "",
             (reg.category_name or "").strip(),
-            _club_key(athlete.club_name),
+            _club_key(athlete.club_name, region),
         )
         buckets[key].append(reg)
 
     updated = 0
     teams = 0
+    leftovers = 0
     for members in buckets.values():
-        for i in range(0, len(members), KATA_GROUP_TEAM_SIZE):
+        full_count = (len(members) // KATA_GROUP_TEAM_SIZE) * KATA_GROUP_TEAM_SIZE
+        for i in range(0, full_count, KATA_GROUP_TEAM_SIZE):
             chunk = members[i : i + KATA_GROUP_TEAM_SIZE]
             team_no = str(i // KATA_GROUP_TEAM_SIZE + 1)
             teams += 1
@@ -65,44 +71,55 @@ def assign_kata_group_teams(db, tournament_id, region_lookup: Optional[dict] = N
                 if reg.team_number != team_no:
                     reg.team_number = team_no
                     updated += 1
+        for reg in members[full_count:]:
+            leftovers += 1
+            if reg.team_number is not None:
+                reg.team_number = None
+                updated += 1
 
     return {
         "updated": updated,
         "categories": len({(d, g, c) for (d, g, c, _club) in buckets.keys()}),
         "teams": teams,
         "people": sum(len(v) for v in buckets.values()),
+        "leftovers": leftovers,
     }
 
 
-def collapse_kata_group_for_draw(participants: list[dict]) -> list[dict]:
-    """Свернуть полные тройки одного клуба в одну запись для жеребьёвки.
+def team_display_label(team_number: str, club_name: Optional[str], region: Optional[str]) -> str:
+    """Команда Алтайского края 1 — регион предпочтительнее названия клуба."""
+    org = (region or "").strip() or (club_name or "").strip() or "без клуба"
+    return f"Команда {org} {team_number}"
 
-    Неполные команды (<3) в жеребьёвку не входят.
-    """
+
+def collapse_kata_group_for_draw(participants: list[dict]) -> list[dict]:
+    """Свернуть только полные тройки (ровно 3) одного клуба для жеребьёвки."""
     by_team: dict[tuple, list] = defaultdict(list)
     for p in participants:
         reg = p.get("_reg")
         team_no = (getattr(reg, "team_number", None) if reg is not None else None) or p.get("team_number")
         if not team_no:
             continue
-        club = _club_key(p.get("club_name"))
+        region = (p.get("region") or "").strip()
+        club = _club_key(p.get("club_name"), region)
         key = (str(team_no), club)
         by_team[key].append(p)
 
     collapsed = []
     for key, members in by_team.items():
-        if len(members) < KATA_GROUP_TEAM_SIZE:
-            continue
-        members = members[:KATA_GROUP_TEAM_SIZE]
+        if len(members) != KATA_GROUP_TEAM_SIZE:
+            if len(members) > KATA_GROUP_TEAM_SIZE:
+                members = members[:KATA_GROUP_TEAM_SIZE]
+            else:
+                continue
         lead = members[0]
         names = [m.get("full_name") or "" for m in members]
         team_no, club = key
         region = (lead.get("region") or "").strip()
-        label_org = f"{club}" + (f" · {region}" if region else "")
         collapsed.append({
             **{k: v for k, v in lead.items() if k != "_reg"},
             "registration_id": lead["registration_id"],
-            "full_name": f"Команда {team_no} · {label_org}",
+            "full_name": team_display_label(team_no, club, region),
             "club_name": club,
             "region": region or lead.get("region"),
             "team_number": team_no,
@@ -116,7 +133,7 @@ def collapse_kata_group_for_draw(participants: list[dict]) -> list[dict]:
             "_reg": lead.get("_reg"),
         })
     collapsed.sort(key=lambda p: (
-        (p.get("club_name") or ""),
+        (p.get("region") or p.get("club_name") or ""),
         int(p["team_number"]) if str(p.get("team_number") or "").isdigit() else 999,
     ))
     return collapsed

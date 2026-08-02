@@ -1280,44 +1280,78 @@ const isKataGroupCategory = (categoryName) => {
   return n.includes("ката-группа") || n.includes("ката группа")
 }
 
-/** Собрать участников ката-группы в команды (team_number + клуб, макс. 3). */
+/** Собрать ката-группу: ровно по 3 человека клуба = команда; хвост 1–2 — «вне команды». */
 const groupKataTeams = (athletes) => {
-  const map = new Map()
+  const byClub = new Map()
   for (const a of athletes || []) {
-    const club = (a.club_name || "Без клуба").trim()
     const region = (a.region || "").trim()
-    const num = String(a.team_number || "").trim() || "?"
-    const key = `${num}|${club}`
-    if (!map.has(key)) {
-      map.set(key, {
-        key,
-        team_number: num === "?" ? null : num,
-        club_name: club,
-        region,
-        members: [],
+    const club = (a.club_name || region || "Без клуба").trim()
+    if (!byClub.has(club)) byClub.set(club, { club_name: club, region, members: [] })
+    const bucket = byClub.get(club)
+    if (!bucket.region && region) bucket.region = region
+    bucket.members.push(a)
+  }
+
+  const teams = []
+  const unassigned = []
+  for (const bucket of byClub.values()) {
+    const sorted = [...bucket.members].sort((a, b) =>
+      (a.full_name || "").localeCompare(b.full_name || "", "ru")
+      || String(a.registration_id || "").localeCompare(String(b.registration_id || ""))
+    )
+    let localIdx = 0
+    for (let i = 0; i + 3 <= sorted.length; i += 3) {
+      localIdx += 1
+      const members = sorted.slice(i, i + 3)
+      teams.push({
+        key: `${bucket.club_name}|${localIdx}`,
+        team_number: String(localIdx),
+        club_name: bucket.club_name,
+        region: bucket.region,
+        members,
+        complete: true,
+        seed: members.find(m => m.seed != null)?.seed ?? null,
       })
     }
-    map.get(key).members.push(a)
+    const rest = sorted.length % 3
+    if (rest) unassigned.push(...sorted.slice(sorted.length - rest))
   }
-  return [...map.values()]
-    .map(t => ({
-      ...t,
-      complete: t.members.length >= 3,
-      seed: t.members.find(m => m.seed != null)?.seed ?? null,
-      label: [
-        t.team_number ? `Команда ${t.team_number}` : "Команда",
-        t.club_name,
-        t.region,
-      ].filter(Boolean).join(" · "),
-    }))
-    .sort((a, b) => {
-      const sa = a.seed ?? 9999
-      const sb = b.seed ?? 9999
-      if (sa !== sb) return sa - sb
-      const ca = (a.club_name || "").localeCompare(b.club_name || "", "ru")
-      if (ca) return ca
-      return String(a.team_number || "").localeCompare(String(b.team_number || ""), "ru", { numeric: true })
+
+  // Нумерация в названии по региону: «Команда Алтайского края 1», «… 2»
+  const regionCounters = new Map()
+  for (const t of teams) {
+    const org = (t.region || t.club_name || "без клуба").trim()
+    const n = (regionCounters.get(org) || 0) + 1
+    regionCounters.set(org, n)
+    t.team_number = String(n)
+    t.label = `Команда ${org} ${n}`
+    t.key = `${org}|${n}|${t.club_name}`
+  }
+
+  if (unassigned.length) {
+    teams.push({
+      key: "__unassigned__",
+      team_number: null,
+      club_name: "",
+      region: "",
+      members: unassigned,
+      complete: false,
+      seed: null,
+      label: `Вне команды (${unassigned.length} чел. — команда только из 3 человек одного клуба)`,
+      unassigned: true,
     })
+  }
+
+  return teams.sort((a, b) => {
+    if (a.unassigned) return 1
+    if (b.unassigned) return -1
+    const sa = a.seed ?? 9999
+    const sb = b.seed ?? 9999
+    if (sa !== sb) return sa - sb
+    const oa = (a.region || a.club_name || "").localeCompare(b.region || b.club_name || "", "ru")
+    if (oa) return oa
+    return String(a.team_number || "").localeCompare(String(b.team_number || ""), "ru", { numeric: true })
+  })
 }
 const needsWeighAdmit = (a) => {
   if (a.weigh_required === true) return true
@@ -1872,7 +1906,7 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
                                 <span>
                                   {team.seed != null ? `№${team.seed} · ` : `${ti + 1}. `}
                                   {team.label}
-                                  {!team.complete && (
+                                  {!team.complete && !team.unassigned && (
                                     <span style={{ color: "#f0a8a8", fontWeight: 600 }}>
                                       {` · неполная (${team.members.length}/3)`}
                                     </span>
@@ -3481,7 +3515,7 @@ function TournamentDetail({ tournament, user, onBack }) {
                                     <span>
                                       {team.seed != null ? `№${team.seed} · ` : `${ti + 1}. `}
                                       {team.label}
-                                      {!team.complete && (
+                                      {!team.complete && !team.unassigned && (
                                         <span style={{ color: "#A32D2D", fontWeight: "normal" }}>
                                           {` · неполная (${team.members.length}/3)`}
                                         </span>

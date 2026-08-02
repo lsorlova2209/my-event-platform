@@ -1584,6 +1584,10 @@ def list_athletes(
 ):
     # Repair жеребьёвки не делаем здесь — только POST .../draw/repair.
     tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    # Всегда пересобираем тройки ката-группы, иначе UI показывает весь регион одной «командой»
+    assign_kata_group_teams(db, tournament_id, _region_by_club_name(db))
+    db.commit()
+
     rows = _registration_athlete_rows(db, tournament_id, discipline=discipline, gender=gender)
     club_names = {athlete.club_name for _, athlete in rows if athlete.club_name}
     region_lookup = _region_by_club_name(db, club_names)
