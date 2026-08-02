@@ -2833,10 +2833,18 @@ function TournamentDetail({ tournament, user, onBack }) {
       let msg = "Не удалось скачать справку"
       try {
         if (e.response?.data instanceof Blob) {
-          const parsed = JSON.parse(await e.response.data.text())
-          msg = parsed.message || msg
+          const text = await e.response.data.text()
+          try {
+            const parsed = JSON.parse(text)
+            msg = parsed.message || parsed.detail || msg
+          } catch {
+            if (e.response.status >= 500) msg = "Ошибка сервера при формировании справки"
+            else if (e.response.status === 404) msg = "Эндпоинт справки не найден — обновите сервер"
+          }
         } else if (e.response?.data?.message) {
           msg = e.response.data.message
+        } else if (e.response?.data?.detail) {
+          msg = typeof e.response.data.detail === "string" ? e.response.data.detail : msg
         }
       } catch { /* ignore */ }
       setRosterError(msg)

@@ -2524,12 +2524,17 @@ def export_team_roster(
         "competition_level": level,
     }
     buffer = build_team_roster_xlsx(tournament_info, athletes_blocks, org_label, org_value)
-    safe_org = re.sub(r"[^\w\-]+", "_", org_value, flags=re.UNICODE)[:40] or "team"
+    # Только ASCII в Content-Disposition — иначе Starlette падает с UnicodeEncodeError (latin-1).
+    ascii_org = re.sub(r"[^A-Za-z0-9\-]+", "_", org_value).strip("_")[:40] or "team"
+    starred = quote(f"справка_{org_value}.xlsx")
     return StreamingResponse(
         buffer,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
-            "Content-Disposition": f"attachment; filename=sportdok_team_{safe_org}_{tournament_id[:8]}.xlsx"
+            "Content-Disposition": (
+                f"attachment; filename=sportdok_team_{ascii_org}_{tournament_id[:8]}.xlsx; "
+                f"filename*=UTF-8''{starred}"
+            )
         },
     )
 
