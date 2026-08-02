@@ -957,6 +957,100 @@ const DRAW_SYSTEM_LABELS = {
   single_elimination_repechage: "Олимпийская с утешительной сеткой",
   kata_order: "Порядок выступлений"
 }
+
+/** Публичный блок жеребьёвки по уже проставленным seed (без интерактива). */
+function buildPublicCategoryDraw(athletes, discipline) {
+  const drawn = [...(athletes || [])]
+    .filter(a => a && a.seed != null)
+    .sort((a, b) => a.seed - b.seed)
+  if (!drawn.length) return null
+
+  if (discipline === "kata") {
+    return { system: "kata_order", participants: drawn }
+  }
+
+  if (drawn.length === 3) {
+    const matches = []
+    for (let i = 0; i < 3; i++) {
+      for (let j = i + 1; j < 3; j++) {
+        matches.push({ a: drawn[i], b: drawn[j] })
+      }
+    }
+    return { system: "round_robin", participants: drawn, matches }
+  }
+
+  const makeRound1 = (group) => {
+    const sorted = [...group].sort((a, b) => a.seed - b.seed)
+    const n = sorted.length
+    const byLocal = {}
+    sorted.forEach((p, i) => { byLocal[i + 1] = p })
+    const size = nextPowerOfTwo(Math.max(n, 1))
+    return round1PairsBySeed(size).map(([la, lb]) => {
+      const a = byLocal[la] || null
+      const b = byLocal[lb] || null
+      return { a, b, bye: !a || !b }
+    })
+  }
+
+  if (drawn.length >= 5) {
+    const g1 = drawn.filter(a => a.seed % 2 === 1)
+    const g2 = drawn.filter(a => a.seed % 2 === 0)
+    return {
+      system: "single_elimination_repechage",
+      subgroups: [
+        { subgroup: 1, round1: makeRound1(g1) },
+        { subgroup: 2, round1: makeRound1(g2) },
+      ],
+    }
+  }
+
+  return {
+    system: "single_elimination_repechage",
+    subgroups: [{ subgroup: null, round1: makeRound1(drawn) }],
+  }
+}
+
+function PublicCategoryDraw({ athletes, discipline, dark = false }) {
+  const draw = buildPublicCategoryDraw(athletes, discipline)
+  if (!draw) return null
+  const muted = dark ? "rgba(244,245,247,0.55)" : "#4A4A48"
+  const text = dark ? "rgba(244,245,247,0.88)" : "#1A56A0"
+  return (
+    <div style={{ marginTop: "16px" }}>
+      <div style={{
+        fontFamily: dark ? "var(--font-display)" : undefined,
+        fontWeight: 600, fontSize: dark ? "14px" : "13px",
+        color: text, marginBottom: "8px", letterSpacing: dark ? "0.04em" : undefined,
+        textTransform: dark ? "uppercase" : undefined,
+      }}>
+        Жеребьёвка · {DRAW_SYSTEM_LABELS[draw.system] || draw.system}
+      </div>
+      {draw.system === "kata_order" && draw.participants.map(p => (
+        <div key={p.registration_id || p.id} style={{ fontSize: "14px", color: text, padding: "3px 0" }}>
+          №{p.seed} {p.full_name}
+        </div>
+      ))}
+      {draw.system === "round_robin" && draw.matches.map((m, j) => (
+        <div key={j} style={{ fontSize: "14px", color: text, padding: "3px 0" }}>
+          {m.a.full_name} vs {m.b.full_name}
+        </div>
+      ))}
+      {draw.system === "single_elimination_repechage" && draw.subgroups.map((sub, k) => (
+        <div key={k} style={{ marginBottom: "8px" }}>
+          {sub.subgroup && <div style={{ fontSize: "13px", color: muted, marginBottom: "4px" }}>Подгруппа {sub.subgroup}</div>}
+          {sub.round1.map((p, j) => (
+            <div key={j} style={{ fontSize: "14px", color: text, padding: "3px 0" }}>
+              {p.a ? `№${p.a.seed} ${p.a.full_name}` : "—"}
+              {" vs "}
+              {p.bye || !p.b ? "БАЙ" : `№${p.b.seed} ${p.b.full_name}`}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 /** Пустой бокс №|ФИО — как на протоколе после соединителя, пока нет победителя. */
 function emptyBracketBox() {
   return { seed: "", name: "", text: " " }
@@ -1078,6 +1172,7 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
   const [expandedKeys, setExpandedKeys] = useState(() => new Set())
   const [expandedAgeKeys, setExpandedAgeKeys] = useState(() => new Set())
   const [lazyByKey, setLazyByKey] = useState({})
+  const [drawPublished, setDrawPublished] = useState(Boolean(tournament.draw_published))
   const lazyInflightRef = useRef(new Set())
   const lazyLoadedRef = useRef(new Set())
   const today = todayISO()
@@ -1093,6 +1188,7 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
     setLazyByKey({})
     setExpandedKeys(new Set())
     setExpandedAgeKeys(new Set())
+    setDrawPublished(Boolean(tournament.draw_published))
     lazyInflightRef.current = new Set()
     lazyLoadedRef.current = new Set()
     window.scrollTo(0, 0)
@@ -1105,6 +1201,7 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
         setCategoriesPreview(Array.isArray(data.categories) ? data.categories : [])
         setClubsPreview(Array.isArray(data.clubs) ? data.clubs : [])
         if (typeof data.total === "number") setAthletesTotal(data.total)
+        if (typeof data.draw_published === "boolean") setDrawPublished(data.draw_published)
         setLoading(false)
       })
       .catch(() => { if (!cancelled) { setCategoriesPreview([]); setLoading(false) } })
@@ -1547,6 +1644,7 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
                         rowsLoading ? (
                           <p style={{ color: "rgba(244,245,247,0.55)", margin: 0 }}>Загрузка списка…</p>
                         ) : (
+                        <>
                         <div style={{ overflowX: "auto" }}>
                           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "15px" }}>
                             <thead>
@@ -1589,6 +1687,10 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
                             </tbody>
                           </table>
                         </div>
+                        {drawPublished && rows.some(a => a.seed != null) && (
+                          <PublicCategoryDraw athletes={rows} discipline={cat.discipline} dark />
+                        )}
+                        </>
                         )
                         )}
                       </div>
@@ -2253,6 +2355,13 @@ function TournamentDetail({ tournament, user, onBack }) {
   const [drawResult, setDrawResult] = useState(null)
   const [drawError, setDrawError] = useState("")
   const [drawLoading, setDrawLoading] = useState(false)
+  const [drawPublished, setDrawPublished] = useState(Boolean(tournament.draw_published))
+  const [publishLoading, setPublishLoading] = useState(false)
+  const [publishMsg, setPublishMsg] = useState("")
+
+  useEffect(() => {
+    setDrawPublished(Boolean(tournament.draw_published))
+  }, [tournament.id, tournament.draw_published])
   const [form, setForm] = useState({
     last_name: "", first_name: "", middle_name: "",
     gender: "male", birth_date: "", weight: "",
@@ -2614,13 +2723,15 @@ function TournamentDetail({ tournament, user, onBack }) {
 
   const handleRunDraw = async (force = false) => {
     if (force && !window.confirm("Пережеребить все категории заново? Незавершённые бои будут удалены. Категории с уже введёнными результатами не изменятся.")) return
-    setDrawLoading(true); setDrawError("")
+    setDrawLoading(true); setDrawError(""); setPublishMsg("")
     try {
       const r = await axios.post(`${API}/api/v1/tournaments/${tournament.id}/draw`, { force }, {
         headers: { Authorization: `Bearer ${user.token}` }
       })
       if (r.data.success) {
         setDrawResult(r.data)
+        if (typeof r.data.draw_published === "boolean") setDrawPublished(r.data.draw_published)
+        else setDrawPublished(false)
         loadAthletes()
         loadBouts()
         const skipped = (r.data.categories || []).filter(c => c.skipped)
@@ -2636,6 +2747,38 @@ function TournamentDetail({ tournament, user, onBack }) {
       setDrawError(e.response?.data?.message || e.response?.data?.detail || "Ошибка при жеребьёвке")
     }
     setDrawLoading(false)
+  }
+
+  const handlePublishDraw = async () => {
+    setPublishLoading(true); setPublishMsg(""); setDrawError("")
+    try {
+      const r = await axios.post(`${API}/api/v1/tournaments/${tournament.id}/draw/publish`, {}, {
+        headers: { Authorization: `Bearer ${user.token}` }
+      })
+      if (r.data.success) {
+        setDrawPublished(true)
+        setPublishMsg(r.data.message || "Жеребьёвка опубликована")
+      } else setDrawError(r.data.message || "Не удалось опубликовать")
+    } catch (e) {
+      setDrawError(e.response?.data?.message || e.response?.data?.detail || "Не удалось опубликовать")
+    }
+    setPublishLoading(false)
+  }
+
+  const handleUnpublishDraw = async () => {
+    setPublishLoading(true); setPublishMsg(""); setDrawError("")
+    try {
+      const r = await axios.post(`${API}/api/v1/tournaments/${tournament.id}/draw/unpublish`, {}, {
+        headers: { Authorization: `Bearer ${user.token}` }
+      })
+      if (r.data.success) {
+        setDrawPublished(false)
+        setPublishMsg(r.data.message || "Публикация снята")
+      } else setDrawError(r.data.message || "Не удалось снять публикацию")
+    } catch (e) {
+      setDrawError(e.response?.data?.message || e.response?.data?.detail || "Не удалось снять публикацию")
+    }
+    setPublishLoading(false)
   }
 
   const handleDeleteAthlete = async (id) => {
@@ -3153,13 +3296,25 @@ function TournamentDetail({ tournament, user, onBack }) {
               <button onClick={() => handleRunDraw(true)} disabled={drawLoading} style={btnOutline}>
                 Пережеребить заново
               </button>
+              {drawPublished ? (
+                <button onClick={handleUnpublishDraw} disabled={publishLoading || drawLoading} style={btnOutline}>
+                  {publishLoading ? "…" : "Снять с публикации"}
+                </button>
+              ) : (
+                <button onClick={handlePublishDraw} disabled={publishLoading || drawLoading} style={btnGreen}>
+                  {publishLoading ? "…" : "Опубликовать жеребьёвку"}
+                </button>
+              )}
             </div>
           </div>
           <p style={{ margin: "10px 0 0", color: "#4A4A48", fontSize: "13px", lineHeight: 1.4 }}>
             В жеребьёвку попадают только допущенные: для ката, АБС, двоеборья и команд — кнопка «Допустить»;
             для весовых категорий кумитэ — «Допустить» и «Допустить по весу».
+            На публичной странице жеребьёвка видна только после публикации.
+            {drawPublished ? " Сейчас опубликована." : " Сейчас не опубликована."}
           </p>
 
+          {publishMsg && <div style={{ ...successBox, marginTop: "12px" }}>{publishMsg}</div>}
           {drawError && <div style={{ ...errorBox, marginTop: "16px" }}>{drawError}</div>}
 
           {Object.keys(bracketGroups).length === 0 ? (

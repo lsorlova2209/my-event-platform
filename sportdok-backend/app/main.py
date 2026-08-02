@@ -79,6 +79,7 @@ def tournament_public_dict(t: Tournament) -> dict:
         "chief_judge": t.chief_judge,
         "chief_secretary": t.chief_secretary,
         "cover_image": t.cover_image,
+        "draw_published": bool(getattr(t, "draw_published", False)),
     }
 
 
@@ -232,6 +233,9 @@ def apply_schema_patches():
         ))
         conn.execute(text(
             "ALTER TABLE registrations ADD COLUMN IF NOT EXISTS weigh_status VARCHAR"
+        ))
+        conn.execute(text(
+            "ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS draw_published BOOLEAN DEFAULT FALSE NOT NULL"
         ))
 
 @app.on_event("startup")
@@ -810,6 +814,7 @@ def draw_tournament(tournament_id: str, body: DrawRequest = DrawRequest(), curre
         return {"success": False, "message": "В турнире нет заявленных участников"}
 
     categories = []
+    any_changed = False
     for (discipline, gender, category_name), all_participants in groups.items():
         eligible = [p for p in all_participants if registration_eligible_for_draw(p["_reg"])]
         ineligible = [p for p in all_participants if not registration_eligible_for_draw(p["_reg"])]
@@ -825,6 +830,7 @@ def draw_tournament(tournament_id: str, body: DrawRequest = DrawRequest(), curre
                 db, tournament_id, discipline, gender, category_name
             ):
                 _clear_category_draw(db, tournament_id, discipline, gender, category_name, all_participants)
+                any_changed = True
             _drop_regs(all_participants)
             categories.append({
                 "discipline": discipline,
@@ -889,10 +895,50 @@ def draw_tournament(tournament_id: str, body: DrawRequest = DrawRequest(), curre
         drawn["excluded_count"] = excluded_count
         categories.append(drawn)
         _drop_regs(ineligible)
+        any_changed = True
+
+    if any_changed:
+        tournament.draw_published = False
 
     categories.sort(key=category_sort_key)
     db.commit()
-    return {"success": True, "tournament_id": tournament_id, "categories": categories}
+    return {
+        "success": True,
+        "tournament_id": tournament_id,
+        "categories": categories,
+        "draw_published": bool(tournament.draw_published),
+    }
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/draw/publish")
+def publish_draw(tournament_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        return {"success": False, "message": "Турнир не найден"}
+    has_seed = (
+        db.query(Registration)
+        .filter(Registration.tournament_id == tournament_id, Registration.seed.isnot(None))
+        .first()
+        is not None
+    )
+    if not has_seed:
+        return {"success": False, "message": "Сначала проведите жеребьёвку"}
+    tournament.draw_published = True
+    db.commit()
+    return {"success": True, "draw_published": True, "message": "Жеребьёвка опубликована на странице турнира"}
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/draw/unpublish")
+def unpublish_draw(tournament_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    require_roles(current_user, {"admin", "owner"})
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        return {"success": False, "message": "Турнир не найден"}
+    tournament.draw_published = False
+    db.commit()
+    return {"success": True, "draw_published": False, "message": "Жеребьёвка снята с публикации"}
+
 
 @app.post("/api/v1/tournaments/{tournament_id}/draw/swap-seed")
 def swap_draw_seed(tournament_id: str, data: SeedSwapRequest, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
@@ -1328,6 +1374,7 @@ def list_athlete_categories(tournament_id: str, db: Session = Depends(get_db)):
         "total": len(rows),
         "categories": categories,
         "clubs": sorted(c for c in clubs if c),
+        "draw_published": bool(getattr(tournament, "draw_published", False)),
     }
 
 
@@ -1341,6 +1388,7 @@ def list_athletes(
     q: Optional[str] = None,
     club: Optional[str] = None,
     db: Session = Depends(get_db),
+    current_user=Depends(get_optional_user),
 ):
     # Repair жеребьёвки не делаем здесь — только POST .../draw/repair.
     tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
@@ -1352,6 +1400,9 @@ def list_athletes(
     club_norm = (club or "").strip().lower()
     age_filter = (age_group or "").strip()
     cat_filter = (category_name or "").strip()
+    draw_published = bool(getattr(tournament, "draw_published", False)) if tournament else False
+    role = (current_user or {}).get("role")
+    show_draw = draw_published or role in {"admin", "owner", "secretary"}
 
     result = []
     for reg, athlete in rows:
@@ -1372,6 +1423,8 @@ def list_athletes(
                 continue
         if cat_filter:
             item = {**item, "category_name": draw_cat}
+        if not show_draw:
+            item = {**item, "seed": None, "subgroup": None}
         result.append(item)
     return result
 
