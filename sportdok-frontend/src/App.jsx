@@ -1594,6 +1594,16 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
   const displayCatCount = athletes.length > 0 ? allCategories.length : categoriesPreview.length
   const athletesReady = athletes.length > 0
   const filtersActive = Boolean(surnameQ || filterClub || filterCategory)
+  const teamSearchActive = Boolean(filterClub)
+  const teamFlatAthletes = teamSearchActive
+    ? [...filteredAthletes].sort((a, b) => {
+        const byName = (a.full_name || "").localeCompare(b.full_name || "", "ru")
+        if (byName) return byName
+        return categoryFullName(a.discipline, a.category_name)
+          .localeCompare(categoryFullName(b.discipline, b.category_name), "ru")
+          || (a.age_group || "").localeCompare(b.age_group || "", "ru")
+      })
+    : []
   const toggleSearch = (key) => setSearchOpen(s => ({ ...s, [key]: !s[key] }))
   const clearFilters = () => {
     setFilterSurname("")
@@ -1861,6 +1871,56 @@ function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
               <div style={{ ...arenaPanel, textAlign: "center", color: "rgba(244,245,247,0.65)" }}>
                 Ничего не найдено. Измените или сбросьте фильтры.
               </div>
+            ) : teamSearchActive ? (
+              <section style={arenaPanel}>
+                <div style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "baseline",
+                  gap: "12px", flexWrap: "wrap", marginBottom: "16px",
+                  paddingBottom: "12px", borderBottom: "1px solid rgba(255,255,255,0.1)",
+                }}>
+                  <h2 style={{
+                    margin: 0, fontFamily: "var(--font-display)", fontSize: "20px",
+                    fontWeight: 600, letterSpacing: "0.03em", textTransform: "uppercase",
+                  }}>
+                    {filterClub}
+                  </h2>
+                  <span style={{ color: "rgba(244,245,247,0.55)", fontSize: "14px" }}>
+                    {teamFlatAthletes.length} записей
+                  </span>
+                </div>
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "14px" }}>
+                    <thead>
+                      <tr style={{ color: "rgba(244,245,247,0.55)", textAlign: "left" }}>
+                        <th style={{ padding: "8px 10px", fontWeight: 600, width: "40px" }}>№</th>
+                        <th style={{ padding: "8px 10px", fontWeight: 600 }}>ФИО</th>
+                        <th style={{ padding: "8px 10px", fontWeight: 600 }}>{showRegion ? "Регион" : "Команда"}</th>
+                        <th style={{ padding: "8px 10px", fontWeight: 600 }}>Разряд</th>
+                        <th style={{ padding: "8px 10px", fontWeight: 600 }}>Категория</th>
+                        <th style={{ padding: "8px 10px", fontWeight: 600 }}>Возрастная категория</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {teamFlatAthletes.map((a, i) => (
+                        <tr key={a.registration_id || `${a.id}-${a.discipline}-${a.category_name}-${i}`} style={{
+                          borderTop: "1px solid rgba(255,255,255,0.06)",
+                        }}>
+                          <td style={{ padding: "10px", color: "#9ec0ef", fontWeight: 700 }}>{i + 1}</td>
+                          <td style={{ padding: "10px", fontWeight: 600 }}>{a.full_name}</td>
+                          <td style={{ padding: "10px", color: "rgba(244,245,247,0.72)" }}>
+                            {showRegion ? (a.region || a.club_name || "—") : (a.club_name || a.region || "—")}
+                          </td>
+                          <td style={{ padding: "10px", color: "rgba(244,245,247,0.72)" }}>{a.rank || "—"}</td>
+                          <td style={{ padding: "10px", color: "rgba(244,245,247,0.72)" }}>
+                            {[categoryFullName(a.discipline, a.category_name), GENDER_SHORT[a.gender] || ""].filter(Boolean).join(" / ")}
+                          </td>
+                          <td style={{ padding: "10px", color: "rgba(244,245,247,0.72)" }}>{a.age_group || "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
             ) : ageGroupedCategories.map(ageBucket => {
               const ageOpen = expandedAgeKeys.has(ageBucket.key)
               return (
@@ -3073,6 +3133,18 @@ function TournamentDetail({ tournament, user, onBack }) {
   const listReady = !athletesLoading || categoriesPreview.length > 0 || athletes.length > 0
 
   const filtersActive = Boolean(surnameQ || filterClub || filterCategory)
+  /** Плоский список участников — только при выбранной команде/клубе */
+  const teamSearchActive = Boolean(filterClub)
+  const teamFlatAthletes = teamSearchActive
+    ? [...filteredAthletes].sort((a, b) => {
+        const byName = (a.full_name || "").localeCompare(b.full_name || "", "ru")
+        if (byName) return byName
+        const catA = categoryFullName(a.discipline, a.category_name)
+        const catB = categoryFullName(b.discipline, b.category_name)
+        return catA.localeCompare(catB, "ru")
+          || (a.age_group || "").localeCompare(b.age_group || "", "ru")
+      })
+    : []
   const toggleSearch = (key) => setSearchOpen(s => ({ ...s, [key]: !s[key] }))
   const clearFilters = () => {
     setFilterSurname("")
@@ -3609,6 +3681,70 @@ function TournamentDetail({ tournament, user, onBack }) {
             <p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Участников пока нет. Добавьте первого!</p>
           ) : athletes.length > 0 && Object.keys(filteredBracketGroups).length === 0 ? (
             <p style={{ color: "#4A4A48", textAlign: "center", padding: "24px 0" }}>Ничего не найдено. Измените или сбросьте фильтры.</p>
+          ) : teamSearchActive ? (
+            <div style={{ overflowX: "auto" }}>
+              <div style={{ marginBottom: "10px", color: "#4A4A48", fontSize: "14px" }}>
+                Команда «{filterClub}» · {teamFlatAthletes.length} записей
+              </div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+                <thead>
+                  <tr style={{ background: "#e8e6df", textAlign: "left", color: "#1A56A0" }}>
+                    <th style={{ padding: "8px 6px", fontWeight: "bold", width: "36px" }}>№</th>
+                    <th style={{ padding: "8px 6px", fontWeight: "bold" }}>ФИО</th>
+                    <th style={{ padding: "8px 6px", fontWeight: "bold" }}>Команда</th>
+                    <th style={{ padding: "8px 6px", fontWeight: "bold" }}>Разряд</th>
+                    <th style={{ padding: "8px 6px", fontWeight: "bold" }}>Категория</th>
+                    <th style={{ padding: "8px 6px", fontWeight: "bold" }}>Возрастная категория</th>
+                    <th style={{ padding: "8px 6px", fontWeight: "bold", whiteSpace: "nowrap" }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {teamFlatAthletes.map((a, i) => (
+                    <tr key={a.registration_id} style={{ borderBottom: "1px solid #E8E6DC" }}>
+                      <td style={{ padding: "8px 6px", color: "#1A56A0", fontWeight: "bold", verticalAlign: "top" }}>{i + 1}</td>
+                      <td style={{ padding: "8px 6px", fontWeight: "bold", color: "#1A56A0", verticalAlign: "top" }}>{a.full_name}</td>
+                      <td style={{ padding: "8px 6px", color: "#4A4A48", verticalAlign: "top" }}>
+                        {a.club_name || a.region || "—"}
+                        {a.club_name && a.region && a.club_name !== a.region ? (
+                          <span style={{ display: "block", fontSize: "11px", color: "#888" }}>{a.region}</span>
+                        ) : null}
+                      </td>
+                      <td style={{ padding: "8px 6px", color: "#4A4A48", verticalAlign: "top" }}>{a.rank || "—"}</td>
+                      <td style={{ padding: "8px 6px", color: "#4A4A48", verticalAlign: "top" }}>
+                        {[categoryFullName(a.discipline, a.category_name), GENDER_SHORT[a.gender] || ""].filter(Boolean).join(" / ")}
+                      </td>
+                      <td style={{ padding: "8px 6px", color: "#4A4A48", verticalAlign: "top" }}>{a.age_group || "—"}</td>
+                      <td style={{ padding: "8px 6px", verticalAlign: "top", whiteSpace: "nowrap" }}>
+                        <div style={{ display: "flex", gap: "3px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                          {a.admission_status === "approved" ? (
+                            <button type="button" onClick={() => handleResetAdmission(a.registration_id)} title="Сбросить допуск"
+                              style={{ ...btnOutline, padding: "2px 6px", fontSize: "10px", borderRadius: "4px", color: "#0F6E56", fontWeight: "bold", borderColor: "#0F6E56", minWidth: 0, lineHeight: 1.2 }}>
+                              ✓ Допущен
+                            </button>
+                          ) : (
+                            <button onClick={() => handleAdmit(a.registration_id)} style={{ ...btnGreen, padding: "2px 6px", fontSize: "10px", borderRadius: "4px", minWidth: 0, lineHeight: 1.2 }}>✓ Допустить</button>
+                          )}
+                          {needsWeighAdmit(a) && (
+                            a.weigh_status === "approved" ? (
+                              <button type="button" onClick={() => handleResetWeigh(a.registration_id)} title="Сбросить весовой допуск"
+                                style={{ ...btnOutline, padding: "2px 6px", fontSize: "10px", borderRadius: "4px", color: "#0F6E56", fontWeight: "bold", borderColor: "#0F6E56", minWidth: 0, lineHeight: 1.2 }}>
+                                ✓ По весу
+                              </button>
+                            ) : (
+                              <button onClick={() => handleAdmitWeigh(a.registration_id)} style={{ ...btnGreen, padding: "2px 6px", fontSize: "10px", borderRadius: "4px", minWidth: 0, lineHeight: 1.2 }}>✓ Допустить по весу</button>
+                            )
+                          )}
+                          <button onClick={() => setEditingAthleteId(a.id)} title="Изменить"
+                            style={{ ...btnOutline, padding: "2px 6px", fontSize: "10px", borderRadius: "4px", minWidth: 0, lineHeight: 1.2 }}>Изменить</button>
+                          <button onClick={() => handleDeleteAthlete(a.id)} title="Удалить"
+                            style={{ ...btnDanger, padding: "2px 6px", fontSize: "10px", borderRadius: "4px", minWidth: 0, lineHeight: 1.2 }}>Удалить</button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           ) : ageGroupedList.map(ageBucket => {
             const ageOpen = expandedAgeKeys.has(ageBucket.key)
             return (
