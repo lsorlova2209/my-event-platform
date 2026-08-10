@@ -41,8 +41,10 @@ const btnDanger = {
 }
 const card = {
   background: "white", borderRadius: "16px", padding: "24px",
-  boxShadow: "0 4px 24px rgba(0,0,0,0.08)", marginBottom: "24px"
+  boxShadow: "0 4px 24px rgba(0,0,0,0.08)", marginBottom: "24px",
+  color: "#1A1A1A",
 }
+
 const errorBox = {
   background: "#fde8e8", color: "#A32D2D",
   padding: "12px", borderRadius: "8px", marginBottom: "16px", fontSize: "14px"
@@ -849,7 +851,7 @@ function AdminPanel({ user, onLogout }) {
   const pendingClubs = clubs.filter(c => c.status === "pending")
 
   return (
-    <div style={{ minHeight: "100vh", background: "#f3f2ee", fontFamily: "Arial", padding: "32px" }}>
+    <div style={{ minHeight: "100vh", background: "#f3f2ee", fontFamily: "Arial", padding: "32px", color: "#1A1A1A" }}>
       <div style={{ maxWidth: "900px", margin: "0 auto" }}>
 
         {/* Шапка */}
@@ -1487,6 +1489,13 @@ const needsWeighAdmit = (a) => {
   if (a.weigh_required === false) return false
   if (!String(a.discipline || "").startsWith("kumite")) return false
   return !NO_WEIGH_CATEGORIES.has(String(a.category_name || "").trim().toLowerCase())
+}
+
+/** В сетку/протокол жеребьёвки — только допущенные (как на бэкенде). */
+const eligibleForDraw = (a) => {
+  if (!a || a.admission_status !== "approved") return false
+  if (needsWeighAdmit(a) && a.weigh_status !== "approved") return false
+  return true
 }
 
 const nameInList = (participants, id) => ((participants || []).find(p => p.registration_id === id) || {}).full_name || "?"
@@ -2369,6 +2378,7 @@ const seedSelectStyle = {
   textAlign: "center",
   fontSize: "12px",
   fontFamily: "Arial",
+  color: "#1A1A1A",
   padding: 0,
   margin: 0,
   appearance: "none",
@@ -3601,7 +3611,7 @@ function TournamentDetail({ tournament, user, onBack }) {
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: "#f3f2ee", fontFamily: "Arial", padding: "32px" }}>
+    <div style={{ minHeight: "100vh", background: "#f3f2ee", fontFamily: "Arial", padding: "32px", color: "#1A1A1A" }}>
       <div style={{ maxWidth: "900px", margin: "0 auto" }}>
         <button onClick={onBack} style={{ ...btnOutline, marginBottom: "16px" }}>← Назад к турнирам</button>
         <div style={{ marginBottom: "24px", display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: "12px" }}>
@@ -4197,10 +4207,10 @@ function TournamentDetail({ tournament, user, onBack }) {
               ) : ageGroupedDraw.map(ageBucket => {
                 const ageOpen = drawExpandedAgeKeys.has(ageBucket.key)
                 const drawnInAge = ageBucket.categories.reduce(
-                  (n, g) => n + (g.athletes || []).filter(a => a.seed != null).length, 0
+                  (n, g) => n + (g.athletes || []).filter(a => eligibleForDraw(a) && a.seed != null).length, 0
                 )
                 const ageCount = athletes.length > 0
-                  ? ageBucket.count
+                  ? ageBucket.categories.reduce((n, g) => n + (g.athletes || []).filter(eligibleForDraw).length, 0)
                   : ageBucket.categories.reduce((n, g) => n + (g.count || 0), 0)
                 return (
                   <div key={ageBucket.key} style={{ marginBottom: "14px" }}>
@@ -4234,7 +4244,8 @@ function TournamentDetail({ tournament, user, onBack }) {
                           const groupKey = group.key
                           const open = drawExpandedKeys.has(groupKey)
                           const label = categoryLabelInAge(group.discipline, group.gender, group.category_name)
-                          const rows = group.athletes || []
+                          const allRows = group.athletes || []
+                          const rows = allRows.filter(eligibleForDraw)
                           const count = athletes.length > 0 ? rows.length : (group.count || 0)
                           const drawn = rows.some(a => a.seed != null)
                           const teamCount = isClubTeamCategory(group.discipline, group.category_name) && athletes.length > 0
@@ -4277,6 +4288,8 @@ function TournamentDetail({ tournament, user, onBack }) {
                                 <div style={{ marginTop: "8px", marginBottom: "12px" }}>
                                   {athletes.length === 0 ? (
                                     <p style={{ color: "#4A4A48", fontSize: "14px", margin: "8px 4px" }}>Загрузка сетки…</p>
+                                  ) : rows.length === 0 ? (
+                                    <p style={{ color: "#4A4A48", fontSize: "14px", margin: "8px 4px" }}>Нет допущенных участников</p>
                                   ) : group.discipline === "kata" ? (
                                     !drawn ? (
                                       <p style={{ color: "#4A4A48", fontSize: "14px", margin: "8px 4px" }}>Жеребьёвка не проведена</p>
@@ -4568,7 +4581,7 @@ function ClubPanel({ user, onLogout }) {
 
   if (selectedTournament) {
     return (
-      <div style={{ minHeight: "100vh", background: "#f3f2ee", fontFamily: "Arial", padding: "32px" }}>
+      <div style={{ minHeight: "100vh", background: "#f3f2ee", fontFamily: "Arial", padding: "32px", color: "#1A1A1A" }}>
         <div style={{ maxWidth: "900px", margin: "0 auto" }}>
           <button onClick={() => { setSelectedTournament(null); setShowForm(false); setError(""); setSuccess("") }} style={{ ...btnOutline, marginBottom: "16px" }}>← Назад к турнирам</button>
           <div style={{ marginBottom: "24px" }}>
@@ -4656,7 +4669,7 @@ function ClubPanel({ user, onLogout }) {
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: "#f3f2ee", fontFamily: "Arial", padding: "32px" }}>
+    <div style={{ minHeight: "100vh", background: "#f3f2ee", fontFamily: "Arial", padding: "32px", color: "#1A1A1A" }}>
       <div style={{ maxWidth: "900px", margin: "0 auto" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px" }}>
           <div>
@@ -4746,7 +4759,7 @@ function SecretaryPanel({ user, onLogout }) {
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: "#f3f2ee", fontFamily: "Arial", padding: "32px" }}>
+    <div style={{ minHeight: "100vh", background: "#f3f2ee", fontFamily: "Arial", padding: "32px", color: "#1A1A1A" }}>
       <div style={{ maxWidth: "900px", margin: "0 auto" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px" }}>
           <div>
@@ -4826,13 +4839,14 @@ function SecretaryTable({ user, grant, tournament, onBack }) {
   const participants = athletes.filter(a =>
     a.discipline === grant.discipline &&
     (isKata ? (kataNameToStyle[a.category_name] || a.category_name) === grant.category_name : a.category_name === grant.category_name) &&
-    (!grant.gender || a.gender === grant.gender)
+    (!grant.gender || a.gender === grant.gender) &&
+    eligibleForDraw(a)
   )
 
   const label = categoryLabel(grant.discipline, grant.gender, grant.category_name)
 
   return (
-    <div style={{ minHeight: "100vh", background: "#f3f2ee", fontFamily: "Arial", padding: "32px" }}>
+    <div style={{ minHeight: "100vh", background: "#f3f2ee", fontFamily: "Arial", padding: "32px", color: "#1A1A1A" }}>
       <div style={{ maxWidth: "1000px", margin: "0 auto" }}>
         <button onClick={onBack} style={{ ...btnOutline, marginBottom: "16px" }}>← Назад к столам</button>
         <div style={{ marginBottom: "24px", display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: "12px" }}>
@@ -4873,8 +4887,8 @@ function SecretaryTable({ user, grant, tournament, onBack }) {
 // ТЗ 5.3.4: перестановка номеров жеребьёвки — прямо в колонке «№» таблицы ката
 // (и в сетке кумитэ). Отдельный список номеров не показываем.
 
-const KATA_TH = { border: "1px solid #D3D1C7", padding: "6px 8px", background: "#f3f2ee", fontSize: "12px", textAlign: "center", whiteSpace: "nowrap" }
-const KATA_TD = { border: "1px solid #D3D1C7", padding: "6px 8px", fontSize: "13px", textAlign: "center" }
+const KATA_TH = { border: "1px solid #D3D1C7", padding: "6px 8px", background: "#f3f2ee", fontSize: "12px", textAlign: "center", whiteSpace: "nowrap", color: "#1A1A1A" }
+const KATA_TD = { border: "1px solid #D3D1C7", padding: "6px 8px", fontSize: "13px", textAlign: "center", color: "#1A1A1A" }
 
 // Протокол ката как в официальном образце - все круги видны сразу одной
 // таблицей (ФИО + 5 оценок судей + итог на круг + место), а не по одному
@@ -4888,6 +4902,7 @@ function KataTable({ grant, user, participants, kataTypes = [], onChanged }) {
   const [seedError, setSeedError] = useState("")
 
   const canEditSeeds = user?.role === "admin" || user?.role === "owner"
+  const drawParticipants = (participants || []).filter(eligibleForDraw)
 
   const load = useCallback(async () => {
     const params = { category_name: grant.category_name }
@@ -4921,14 +4936,14 @@ function KataTable({ grant, user, participants, kataTypes = [], onChanged }) {
     return () => clearTimeout(timeoutId)
   }, [load])
 
-  if (participants.length === 0) {
-    return <div style={card}><p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Участников в этой категории нет.</p></div>
+  if (drawParticipants.length === 0) {
+    return <div style={card}><p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Нет допущенных участников в этой категории.</p></div>
   }
 
   const rounds = Object.keys(KATA_ROUND_LABELS)
   const byRegRound = {}
   scores.forEach(s => { byRegRound[`${s.registration_id}|${s.round_label}`] = s })
-  const sorted = [...participants].sort((a, b) => (a.seed ?? 999) - (b.seed ?? 999) || (a.full_name || "").localeCompare(b.full_name || "", "ru"))
+  const sorted = [...drawParticipants].sort((a, b) => (a.seed ?? 999) - (b.seed ?? 999) || (a.full_name || "").localeCompare(b.full_name || "", "ru"))
   const seeded = sorted.filter(p => p.seed != null)
   const seedOptions = [...new Set(seeded.map(p => p.seed))].sort((a, b) => a - b)
   const hasSeedDupes = seedOptions.length !== seeded.length
@@ -5313,12 +5328,13 @@ function KumiteBracket({ grant, user, participants, bouts, onChanged, competitio
   const [activeMatch, setActiveMatch] = useState(null)
   const [seedBusy, setSeedBusy] = useState(false)
   const canEditSeeds = user?.role === "admin" || user?.role === "owner"
+  const drawParticipants = (participants || []).filter(eligibleForDraw)
 
-  if (participants.length === 0) {
-    return <div style={card}><p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Участников в этой категории нет.</p></div>
+  if (drawParticipants.length === 0) {
+    return <div style={card}><p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Нет допущенных участников в этой категории.</p></div>
   }
 
-  const bracketParticipants = normalizeGlobalDrawNumbers(participants)
+  const bracketParticipants = normalizeGlobalDrawNumbers(drawParticipants)
   const data = computeKumiteBracketData(bracketParticipants, bouts)
 
   if (!data.drawn) {
