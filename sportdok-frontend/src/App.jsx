@@ -171,25 +171,26 @@ function PasswordField({
           aria-label={visible ? "Скрыть пароль" : "Показать пароль"}
           title={visible ? "Скрыть пароль" : "Показать пароль"}
           style={{
-            position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)",
-            width: "32px", height: "32px", padding: 0,
-            border: "none", borderRadius: "8px",
-            background: "transparent", cursor: "pointer",
+            position: "absolute", right: "6px", top: "50%", transform: "translateY(-50%)",
+            width: "34px", height: "34px", padding: 0,
+            border: "1px solid rgba(26, 86, 160, 0.35)", borderRadius: "8px",
+            background: "#e8eef7", cursor: "pointer",
             display: "flex", alignItems: "center", justifyContent: "center",
-            color: "rgba(244,245,247,0.62)",
+            color: "#1A56A0",
+            boxShadow: "0 1px 2px rgba(0,0,0,0.12)",
           }}
         >
           {visible ? (
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="M3 3l18 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-              <path d="M10.6 10.6a2 2 0 002.8 2.8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-              <path d="M9.9 5.1A10.5 10.5 0 0121 12c-.6 1.1-1.4 2.1-2.4 3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-              <path d="M6.1 6.1C4.7 7.3 3.6 8.7 3 12c1.7 4.2 5.3 7 9 7 1.5 0 3-.4 4.3-1.1" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              <path d="M3 3l18 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+              <path d="M10.6 10.6a2 2 0 002.8 2.8" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+              <path d="M9.9 5.1A10.5 10.5 0 0121 12c-.6 1.1-1.4 2.1-2.4 3" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+              <path d="M6.1 6.1C4.7 7.3 3.6 8.7 3 12c1.7 4.2 5.3 7 9 7 1.5 0 3-.4 4.3-1.1" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
             </svg>
           ) : (
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-              <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="2" />
+              <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" stroke="currentColor" strokeWidth="2.2" strokeLinejoin="round" />
+              <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="2.2" />
             </svg>
           )}
         </button>
