@@ -1497,6 +1497,9 @@ def _layout_single_tree(rounds, y_start, style, leaf_bye_seeds=None, compact_fin
     """Чертёж одной подгруппы: 1) боксы 1-го круга 2) соединители 3) бокс победителя.
     compact_finish (зеркало 17+): финалист в колонке полуфиналистов, ровно между
     ними по Y; вертикаль вилки справа коротких штрихом. После зеркала — справа.
+
+    Бай (ровно один участник в паре 1-го круга): одна длинная строка, которая
+    сразу занимает колонку 2-го круга — как на экране в layoutBracket.
     """
     box_w = style["leaf_w"]
     box_h = style["box_h"]
@@ -1507,20 +1510,40 @@ def _layout_single_tree(rounds, y_start, style, leaf_bye_seeds=None, compact_fin
     leaf_n = 2 * len(rounds[0])
     y = y_start
     ys0, present0 = [], []
+    bye_span_w = box_w + h_gap + box_w
 
-    # Этап 1 — все прямоугольники первого раунда (с зазором между ячейками)
-    for i in range(leaf_n):
-        cy = y + box_h / 2
-        ys0.append(cy)
+    # Этап 1 — прямоугольники первого раунда (бай = одна удлинённая строка)
+    for i in range(0, leaf_n, 2):
         match = rounds[0][i // 2]
-        slot = match["a"] if i % 2 == 0 else match["b"]
-        present0.append(bool(slot))
-        if slot:
-            boxes.append({"kind": "leaf", "x": 0, "y": y, "width": box_w, "participant": slot})
-        elif leaf_bye_seeds and i < len(leaf_bye_seeds):
-            boxes.append({"kind": "bye", "x": 0, "y": y, "width": box_w, "seed": leaf_bye_seeds[i]})
-        y += row_h
-        if pair_gap and i % 2 == 1 and i < leaf_n - 1:
+        slot_a, slot_b = match.get("a"), match.get("b")
+        is_bye = bool(slot_a) != bool(slot_b)
+        if is_bye:
+            cy = y + box_h / 2
+            ys0.extend([cy, cy])
+            present0.extend([bool(slot_a), bool(slot_b)])
+            slot = slot_a or slot_b
+            boxes.append({
+                "kind": "leaf", "x": 0, "y": y, "width": bye_span_w, "participant": slot,
+            })
+            y += row_h
+        else:
+            for k in range(2):
+                cy = y + box_h / 2
+                ys0.append(cy)
+                slot = slot_a if k == 0 else slot_b
+                present0.append(bool(slot))
+                leaf_i = i + k
+                if slot:
+                    boxes.append({
+                        "kind": "leaf", "x": 0, "y": y, "width": box_w, "participant": slot,
+                    })
+                elif leaf_bye_seeds and leaf_i < len(leaf_bye_seeds):
+                    boxes.append({
+                        "kind": "bye", "x": 0, "y": y, "width": box_w,
+                        "seed": leaf_bye_seeds[leaf_i],
+                    })
+                y += row_h
+        if pair_gap and i + 2 < leaf_n:
             y += pair_gap
 
     col_ys, col_present = ys0, present0
@@ -1545,6 +1568,9 @@ def _layout_single_tree(rounds, y_start, style, leaf_bye_seeds=None, compact_fin
                 yb = col_ys[2 * j + 1]
                 py = (ya + yb) / 2
                 next_ys.append(py)
+                # Настоящий бай только в 1-м круге (длинная строка уже нарисована).
+                if c == 1 and bool(match.get("a")) != bool(match.get("b")):
+                    continue
                 lines.extend([
                     (fin_right, ya, mid_x, ya),
                     (fin_right, yb, mid_x, yb),
@@ -1563,6 +1589,8 @@ def _layout_single_tree(rounds, y_start, style, leaf_bye_seeds=None, compact_fin
                 yb = col_ys[2 * j + 1]
                 py = (ya + yb) / 2
                 next_ys.append(py)
+                if c == 1 and bool(match.get("a")) != bool(match.get("b")):
+                    continue
                 mid_x = x_prev_right + (x_next_left - x_prev_right) / 2
                 lines.extend([
                     (x_prev_right, ya, mid_x, ya),
