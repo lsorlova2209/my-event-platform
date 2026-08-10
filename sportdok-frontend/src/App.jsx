@@ -139,6 +139,65 @@ const arenaLabelStyle = {
   display: "block", marginBottom: "6px",
   color: "rgba(244,245,247,0.72)", fontSize: "13px", fontWeight: 600,
 }
+
+/** Поле пароля с кнопкой «глазик» (показать / скрыть). */
+function PasswordField({
+  value,
+  onChange,
+  placeholder = "••••••••",
+  label,
+  labelStyle: labelSx = arenaLabelStyle,
+  inputStyle: inputSx = arenaInputStyle,
+  autoComplete = "current-password",
+  required = false,
+}) {
+  const [visible, setVisible] = useState(false)
+  return (
+    <div>
+      {label ? <label style={labelSx}>{label}</label> : null}
+      <div style={{ position: "relative" }}>
+        <input
+          type={visible ? "text" : "password"}
+          value={value}
+          onChange={onChange}
+          placeholder={placeholder}
+          autoComplete={autoComplete}
+          required={required}
+          style={{ ...inputSx, paddingRight: "44px" }}
+        />
+        <button
+          type="button"
+          onClick={() => setVisible(v => !v)}
+          aria-label={visible ? "Скрыть пароль" : "Показать пароль"}
+          title={visible ? "Скрыть пароль" : "Показать пароль"}
+          style={{
+            position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)",
+            width: "32px", height: "32px", padding: 0,
+            border: "none", borderRadius: "8px",
+            background: "transparent", cursor: "pointer",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            color: "rgba(244,245,247,0.62)",
+          }}
+        >
+          {visible ? (
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M3 3l18 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              <path d="M10.6 10.6a2 2 0 002.8 2.8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              <path d="M9.9 5.1A10.5 10.5 0 0121 12c-.6 1.1-1.4 2.1-2.4 3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              <path d="M6.1 6.1C4.7 7.3 3.6 8.7 3 12c1.7 4.2 5.3 7 9 7 1.5 0 3-.4 4.3-1.1" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          ) : (
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+              <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="2" />
+            </svg>
+          )}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 const arenaBtnPrimary = {
   padding: "12px 22px", background: "#2f6fbf", color: "white",
   border: "none", borderRadius: "10px", cursor: "pointer",
@@ -406,8 +465,12 @@ function LoginPage({ onLogin, onRegister, onBack, emailConfirmMessage }) {
           <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="your@email.com" style={arenaInputStyle} />
         </div>
         <div style={{ marginBottom: "16px" }}>
-          <label style={arenaLabelStyle}>Пароль</label>
-          <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" style={arenaInputStyle} />
+          <PasswordField
+            label="Пароль"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            placeholder="••••••••"
+          />
         </div>
 
         {error && (
@@ -524,8 +587,12 @@ function ClubRegisterPage({ onBack }) {
                 <input type="email" value={form.email} onChange={e => set("email", e.target.value)} style={arenaInputStyle} />
               </div>
               <div style={{ marginBottom: "24px" }}>
-                <label style={arenaLabelStyle}>Пароль *</label>
-                <input type="password" value={form.password} onChange={e => set("password", e.target.value)} style={arenaInputStyle} />
+                <PasswordField
+                  label="Пароль *"
+                  value={form.password}
+                  onChange={e => set("password", e.target.value)}
+                  autoComplete="new-password"
+                />
               </div>
 
               {error && (
