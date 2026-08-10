@@ -3035,6 +3035,10 @@ function TournamentDetail({ tournament, user, onBack }) {
     const headers = { Authorization: `Bearer ${user.token}` }
     const tid = tournament.id
 
+    // Справку по команде грузим сразу — иначе после обновления страницы
+    // в селекте «Нет допущенных», хотя в списке они уже есть.
+    loadRosterOrgs()
+
     // 1) Быстрая сводка категорий — заголовки почти сразу
     axios.get(`${API}/api/v1/tournaments/${tid}/athletes/categories`)
       .then(r => {
@@ -3083,6 +3087,27 @@ function TournamentDetail({ tournament, user, onBack }) {
 
     return () => { cancelled = true; clearTimeout(deferred) }
   }, [tournament.id, user.token, user?.role])
+
+  // Подстраховка: собрать команды для справки из уже загруженных допущенных
+  useEffect(() => {
+    if (!athletes.length) return
+    const useRegion = usesRegionOrg(tournament.competition_level)
+    const orgs = [...new Set(
+      athletes
+        .filter(a => a.admission_status === "approved")
+        .map(a => {
+          const raw = useRegion
+            ? (a.region || a.club_name || "")
+            : (a.club_name || a.region || "")
+          return String(raw).trim()
+        })
+        .filter(Boolean)
+    )].sort((a, b) => a.localeCompare(b, "ru"))
+    if (!orgs.length) return
+    setRosterOrgs(orgs)
+    setRosterOrgLabel(useRegion ? "Регион" : "Команда")
+    setRosterOrg(prev => (prev && orgs.includes(prev) ? prev : orgs[0]))
+  }, [athletes, tournament.competition_level])
 
   const setGrantField = (k, v) => setGrantForm(f => ({ ...f, [k]: v }))
 
