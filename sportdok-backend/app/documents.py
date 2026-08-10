@@ -2289,12 +2289,15 @@ def build_participants_list_pdf(tournament, categories):
 
             for cat in sections:
                 label = _category_label_site(
-                    cat.get("discipline"), cat.get("gender"), cat.get("category_name"),
+                    cat.get("discipline"),
+                    cat.get("gender"),
+                    cat.get("category_name"),
+                    cat.get("age_group"),
                 )
                 story.append(Paragraph(f"{label} ({len(cat['participants'])})", cat_style))
 
                 is_kata = cat.get("discipline") == "kata"
-                header = ["№", "ФИО", org_header]
+                header = ["№", "ФИО", "Разряд", org_header]
                 if not is_kata:
                     header.append("Вес")
 
@@ -2304,16 +2307,16 @@ def build_participants_list_pdf(tournament, categories):
                         part for part in (p.get("last_name"), p.get("first_name"), p.get("middle_name")) if part
                     ).strip()
                     org = _participant_org(p, competition_level) or "—"
-                    row = [str(idx), full or "—", org]
+                    row = [str(idx), full or "—", p.get("rank") or "—", org]
                     if not is_kata:
                         row.append(str(p["weight"]) if p.get("weight") is not None else "—")
                     rows.append(row)
 
                 col_count = len(header)
                 if is_kata:
-                    widths = [1.2 * cm, 10.0 * cm, 6.5 * cm]
+                    widths = [1.2 * cm, 7.5 * cm, 2.8 * cm, 6.2 * cm]
                 else:
-                    widths = [1.2 * cm, 8.5 * cm, 5.5 * cm, 2.5 * cm]
+                    widths = [1.2 * cm, 6.5 * cm, 2.4 * cm, 5.0 * cm, 2.2 * cm]
                 table = Table(rows, colWidths=widths[:col_count], repeatRows=1, hAlign="LEFT")
                 table.setStyle(TableStyle([
                     ("FONTNAME", (0, 0), (-1, -1), "DejaVuSans"),
@@ -2323,6 +2326,7 @@ def build_participants_list_pdf(tournament, categories):
                     ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
                     ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                     ("ALIGN", (0, 0), (0, -1), "CENTER"),
+                    ("ALIGN", (2, 1), (2, -1), "CENTER"),
                     ("LEFTPADDING", (0, 0), (-1, -1), 4),
                     ("RIGHTPADDING", (0, 0), (-1, -1), 4),
                     ("TOPPADDING", (0, 0), (-1, -1), 3),
