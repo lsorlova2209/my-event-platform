@@ -2297,7 +2297,7 @@ def build_participants_list_pdf(tournament, categories):
                 story.append(Paragraph(f"{label} ({len(cat['participants'])})", cat_style))
 
                 is_kata = cat.get("discipline") == "kata"
-                header = ["№", "ФИО", "Разряд", org_header]
+                header = ["№", "ФИО", "Разряд", org_header, "Тренер"]
                 if not is_kata:
                     header.append("Вес")
 
@@ -2307,28 +2307,34 @@ def build_participants_list_pdf(tournament, categories):
                         part for part in (p.get("last_name"), p.get("first_name"), p.get("middle_name")) if part
                     ).strip()
                     org = _participant_org(p, competition_level) or "—"
-                    row = [str(idx), full or "—", p.get("rank") or "—", org]
+                    row = [
+                        str(idx),
+                        full or "—",
+                        p.get("rank") or "—",
+                        org,
+                        p.get("trainer_name") or "—",
+                    ]
                     if not is_kata:
                         row.append(str(p["weight"]) if p.get("weight") is not None else "—")
                     rows.append(row)
 
                 col_count = len(header)
                 if is_kata:
-                    widths = [1.2 * cm, 7.5 * cm, 2.8 * cm, 6.2 * cm]
+                    widths = [1.0 * cm, 5.8 * cm, 2.2 * cm, 4.5 * cm, 4.2 * cm]
                 else:
-                    widths = [1.2 * cm, 6.5 * cm, 2.4 * cm, 5.0 * cm, 2.2 * cm]
+                    widths = [1.0 * cm, 5.0 * cm, 2.0 * cm, 3.8 * cm, 3.6 * cm, 1.8 * cm]
                 table = Table(rows, colWidths=widths[:col_count], repeatRows=1, hAlign="LEFT")
                 table.setStyle(TableStyle([
                     ("FONTNAME", (0, 0), (-1, -1), "DejaVuSans"),
                     ("FONTNAME", (0, 0), (-1, 0), "DejaVuSans-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, -1), 9),
+                    ("FONTSIZE", (0, 0), (-1, -1), 8),
                     ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8eef7")),
                     ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
                     ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                     ("ALIGN", (0, 0), (0, -1), "CENTER"),
                     ("ALIGN", (2, 1), (2, -1), "CENTER"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 3),
                     ("TOPPADDING", (0, 0), (-1, -1), 3),
                     ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
                 ]))
