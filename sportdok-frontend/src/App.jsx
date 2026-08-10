@@ -4886,8 +4886,8 @@ function SecretaryTable({ user, grant, tournament, onBack }) {
 // ТЗ 5.3.4: перестановка номеров жеребьёвки — прямо в колонке «№» таблицы ката
 // (и в сетке кумитэ). Отдельный список номеров не показываем.
 
-const KATA_TH = { border: "1px solid #D3D1C7", padding: "6px 8px", background: "#f3f2ee", fontSize: "12px", textAlign: "center", whiteSpace: "nowrap", color: "#1A1A1A" }
-const KATA_TD = { border: "1px solid #D3D1C7", padding: "6px 8px", fontSize: "13px", textAlign: "center", color: "#1A1A1A" }
+const KATA_TH = { border: "1px solid #D3D1C7", padding: "3px 4px", background: "#f3f2ee", fontSize: "10px", textAlign: "center", whiteSpace: "nowrap", color: "#1A1A1A", lineHeight: 1.2 }
+const KATA_TD = { border: "1px solid #D3D1C7", padding: "2px 4px", fontSize: "10px", textAlign: "center", color: "#1A1A1A", lineHeight: 1.2 }
 
 // Протокол ката как в официальном образце - все круги видны сразу одной
 // таблицей (ФИО + 5 оценок судей + итог на круг + место), а не по одному
@@ -4976,7 +4976,7 @@ function KataTable({ grant, user, participants, kataTypes = [], onChanged }) {
   return (
     <div style={card}>
       {canEditSeeds && seeded.length >= 2 && (
-        <div style={{ fontSize: "13px", color: "#4A4A48", marginBottom: "8px" }}>
+        <div style={{ fontSize: "11px", color: "#4A4A48", marginBottom: "6px" }}>
           {hasSeedDupes
             ? "Обнаружены повторяющиеся номера жребья — нажмите «Пережеребить заново»"
             : "Измените № жребья в колонке «№» — спортсмены поменяются местами автоматически"}
@@ -4989,13 +4989,13 @@ function KataTable({ grant, user, participants, kataTypes = [], onChanged }) {
         </div>
       )}
       <div style={{ overflowX: "auto" }}>
-        <table style={{ borderCollapse: "collapse", width: "100%" }}>
+        <table style={{ borderCollapse: "collapse", width: "100%", tableLayout: "fixed", fontSize: "10px" }}>
           <thead>
             <tr>
-              <th style={KATA_TH} rowSpan={2}>№</th>
-              <th style={{ ...KATA_TH, textAlign: "left" }} rowSpan={2}>Фамилия Имя</th>
+              <th style={{ ...KATA_TH, width: "36px" }} rowSpan={2}>№</th>
+              <th style={{ ...KATA_TH, textAlign: "left", width: "22%" }} rowSpan={2}>Фамилия Имя</th>
               {rounds.map(r => <th key={r} style={KATA_TH} colSpan={7}>{KATA_ROUND_LABELS[r]}</th>)}
-              <th style={KATA_TH} rowSpan={2}>Место</th>
+              <th style={{ ...KATA_TH, width: "40px" }} rowSpan={2}>Место</th>
             </tr>
             <tr>
               {rounds.map(r => ["Ката", 1, 2, 3, 4, 5, "Итог"].map(c => <th key={r + c} style={KATA_TH}>{c}</th>))}
@@ -5004,7 +5004,7 @@ function KataTable({ grant, user, participants, kataTypes = [], onChanged }) {
           <tbody>
             {sorted.map(p => (
               <tr key={p.registration_id}>
-                <td style={{ ...KATA_TD, padding: canEditSeeds && p.seed != null ? "2px" : KATA_TD.padding }}>
+                <td style={{ ...KATA_TD, padding: canEditSeeds && p.seed != null ? "1px" : KATA_TD.padding }}>
                   {canEditSeeds && p.seed != null && seeded.length >= 2 ? (
                     <select
                       value={seedOptions.includes(p.seed) ? p.seed : ""}
@@ -5012,9 +5012,9 @@ function KataTable({ grant, user, participants, kataTypes = [], onChanged }) {
                       onChange={e => handleSeedChange(p, Number(e.target.value))}
                       title="Изменить № жребья"
                       style={{
-                        width: "100%", minWidth: "48px", border: "none", background: "transparent",
-                        textAlign: "center", fontSize: "13px", fontWeight: "bold", color: "#1A56A0",
-                        padding: "4px 2px", cursor: seedBusy || hasSeedDupes ? "not-allowed" : "pointer",
+                        width: "100%", minWidth: "32px", border: "none", background: "transparent",
+                        textAlign: "center", fontSize: "10px", fontWeight: "bold", color: "#1A56A0",
+                        padding: "1px 0", cursor: seedBusy || hasSeedDupes ? "not-allowed" : "pointer",
                       }}
                     >
                       {!seedOptions.includes(p.seed) && <option value="">{p.seed}</option>}
@@ -5024,7 +5024,15 @@ function KataTable({ grant, user, participants, kataTypes = [], onChanged }) {
                     <span style={{ fontWeight: "bold", color: "#1A56A0" }}>{p.seed != null ? p.seed : "—"}</span>
                   )}
                 </td>
-                <td style={{ ...KATA_TD, textAlign: "left" }}>{p.full_name}</td>
+                <td
+                  title={p.full_name}
+                  style={{
+                    ...KATA_TD, textAlign: "left",
+                    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                  }}
+                >
+                  {p.full_name}
+                </td>
                 {rounds.map(r => {
                   const s = byRegRound[`${p.registration_id}|${r}`]
                   const vals = s ? [s.score_1, s.score_2, s.score_3, s.score_4, s.score_5, s.total_score] : null
@@ -5035,7 +5043,9 @@ function KataTable({ grant, user, participants, kataTypes = [], onChanged }) {
                   return (
                     <Fragment key={r}>
                       <td onClick={openForm} title={s?.kata_name ? "Нажмите, чтобы изменить ката" : "Выбрать ката"} style={{
-                        ...KATA_TD, cursor: "pointer", background: s ? "white" : "#faf9f5", textAlign: "left", fontSize: "11px", maxWidth: "90px"
+                        ...KATA_TD, cursor: "pointer", background: s ? "white" : "#faf9f5", textAlign: "left",
+                        fontSize: "9px", maxWidth: "72px",
+                        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                       }}>
                         {s?.kata_name || "—"}
                       </td>
