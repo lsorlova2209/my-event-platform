@@ -2869,6 +2869,10 @@ function TournamentDetail({ tournament, user, onBack }) {
   const [searchOpen, setSearchOpen] = useState({ surname: false, club: false, category: false })
   const [expandedKeys, setExpandedKeys] = useState(() => new Set())
   const [expandedAgeKeys, setExpandedAgeKeys] = useState(() => new Set())
+  const [drawExpandedKeys, setDrawExpandedKeys] = useState(() => new Set())
+  const [drawExpandedAgeKeys, setDrawExpandedAgeKeys] = useState(() => new Set())
+  const [drawSearch, setDrawSearch] = useState("")
+  const [drawResultOpen, setDrawResultOpen] = useState(true)
   const [lazyByKey, setLazyByKey] = useState({})
   const lazyInflightRef = useRef(new Set())
   const lazyLoadedRef = useRef(new Set())
@@ -3030,6 +3034,9 @@ function TournamentDetail({ tournament, user, onBack }) {
     setLazyByKey({})
     setExpandedKeys(new Set())
     setExpandedAgeKeys(new Set())
+    setDrawExpandedKeys(new Set())
+    setDrawExpandedAgeKeys(new Set())
+    setDrawSearch("")
     lazyInflightRef.current = new Set()
     lazyLoadedRef.current = new Set()
     const headers = { Authorization: `Bearer ${user.token}` }
@@ -3269,6 +3276,18 @@ function TournamentDetail({ tournament, user, onBack }) {
     else next.add(key)
     return next
   })
+  const toggleDrawCategory = (key) => setDrawExpandedKeys(prev => {
+    const next = new Set(prev)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    return next
+  })
+  const toggleDrawAgeGroup = (key) => setDrawExpandedAgeKeys(prev => {
+    const next = new Set(prev)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    return next
+  })
 
   const ageGroupedList = groupCategoriesByAge(
     listDisplayGroups.map(g => ({
@@ -3276,6 +3295,37 @@ function TournamentDetail({ tournament, user, onBack }) {
       key: `${g.discipline}|${g.gender}|${g.category_name}|${g.age_group || ""}`,
     }))
   )
+
+  // Жеребьёвка: те же возрастные группы → категории, что и в списке участников
+  const drawSearchQ = drawSearch.trim().toLowerCase()
+  const drawSourceGroups = (athletes.length > 0
+    ? Object.values(listGroupsAll)
+    : previewListGroups
+  ).map(g => ({
+    ...g,
+    key: `${g.discipline}|${g.gender}|${g.category_name}|${g.age_group || ""}`,
+  }))
+  const drawListGroups = drawSourceGroups
+    .filter(g => {
+      if (!drawSearchQ) return true
+      const label = `${g.age_group || ""} ${categoryLabelInAge(g.discipline, g.gender, g.category_name)}`.toLowerCase()
+      const names = (g.athletes || []).map(a => a.full_name || "").join(" ").toLowerCase()
+      return label.includes(drawSearchQ) || names.includes(drawSearchQ)
+    })
+    .sort((a, b) =>
+      categoryLabel(a.discipline, a.gender, a.category_name, a.age_group)
+        .localeCompare(categoryLabel(b.discipline, b.gender, b.category_name, b.age_group), "ru")
+    )
+  const ageGroupedDraw = groupCategoriesByAge(drawListGroups)
+
+  // При поиске в жеребьёвке — раскрыть совпавшие группы (удобный просмотр)
+  useEffect(() => {
+    if (!drawSearchQ) return
+    setDrawExpandedAgeKeys(new Set(ageGroupedDraw.map(b => b.key)))
+    if (drawListGroups.length <= 12) {
+      setDrawExpandedKeys(new Set(drawListGroups.map(g => g.key)))
+    }
+  }, [drawSearchQ]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!filterCategory) return
@@ -4121,41 +4171,143 @@ function TournamentDetail({ tournament, user, onBack }) {
           {publishMsg && <div style={{ ...successBox, marginTop: "12px" }}>{publishMsg}</div>}
           {drawError && <div style={{ ...errorBox, marginTop: "16px" }}>{drawError}</div>}
 
-          {Object.keys(bracketGroups).length === 0 ? (
+          {Object.keys(listGroupsAll).length === 0 && categoriesPreview.length === 0 ? (
             <p style={{ color: "#4A4A48", textAlign: "center", padding: "32px 0" }}>Сначала добавьте участников.</p>
           ) : (
             <div style={{ marginTop: "16px" }}>
-              {Object.values(bracketGroups).map(group => {
-                const label = categoryLabel(group.discipline, group.gender, group.category_name)
+              <div style={{ marginBottom: "12px" }}>
+                <label style={labelStyle}>Поиск по жеребьёвке</label>
+                <input
+                  type="search"
+                  value={drawSearch}
+                  onChange={e => setDrawSearch(e.target.value)}
+                  placeholder="Возраст, категория, ФИО…"
+                  style={inputStyle}
+                />
+              </div>
 
-                if (group.discipline === "kata") {
-                  const drawn = group.athletes.some(a => a.seed != null)
-                  return (
-                    <div key={label} style={{ marginBottom: "24px" }}>
-                      <div style={{ fontWeight: "bold", color: "#1A56A0", marginBottom: "8px" }}>{label}</div>
-                      {!drawn ? (
-                        <p style={{ color: "#4A4A48", fontSize: "14px" }}>Жеребьёвка не проведена</p>
-                      ) : (
-                        <>
-                          <SeedRenumberList tournamentId={tournament.id} athletes={group.athletes} user={user} onChanged={loadAthletes} />
-                          <KataTable grant={{ tournament_id: tournament.id, category_name: group.category_name, gender: group.gender }}
-                            user={user} participants={group.athletes} kataTypes={kataTypes} />
-                        </>
-                      )}
-                    </div>
-                  )
-                }
-
-                // Кумитэ - тот же интерактивный компонент, что и у секретаря
-                // (KumiteBracket сам по себе не завязан на конкретный "стол",
-                // ему нужен только tournament_id), поэтому админ тоже может
-                // кликнуть по бою прямо в сетке и внести результат.
+              {ageGroupedDraw.length === 0 ? (
+                <p style={{ color: "#4A4A48", textAlign: "center", padding: "24px 0" }}>
+                  {athletesLoading && athletes.length === 0 ? "Загрузка категорий…" : "Ничего не найдено."}
+                </p>
+              ) : ageGroupedDraw.map(ageBucket => {
+                const ageOpen = drawExpandedAgeKeys.has(ageBucket.key)
+                const drawnInAge = ageBucket.categories.reduce(
+                  (n, g) => n + (g.athletes || []).filter(a => a.seed != null).length, 0
+                )
+                const ageCount = athletes.length > 0
+                  ? ageBucket.count
+                  : ageBucket.categories.reduce((n, g) => n + (g.count || 0), 0)
                 return (
-                  <div key={label} style={{ marginBottom: "24px" }}>
-                    <div style={{ fontWeight: "bold", color: "#1A56A0", marginBottom: "8px" }}>{label}</div>
-                    <KumiteBracket grant={{ tournament_id: tournament.id }} user={user} participants={group.athletes} bouts={bouts}
-                      competitionLevel={tournament.competition_level || "municipal"}
-                      onChanged={() => { loadAthletes(); loadBouts() }} />
+                  <div key={ageBucket.key} style={{ marginBottom: "14px" }}>
+                    <button
+                      type="button"
+                      onClick={() => toggleDrawAgeGroup(ageBucket.key)}
+                      aria-expanded={ageOpen}
+                      style={{
+                        display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px",
+                        width: "100%", padding: "10px 8px", background: "#e8e6df",
+                        fontWeight: "bold", color: "#1A56A0", fontSize: "15px",
+                        border: "none", cursor: "pointer", textAlign: "left", borderRadius: "6px",
+                      }}
+                    >
+                      <span style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span style={{
+                          display: "inline-block", width: "14px",
+                          transform: ageOpen ? "rotate(90deg)" : "rotate(0deg)",
+                          transition: "transform 0.15s ease", fontSize: "12px",
+                        }} aria-hidden>▸</span>
+                        {ageBucket.age_group} ({ageCount})
+                      </span>
+                      <span style={{ fontWeight: "normal", fontSize: "13px", color: "#4A4A48" }}>
+                        {ageBucket.categories.length} кат.
+                        {drawnInAge > 0 ? ` · жребий: ${drawnInAge}` : ""}
+                      </span>
+                    </button>
+                    {ageOpen && (
+                      <div style={{ marginTop: "6px", paddingLeft: "6px" }}>
+                        {ageBucket.categories.map(group => {
+                          const groupKey = group.key
+                          const open = drawExpandedKeys.has(groupKey)
+                          const label = categoryLabelInAge(group.discipline, group.gender, group.category_name)
+                          const rows = group.athletes || []
+                          const count = athletes.length > 0 ? rows.length : (group.count || 0)
+                          const drawn = rows.some(a => a.seed != null)
+                          const teamCount = isClubTeamCategory(group.discipline, group.category_name) && athletes.length > 0
+                            ? (groupTeamsForCategory(group.discipline, group.category_name, rows) || [])
+                              .filter(t => t.complete).length
+                            : null
+                          return (
+                            <div key={groupKey} style={{ marginBottom: "8px" }}>
+                              <button
+                                type="button"
+                                onClick={() => toggleDrawCategory(groupKey)}
+                                aria-expanded={open}
+                                style={{
+                                  display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px",
+                                  width: "100%", padding: "8px 4px", background: "#f3f2ee",
+                                  fontWeight: "bold", color: "#1A56A0", fontSize: "13px",
+                                  border: "none", cursor: "pointer", textAlign: "left", borderRadius: "4px",
+                                }}
+                              >
+                                <span style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0 }}>
+                                  <span style={{
+                                    display: "inline-block", width: "14px", flexShrink: 0,
+                                    transform: open ? "rotate(90deg)" : "rotate(0deg)",
+                                    transition: "transform 0.15s ease", fontSize: "12px",
+                                  }} aria-hidden>▸</span>
+                                  <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                                    {label} ({
+                                      teamCount != null ? `${teamCount} ком. · ${count}` : count
+                                    })
+                                  </span>
+                                </span>
+                                <span style={{
+                                  flexShrink: 0, fontWeight: "normal", fontSize: "12px",
+                                  color: drawn ? "#0F6E56" : "#4A4A48",
+                                }}>
+                                  {athletes.length === 0 ? "…" : drawn ? "есть жребий" : "нет жребия"}
+                                </span>
+                              </button>
+                              {open && (
+                                <div style={{ marginTop: "8px", marginBottom: "12px" }}>
+                                  {athletes.length === 0 ? (
+                                    <p style={{ color: "#4A4A48", fontSize: "14px", margin: "8px 4px" }}>Загрузка сетки…</p>
+                                  ) : group.discipline === "kata" ? (
+                                    !drawn ? (
+                                      <p style={{ color: "#4A4A48", fontSize: "14px", margin: "8px 4px" }}>Жеребьёвка не проведена</p>
+                                    ) : (
+                                      <>
+                                        <SeedRenumberList tournamentId={tournament.id} athletes={rows} user={user} onChanged={loadAthletes} />
+                                        <KataTable
+                                          grant={{
+                                            tournament_id: tournament.id,
+                                            category_name: group.category_name,
+                                            gender: group.gender,
+                                          }}
+                                          user={user}
+                                          participants={rows}
+                                          kataTypes={kataTypes}
+                                        />
+                                      </>
+                                    )
+                                  ) : (
+                                    <KumiteBracket
+                                      grant={{ tournament_id: tournament.id }}
+                                      user={user}
+                                      participants={rows}
+                                      bouts={bouts}
+                                      competitionLevel={tournament.competition_level || "municipal"}
+                                      onChanged={() => { loadAthletes(); loadBouts() }}
+                                    />
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
                   </div>
                 )
               })}
@@ -4164,8 +4316,30 @@ function TournamentDetail({ tournament, user, onBack }) {
 
           {drawResult && (
             <div style={{ marginTop: "24px", borderTop: "1px solid #f3f2ee", paddingTop: "16px" }}>
-              <div style={{ fontWeight: "bold", color: "#1A56A0", marginBottom: "12px" }}>Результат последней жеребьёвки</div>
-              {(drawResult.categories || []).map((cat, i) => (
+              <button
+                type="button"
+                onClick={() => setDrawResultOpen(o => !o)}
+                aria-expanded={drawResultOpen}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px",
+                  width: "100%", padding: "8px 0", background: "transparent",
+                  fontWeight: "bold", color: "#1A56A0", fontSize: "15px",
+                  border: "none", cursor: "pointer", textAlign: "left",
+                }}
+              >
+                <span style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span style={{
+                    display: "inline-block", width: "14px",
+                    transform: drawResultOpen ? "rotate(90deg)" : "rotate(0deg)",
+                    transition: "transform 0.15s ease", fontSize: "12px",
+                  }} aria-hidden>▸</span>
+                  Результат последней жеребьёвки
+                </span>
+                <span style={{ fontWeight: "normal", fontSize: "13px", color: "#4A4A48" }}>
+                  {(drawResult.categories || []).length} кат.
+                </span>
+              </button>
+              {drawResultOpen && (drawResult.categories || []).map((cat, i) => (
                 <div key={i} style={{ marginBottom: "16px" }}>
                   <div style={{ fontWeight: "bold" }}>{categoryLabel(cat.discipline, cat.gender, cat.category_name)}</div>
                   <div style={{ fontSize: "13px", color: "#4A4A48", marginBottom: "6px" }}>
