@@ -4345,7 +4345,7 @@ function TournamentDetail({ tournament, user, onBack }) {
               </button>
               {drawResultOpen && (drawResult.categories || []).map((cat, i) => (
                 <div key={i} style={{ marginBottom: "16px" }}>
-                  <div style={{ fontWeight: "bold" }}>{categoryLabel(cat.discipline, cat.gender, cat.category_name)}</div>
+                  <div style={{ fontWeight: "bold" }}>{categoryLabel(cat.discipline, cat.gender, cat.category_name, cat.age_group)}</div>
                   <div style={{ fontSize: "13px", color: "#4A4A48", marginBottom: "6px" }}>
                     {cat.already_drawn
                       ? "Уже проведена ранее — не тронута (нажмите «Пережеребить заново»)"
@@ -4882,12 +4882,25 @@ function SeedRenumberList({ tournamentId, athletes, user, onChanged }) {
   const canEdit = user?.role === "admin" || user?.role === "owner"
   if (!canEdit || seeded.length < 2) return null
 
-  const displayOptions = seeded.map((_, i) => i + 1)
+  const seedValues = [...new Set(seeded.map(x => x.seed))].sort((a, b) => a - b)
+  const hasDupes = seedValues.length !== seeded.length
+  const isContiguous = (
+    !hasDupes
+    && seedValues.length === seeded.length
+    && seedValues[0] === 1
+    && seedValues[seedValues.length - 1] === seeded.length
+  )
+  const displayOptions = seedValues
 
   const handleDisplayChange = async (participant, newDisplay) => {
     if (busyId || participant.seed === newDisplay) return
-    const other = seeded.find(x => x.seed === newDisplay)
-    if (!other) return
+    const other = seeded.find(x => x.seed === newDisplay && x.registration_id !== participant.registration_id)
+    if (!other) {
+      setError(hasDupes
+        ? "Есть повторяющиеся номера — нажмите «Пережеребить заново»"
+        : "Не найден участник с таким номером")
+      return
+    }
     setBusyId(participant.registration_id)
     setError("")
     try {
@@ -4906,16 +4919,23 @@ function SeedRenumberList({ tournamentId, athletes, user, onChanged }) {
   return (
     <div style={{ marginTop: "8px", marginBottom: "8px" }}>
       <div style={{ fontSize: "13px", color: "#4A4A48", marginBottom: "8px" }}>
-        Номера жребья от 1 до {seeded.length} без повторов — измените № жребья, спортсмен поменяется автоматически
+        {hasDupes
+          ? "Обнаружены повторяющиеся номера жребья — нажмите «Пережеребить заново»"
+          : isContiguous
+            ? `Номера жребья от 1 до ${seeded.length} без повторов — измените № жребья, спортсмен поменяется автоматически`
+            : `Номера жребья: ${seedValues.join(", ")}. Измените номер — спортсмены поменяются местами (или пережеребите заново для 1…${seeded.length}).`}
       </div>
       {seeded.map(p => (
         <div key={p.registration_id} style={{ display: "flex", gap: "8px", alignItems: "center", marginBottom: "6px" }}>
           <select
-            value={p.seed}
-            disabled={!!busyId}
+            value={displayOptions.includes(p.seed) ? p.seed : ""}
+            disabled={!!busyId || hasDupes}
             onChange={e => handleDisplayChange(p, Number(e.target.value))}
             style={{ ...inputStyle, width: "72px", padding: "6px 8px" }}
           >
+            {!displayOptions.includes(p.seed) && (
+              <option value="">{p.seed}</option>
+            )}
             {displayOptions.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
           <span style={{ fontSize: "13px", color: "#1A1A1A" }}>{p.full_name}</span>

@@ -733,19 +733,22 @@ def registration_eligible_for_draw(reg):
 def category_sort_key(cat):
     """Groups ката categories together in official style order (Ашихара,
     Косики, ...); leaves everything else in its original relative order."""
+    age = cat.get("age_group") or ""
     if cat["discipline"] == "kata":
         try:
             style_index = KATA_STYLE_ORDER.index(cat["category_name"])
         except ValueError:
             style_index = len(KATA_STYLE_ORDER)
-        return (0, style_index, cat.get("gender") or "")
-    return (1, 0, "")
+        return (0, style_index, cat.get("gender") or "", age)
+    return (1, 0, "", age)
 
 
 def _draw_needs_repair(participants, discipline):
-    """Old draw assigned seeds 1..k per subgroup (duplicate № жребья in category)."""
-    if discipline == "kata":
-        return False
+    """True if seeds are missing uniqueness or are not contiguous 1..N for this group.
+
+    Also catches age-slices of an old global draw (unique seeds like 3,7,12
+    instead of 1..n within the age group).
+    """
     n = len(participants)
     if n == 0:
         return False
@@ -755,9 +758,11 @@ def _draw_needs_repair(participants, discipline):
         return False
     if len(set(seeds)) != n:
         return True
+    if set(seeds) != set(range(1, n + 1)):
+        return True
+    if discipline == "kata":
+        return False
     if n >= 5:
-        if set(seeds) != set(range(1, n + 1)):
-            return True
         for reg in regs:
             expected = subgroup_for_draw_number(reg.seed, n)
             if reg.subgroup != expected:
@@ -787,51 +792,59 @@ def _renumber_category_seeds(participants):
     return changed
 
 
-def _category_has_completed_bouts(db, tournament_id, discipline, gender, category_name):
-    return db.query(Bout).filter(
+def _participant_reg_ids(participants):
+    return {str(p["_reg"].id) for p in participants if p.get("_reg") is not None}
+
+
+def _category_has_completed_bouts(db, tournament_id, discipline, gender, category_name, registration_ids=None):
+    q = db.query(Bout).filter(
         Bout.tournament_id == tournament_id,
         Bout.discipline == discipline,
         Bout.gender == gender,
         Bout.category_name == category_name,
         Bout.status == "completed",
-    ).first() is not None
+    )
+    if registration_ids:
+        ids = list(registration_ids)
+        q = q.filter(or_(Bout.registration_id_a.in_(ids), Bout.registration_id_b.in_(ids)))
+    return q.first() is not None
 
 
 def _clear_category_draw(db, tournament_id, discipline, gender, category_name, participants):
-    db.query(Bout).filter(
-        Bout.tournament_id == tournament_id,
-        Bout.discipline == discipline,
-        Bout.gender == gender,
-        Bout.category_name == category_name,
-        Bout.status != "completed",
-    ).delete(synchronize_session=False)
-    seen = set()
+    """Clear seeds/bouts only for the given participants (one age group), not the whole category."""
+    ids = _participant_reg_ids(participants)
+    if ids:
+        bouts = (
+            db.query(Bout)
+            .filter(
+                Bout.tournament_id == tournament_id,
+                Bout.discipline == discipline,
+                Bout.gender == gender,
+                Bout.category_name == category_name,
+                Bout.status != "completed",
+                or_(Bout.registration_id_a.in_(list(ids)), Bout.registration_id_b.in_(list(ids))),
+            )
+            .all()
+        )
+        for bout in bouts:
+            db.delete(bout)
     for p in participants:
-        reg = p["_reg"]
-        reg.seed = None
-        reg.subgroup = None
-        seen.add(str(reg.id))
-    # Сбрасываем № жребья и у недопущенных (их нет в списке жеребьёвки)
-    rows = (
-        db.query(Registration, Athlete)
-        .join(Athlete, Registration.athlete_id == Athlete.id)
-        .filter(Registration.tournament_id == tournament_id, Registration.discipline == discipline)
-        .all()
-    )
-    for reg, athlete in rows:
-        if str(reg.id) in seen:
-            continue
-        if athlete.gender != gender:
-            continue
-        if draw_category_key(reg.discipline, reg.category_name) != category_name:
+        reg = p.get("_reg")
+        if not reg:
             continue
         reg.seed = None
         reg.subgroup = None
 
 
-def _apply_category_draw(db, tournament_id, discipline, gender, category_name, participants):
+def _apply_category_draw(db, tournament_id, discipline, gender, category_name, participants, age_group=None):
     draw_list = participants
     club_team = is_club_team_category(discipline, category_name)
+    meta = {
+        "discipline": discipline,
+        "gender": gender,
+        "category_name": category_name,
+        "age_group": age_group or None,
+    }
     if club_team:
         if is_kumite_team_category(discipline, category_name):
             draw_list = collapse_kumite_team_for_draw(participants)
@@ -845,18 +858,14 @@ def _apply_category_draw(db, tournament_id, discipline, gender, category_name, p
                     del p["_reg"]
             if discipline == "kata":
                 return {
-                    "discipline": discipline,
-                    "gender": gender,
-                    "category_name": category_name,
+                    **meta,
                     "participant_count": 0,
                     "system": "kata_order",
                     "participants": [],
                     "message": empty_msg,
                 }
             return {
-                "discipline": discipline,
-                "gender": gender,
-                "category_name": category_name,
+                **meta,
                 "participant_count": 0,
                 "system": "single_elimination_repechage",
                 "participants": [],
@@ -879,15 +888,16 @@ def _apply_category_draw(db, tournament_id, discipline, gender, category_name, p
             p["_reg"].subgroup = p.get("subgroup")
             del p["_reg"]
     return {
-        "discipline": discipline,
-        "gender": gender,
-        "category_name": category_name,
+        **meta,
         "participant_count": len(draw_list),
         **result,
     }
 
 
 def _build_tournament_groups(db, tournament_id):
+    """Group registrations for draw: discipline + gender + category + age group."""
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    event_date = tournament.event_date if tournament else None
     rank_order = {r.name: r.sort_order for r in db.query(Rank).all()}
     rows = (
         db.query(Registration, Athlete)
@@ -900,7 +910,8 @@ def _build_tournament_groups(db, tournament_id):
     region_lookup = _region_by_club_name(db, club_names)
     groups = {}
     for reg, athlete in rows:
-        key = (reg.discipline, athlete.gender, draw_category_key(reg.discipline, reg.category_name))
+        age = compute_age_group(athlete.birth_date, event_date, athlete.gender, reg.discipline) or ""
+        key = (reg.discipline, athlete.gender, draw_category_key(reg.discipline, reg.category_name), age)
         groups.setdefault(key, []).append({
             "registration_id": str(reg.id),
             "full_name": f"{athlete.last_name} {athlete.first_name} {athlete.middle_name or ''}".strip(),
@@ -908,6 +919,7 @@ def _build_tournament_groups(db, tournament_id):
             "region": region_lookup.get(athlete.club_name) if athlete.club_name else None,
             "team_number": reg.team_number,
             "rank_sort_order": rank_order.get(athlete.rank),
+            "age_group": age or None,
             "_reg": reg
         })
     return groups
@@ -917,14 +929,15 @@ def _repair_stale_draws(db, tournament_id):
     """Fix categories that still have duplicate № жребья (old per-subgroup draw). Returns count repaired."""
     groups = _build_tournament_groups(db, tournament_id)
     repaired = 0
-    for (discipline, gender, category_name), all_participants in groups.items():
+    for (discipline, gender, category_name, age_group), all_participants in groups.items():
         participants = [p for p in all_participants if registration_eligible_for_draw(p["_reg"])]
         if not participants or not _draw_needs_repair(participants, discipline):
             for p in all_participants:
                 if "_reg" in p:
                     del p["_reg"]
             continue
-        if _category_has_completed_bouts(db, tournament_id, discipline, gender, category_name):
+        reg_ids = _participant_reg_ids(all_participants)
+        if _category_has_completed_bouts(db, tournament_id, discipline, gender, category_name, reg_ids):
             if _renumber_category_seeds(participants):
                 repaired += 1
             for p in all_participants:
@@ -932,7 +945,7 @@ def _repair_stale_draws(db, tournament_id):
                     del p["_reg"]
             continue
         _clear_category_draw(db, tournament_id, discipline, gender, category_name, all_participants)
-        _apply_category_draw(db, tournament_id, discipline, gender, category_name, participants)
+        _apply_category_draw(db, tournament_id, discipline, gender, category_name, participants, age_group=age_group or None)
         repaired += 1
         for p in all_participants:
             if "_reg" in p:
@@ -952,23 +965,26 @@ def repair_draw(tournament_id: str, current_user=Depends(get_current_user), db: 
 
     groups = _build_tournament_groups(db, tournament_id)
     repaired, skipped = [], []
-    for (discipline, gender, category_name), all_participants in groups.items():
+    for (discipline, gender, category_name, age_group), all_participants in groups.items():
         participants = [p for p in all_participants if registration_eligible_for_draw(p["_reg"])]
         if not participants or not _draw_needs_repair(participants, discipline):
             for p in all_participants:
                 if "_reg" in p:
                     del p["_reg"]
             continue
-        if _category_has_completed_bouts(db, tournament_id, discipline, gender, category_name):
+        reg_ids = _participant_reg_ids(all_participants)
+        if _category_has_completed_bouts(db, tournament_id, discipline, gender, category_name, reg_ids):
             if _renumber_category_seeds(participants):
                 repaired.append({
                     "discipline": discipline, "gender": gender, "category_name": category_name,
+                    "age_group": age_group or None,
                     "renumbered": True,
                     "message": "Номера жребья исправлены (1…N), бои не тронуты",
                 })
             else:
                 skipped.append({
                     "discipline": discipline, "gender": gender, "category_name": category_name,
+                    "age_group": age_group or None,
                     "message": "Есть завершённые бои — пережеребить нельзя",
                 })
             for p in all_participants:
@@ -976,7 +992,9 @@ def repair_draw(tournament_id: str, current_user=Depends(get_current_user), db: 
                     del p["_reg"]
             continue
         _clear_category_draw(db, tournament_id, discipline, gender, category_name, all_participants)
-        repaired.append(_apply_category_draw(db, tournament_id, discipline, gender, category_name, participants))
+        repaired.append(_apply_category_draw(
+            db, tournament_id, discipline, gender, category_name, participants, age_group=age_group or None
+        ))
         for p in all_participants:
             if "_reg" in p:
                 del p["_reg"]
@@ -1003,10 +1021,12 @@ def draw_tournament(tournament_id: str, body: DrawRequest = DrawRequest(), curre
 
     categories = []
     any_changed = False
-    for (discipline, gender, category_name), all_participants in groups.items():
+    for (discipline, gender, category_name, age_group), all_participants in groups.items():
         eligible = [p for p in all_participants if registration_eligible_for_draw(p["_reg"])]
         ineligible = [p for p in all_participants if not registration_eligible_for_draw(p["_reg"])]
         excluded_count = len(ineligible)
+        age_label = age_group or None
+        reg_ids = _participant_reg_ids(all_participants)
 
         def _drop_regs(plist):
             for p in plist:
@@ -1015,7 +1035,7 @@ def draw_tournament(tournament_id: str, body: DrawRequest = DrawRequest(), curre
 
         if not eligible:
             if any(p["_reg"].seed is not None for p in all_participants) and not _category_has_completed_bouts(
-                db, tournament_id, discipline, gender, category_name
+                db, tournament_id, discipline, gender, category_name, reg_ids
             ):
                 _clear_category_draw(db, tournament_id, discipline, gender, category_name, all_participants)
                 any_changed = True
@@ -1024,6 +1044,7 @@ def draw_tournament(tournament_id: str, body: DrawRequest = DrawRequest(), curre
                 "discipline": discipline,
                 "gender": gender,
                 "category_name": category_name,
+                "age_group": age_label,
                 "participant_count": 0,
                 "excluded_count": excluded_count,
                 "skipped": True,
@@ -1046,6 +1067,7 @@ def draw_tournament(tournament_id: str, body: DrawRequest = DrawRequest(), curre
                 "discipline": discipline,
                 "gender": gender,
                 "category_name": category_name,
+                "age_group": age_label,
                 "participant_count": len(participants),
                 "excluded_count": excluded_count,
                 "already_drawn": True
@@ -1053,12 +1075,13 @@ def draw_tournament(tournament_id: str, body: DrawRequest = DrawRequest(), curre
             continue
 
         if (already_seeded or ineligible_have_seeds) and (body.force or needs_refresh):
-            if _category_has_completed_bouts(db, tournament_id, discipline, gender, category_name):
+            if _category_has_completed_bouts(db, tournament_id, discipline, gender, category_name, reg_ids):
                 if not body.force and _draw_needs_repair(participants, discipline) and _renumber_category_seeds(participants):
                     categories.append({
                         "discipline": discipline,
                         "gender": gender,
                         "category_name": category_name,
+                        "age_group": age_label,
                         "participant_count": len(participants),
                         "excluded_count": excluded_count,
                         "renumbered": True,
@@ -1071,6 +1094,7 @@ def draw_tournament(tournament_id: str, body: DrawRequest = DrawRequest(), curre
                     "discipline": discipline,
                     "gender": gender,
                     "category_name": category_name,
+                    "age_group": age_label,
                     "participant_count": len(participants),
                     "excluded_count": excluded_count,
                     "skipped": True,
@@ -1079,7 +1103,9 @@ def draw_tournament(tournament_id: str, body: DrawRequest = DrawRequest(), curre
                 continue
             _clear_category_draw(db, tournament_id, discipline, gender, category_name, all_participants)
 
-        drawn = _apply_category_draw(db, tournament_id, discipline, gender, category_name, participants)
+        drawn = _apply_category_draw(
+            db, tournament_id, discipline, gender, category_name, participants, age_group=age_label
+        )
         drawn["excluded_count"] = excluded_count
         categories.append(drawn)
         _drop_regs(ineligible)
@@ -1146,21 +1172,51 @@ def swap_draw_seed(tournament_id: str, data: SeedSwapRequest, current_user=Depen
 
     athlete_a = db.query(Athlete).filter(Athlete.id == reg_a.athlete_id).first()
     athlete_b = db.query(Athlete).filter(Athlete.id == reg_b.athlete_id).first()
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    event_date = tournament.event_date if tournament else None
+    age_a = compute_age_group(
+        athlete_a.birth_date if athlete_a else None,
+        event_date,
+        athlete_a.gender if athlete_a else None,
+        reg_a.discipline,
+    ) or ""
+    age_b = compute_age_group(
+        athlete_b.birth_date if athlete_b else None,
+        event_date,
+        athlete_b.gender if athlete_b else None,
+        reg_b.discipline,
+    ) or ""
     same_category = (
         reg_a.discipline == reg_b.discipline
         and draw_category_key(reg_a.discipline, reg_a.category_name) == draw_category_key(reg_b.discipline, reg_b.category_name)
         and (athlete_a.gender if athlete_a else None) == (athlete_b.gender if athlete_b else None)
+        and age_a == age_b
     )
     if not same_category:
         return {"success": False, "message": "Участники из разных категорий"}
     reg_a.seed, reg_b.seed = reg_b.seed, reg_a.seed
 
-    category_regs = db.query(Registration).join(Athlete, Registration.athlete_id == Athlete.id).filter(
-        Registration.tournament_id == tournament_id,
-        Registration.discipline == reg_a.discipline,
-        Registration.category_name == reg_a.category_name,
-        Athlete.gender == (athlete_a.gender if athlete_a else None),
-    ).all()
+    cat_key = draw_category_key(reg_a.discipline, reg_a.category_name)
+    category_regs = []
+    rows = (
+        db.query(Registration, Athlete)
+        .join(Athlete, Registration.athlete_id == Athlete.id)
+        .filter(
+            Registration.tournament_id == tournament_id,
+            Registration.discipline == reg_a.discipline,
+            Athlete.gender == (athlete_a.gender if athlete_a else None),
+        )
+        .all()
+    )
+    for reg, athlete in rows:
+        if draw_category_key(reg.discipline, reg.category_name) != cat_key:
+            continue
+        age = compute_age_group(athlete.birth_date, event_date, athlete.gender, reg.discipline) or ""
+        if age != age_a:
+            continue
+        if reg.seed is None:
+            continue
+        category_regs.append(reg)
     n_in_category = len(category_regs)
     for reg in category_regs:
         reg.subgroup = subgroup_for_draw_number(reg.seed, n_in_category)
