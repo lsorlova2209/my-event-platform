@@ -4281,19 +4281,17 @@ function TournamentDetail({ tournament, user, onBack }) {
                                     !drawn ? (
                                       <p style={{ color: "#4A4A48", fontSize: "14px", margin: "8px 4px" }}>Жеребьёвка не проведена</p>
                                     ) : (
-                                      <>
-                                        <SeedRenumberList tournamentId={tournament.id} athletes={rows} user={user} onChanged={loadAthletes} />
-                                        <KataTable
-                                          grant={{
-                                            tournament_id: tournament.id,
-                                            category_name: group.category_name,
-                                            gender: group.gender,
-                                          }}
-                                          user={user}
-                                          participants={rows}
-                                          kataTypes={kataTypes}
-                                        />
-                                      </>
+                                      <KataTable
+                                        grant={{
+                                          tournament_id: tournament.id,
+                                          category_name: group.category_name,
+                                          gender: group.gender,
+                                        }}
+                                        user={user}
+                                        participants={rows}
+                                        kataTypes={kataTypes}
+                                        onChanged={loadAthletes}
+                                      />
                                     )
                                   ) : (
                                     <KumiteBracket
@@ -4872,79 +4870,8 @@ function SecretaryTable({ user, grant, tournament, onBack }) {
   )
 }
 
-// ТЗ 5.3.4: ручная перестановка номеров жеребьёвки - админ/владелец меняет
-// номер в выпадающем списке, участники автоматически меняются местами.
-function SeedRenumberList({ tournamentId, athletes, user, onChanged }) {
-  const [busyId, setBusyId] = useState("")
-  const [error, setError] = useState("")
-
-  const seeded = [...athletes].filter(x => x.seed != null).sort((x, y) => x.seed - y.seed)
-  const canEdit = user?.role === "admin" || user?.role === "owner"
-  if (!canEdit || seeded.length < 2) return null
-
-  const seedValues = [...new Set(seeded.map(x => x.seed))].sort((a, b) => a - b)
-  const hasDupes = seedValues.length !== seeded.length
-  const isContiguous = (
-    !hasDupes
-    && seedValues.length === seeded.length
-    && seedValues[0] === 1
-    && seedValues[seedValues.length - 1] === seeded.length
-  )
-  const displayOptions = seedValues
-
-  const handleDisplayChange = async (participant, newDisplay) => {
-    if (busyId || participant.seed === newDisplay) return
-    const other = seeded.find(x => x.seed === newDisplay && x.registration_id !== participant.registration_id)
-    if (!other) {
-      setError(hasDupes
-        ? "Есть повторяющиеся номера — нажмите «Пережеребить заново»"
-        : "Не найден участник с таким номером")
-      return
-    }
-    setBusyId(participant.registration_id)
-    setError("")
-    try {
-      const r = await axios.post(`${API}/api/v1/tournaments/${tournamentId}/draw/swap-seed`, {
-        registration_id_a: participant.registration_id,
-        registration_id_b: other.registration_id
-      }, { headers: { Authorization: `Bearer ${user.token}` } })
-      if (r.data.success) onChanged()
-      else setError(r.data.message || "Не удалось поменять номера")
-    } catch (e) {
-      setError(e.response?.data?.message || e.response?.data?.detail || "Не удалось поменять номера")
-    }
-    setBusyId("")
-  }
-
-  return (
-    <div style={{ marginTop: "8px", marginBottom: "8px" }}>
-      <div style={{ fontSize: "13px", color: "#4A4A48", marginBottom: "8px" }}>
-        {hasDupes
-          ? "Обнаружены повторяющиеся номера жребья — нажмите «Пережеребить заново»"
-          : isContiguous
-            ? `Номера жребья от 1 до ${seeded.length} без повторов — измените № жребья, спортсмен поменяется автоматически`
-            : `Номера жребья: ${seedValues.join(", ")}. Измените номер — спортсмены поменяются местами (или пережеребите заново для 1…${seeded.length}).`}
-      </div>
-      {seeded.map(p => (
-        <div key={p.registration_id} style={{ display: "flex", gap: "8px", alignItems: "center", marginBottom: "6px" }}>
-          <select
-            value={displayOptions.includes(p.seed) ? p.seed : ""}
-            disabled={!!busyId || hasDupes}
-            onChange={e => handleDisplayChange(p, Number(e.target.value))}
-            style={{ ...inputStyle, width: "72px", padding: "6px 8px" }}
-          >
-            {!displayOptions.includes(p.seed) && (
-              <option value="">{p.seed}</option>
-            )}
-            {displayOptions.map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
-          <span style={{ fontSize: "13px", color: "#1A1A1A" }}>{p.full_name}</span>
-        </div>
-      ))}
-      {error && <div style={{ ...errorBox, margin: 0 }}>{error}</div>}
-    </div>
-  )
-}
+// ТЗ 5.3.4: перестановка номеров жеребьёвки — прямо в колонке «№» таблицы ката
+// (и в сетке кумитэ). Отдельный список номеров не показываем.
 
 const KATA_TH = { border: "1px solid #D3D1C7", padding: "6px 8px", background: "#f3f2ee", fontSize: "12px", textAlign: "center", whiteSpace: "nowrap" }
 const KATA_TD = { border: "1px solid #D3D1C7", padding: "6px 8px", fontSize: "13px", textAlign: "center" }
@@ -4952,11 +4879,15 @@ const KATA_TD = { border: "1px solid #D3D1C7", padding: "6px 8px", fontSize: "13
 // Протокол ката как в официальном образце - все круги видны сразу одной
 // таблицей (ФИО + 5 оценок судей + итог на круг + место), а не по одному
 // кругу за раз с карточками на каждого участника.
-function KataTable({ grant, user, participants, kataTypes = [] }) {
+function KataTable({ grant, user, participants, kataTypes = [], onChanged }) {
   const [scores, setScores] = useState([])
   const [places, setPlaces] = useState({})
   const [tiesAtCutoff, setTiesAtCutoff] = useState([])
   const [activeCell, setActiveCell] = useState(null)
+  const [seedBusy, setSeedBusy] = useState(false)
+  const [seedError, setSeedError] = useState("")
+
+  const canEditSeeds = user?.role === "admin" || user?.role === "owner"
 
   const load = useCallback(async () => {
     const params = { category_name: grant.category_name }
@@ -4997,10 +4928,47 @@ function KataTable({ grant, user, participants, kataTypes = [] }) {
   const rounds = Object.keys(KATA_ROUND_LABELS)
   const byRegRound = {}
   scores.forEach(s => { byRegRound[`${s.registration_id}|${s.round_label}`] = s })
-  const sorted = [...participants].sort((a, b) => (a.seed ?? 999) - (b.seed ?? 999))
+  const sorted = [...participants].sort((a, b) => (a.seed ?? 999) - (b.seed ?? 999) || (a.full_name || "").localeCompare(b.full_name || "", "ru"))
+  const seeded = sorted.filter(p => p.seed != null)
+  const seedOptions = [...new Set(seeded.map(p => p.seed))].sort((a, b) => a - b)
+  const hasSeedDupes = seedOptions.length !== seeded.length
+
+  const handleSeedChange = async (participant, newSeed) => {
+    if (!canEditSeeds || seedBusy || participant.seed === newSeed) return
+    const other = seeded.find(x => x.seed === newSeed && x.registration_id !== participant.registration_id)
+    if (!other) {
+      setSeedError(hasSeedDupes
+        ? "Есть повторяющиеся номера — нажмите «Пережеребить заново»"
+        : "Не найден участник с таким номером")
+      return
+    }
+    setSeedBusy(true)
+    setSeedError("")
+    try {
+      const r = await axios.post(`${API}/api/v1/tournaments/${grant.tournament_id}/draw/swap-seed`, {
+        registration_id_a: participant.registration_id,
+        registration_id_b: other.registration_id,
+      }, { headers: { Authorization: `Bearer ${user.token}` } })
+      if (r.data.success) {
+        if (onChanged) onChanged()
+        else await load()
+      } else setSeedError(r.data.message || "Не удалось поменять номера")
+    } catch (e) {
+      setSeedError(e.response?.data?.message || e.response?.data?.detail || "Не удалось поменять номера")
+    }
+    setSeedBusy(false)
+  }
 
   return (
     <div style={card}>
+      {canEditSeeds && seeded.length >= 2 && (
+        <div style={{ fontSize: "13px", color: "#4A4A48", marginBottom: "8px" }}>
+          {hasSeedDupes
+            ? "Обнаружены повторяющиеся номера жребья — нажмите «Пережеребить заново»"
+            : "Измените № жребья в колонке «№» — спортсмены поменяются местами автоматически"}
+        </div>
+      )}
+      {seedError && <div style={{ ...errorBox, marginBottom: "12px" }}>{seedError}</div>}
       {tiesAtCutoff.length > 0 && (
         <div style={{ ...errorBox, marginBottom: "16px" }}>
           Ничья на границе прохода дальше ({tiesAtCutoff.map(r => KATA_ROUND_LABELS[r]).join(", ")}) — по ТЗ требуется дополнительное ката, чтобы определить, кто проходит дальше.
@@ -5020,9 +4988,28 @@ function KataTable({ grant, user, participants, kataTypes = [] }) {
             </tr>
           </thead>
           <tbody>
-            {sorted.map((p, i) => (
+            {sorted.map(p => (
               <tr key={p.registration_id}>
-                <td style={KATA_TD}>{i + 1}</td>
+                <td style={{ ...KATA_TD, padding: canEditSeeds && p.seed != null ? "2px" : KATA_TD.padding }}>
+                  {canEditSeeds && p.seed != null && seeded.length >= 2 ? (
+                    <select
+                      value={seedOptions.includes(p.seed) ? p.seed : ""}
+                      disabled={seedBusy || hasSeedDupes}
+                      onChange={e => handleSeedChange(p, Number(e.target.value))}
+                      title="Изменить № жребья"
+                      style={{
+                        width: "100%", minWidth: "48px", border: "none", background: "transparent",
+                        textAlign: "center", fontSize: "13px", fontWeight: "bold", color: "#1A56A0",
+                        padding: "4px 2px", cursor: seedBusy || hasSeedDupes ? "not-allowed" : "pointer",
+                      }}
+                    >
+                      {!seedOptions.includes(p.seed) && <option value="">{p.seed}</option>}
+                      {seedOptions.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  ) : (
+                    <span style={{ fontWeight: "bold", color: "#1A56A0" }}>{p.seed != null ? p.seed : "—"}</span>
+                  )}
+                </td>
                 <td style={{ ...KATA_TD, textAlign: "left" }}>{p.full_name}</td>
                 {rounds.map(r => {
                   const s = byRegRound[`${p.registration_id}|${r}`]
