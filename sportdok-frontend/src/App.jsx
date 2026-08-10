@@ -2908,6 +2908,7 @@ function TournamentDetail({ tournament, user, onBack }) {
 
   const loadAthletes = async () => {
     const gen = ++athletesLoadGen.current
+    const headers = user?.token ? { Authorization: `Bearer ${user.token}` } : undefined
     try {
       try {
         await axios.post(
@@ -2916,7 +2917,7 @@ function TournamentDetail({ tournament, user, onBack }) {
           { headers: { Authorization: `Bearer ${user.token}` } },
         )
       } catch { /* кнопка/старые роли — список всё равно загрузим */ }
-      const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/athletes`)
+      const r = await axios.get(`${API}/api/v1/tournaments/${tournament.id}/athletes`, { headers })
       if (gen !== athletesLoadGen.current) return
       setAthletes(Array.isArray(r.data) ? r.data : [])
       setAthletesTotal(Array.isArray(r.data) ? r.data.length : 0)
@@ -3058,7 +3059,9 @@ function TournamentDetail({ tournament, user, onBack }) {
       .catch(() => { if (!cancelled) setCategoriesPreview([]) })
 
     // 2) Полный список участников (в фоне; раскрытие категории не ждёт)
-    axios.get(`${API}/api/v1/tournaments/${tid}/athletes`)
+    // Токен обязателен: без него API скрывает № жребья до публикации —
+    // после «Провести жеребьёвку» draw_published=false и сетки выглядят пустыми.
+    axios.get(`${API}/api/v1/tournaments/${tid}/athletes`, { headers })
       .then(r => {
         if (cancelled || gen !== athletesLoadGen.current) return
         const list = Array.isArray(r.data) ? r.data : []
@@ -3356,6 +3359,7 @@ function TournamentDetail({ tournament, user, onBack }) {
           category_name: fromPreview.category_name,
           ...(fromPreview.age_group ? { age_group: fromPreview.age_group } : {}),
         },
+        headers: user?.token ? { Authorization: `Bearer ${user.token}` } : undefined,
       }).then(r => {
         if (cancelled) return
         const list = Array.isArray(r.data) ? r.data : []
@@ -3373,7 +3377,7 @@ function TournamentDetail({ tournament, user, onBack }) {
       cancelled = true
       started.forEach(k => lazyInflightRef.current.delete(k))
     }
-  }, [expandedKeys, athletesReady, tournament.id, categoriesPreview])
+  }, [expandedKeys, athletesReady, tournament.id, categoriesPreview, user?.token])
 
   const handleRunDraw = async (force = false) => {
     if (force && !window.confirm("Пережеребить все категории заново? Незавершённые бои будут удалены. Категории с уже введёнными результатами не изменятся.")) return
@@ -4785,11 +4789,15 @@ function SecretaryTable({ user, grant, tournament, onBack }) {
   const [bouts, setBouts] = useState([])
   const [kataTypes, setKataTypes] = useState([])
   const isKata = grant.discipline === "kata"
+  const authHeaders = user?.token ? { Authorization: `Bearer ${user.token}` } : undefined
 
   useEffect(() => {
     const timeoutId = setTimeout(async () => {
       try {
-        const athletesResponse = await axios.get(`${API}/api/v1/tournaments/${grant.tournament_id}/athletes`)
+        const athletesResponse = await axios.get(
+          `${API}/api/v1/tournaments/${grant.tournament_id}/athletes`,
+          { headers: authHeaders },
+        )
         setAthletes(athletesResponse.data)
         if (!isKata) {
           const boutsResponse = await axios.get(`${API}/api/v1/tournaments/${grant.tournament_id}/bouts`)
@@ -4807,7 +4815,7 @@ function SecretaryTable({ user, grant, tournament, onBack }) {
       }
     }, 0)
     return () => clearTimeout(timeoutId)
-  }, [grant.tournament_id, isKata])
+  }, [grant.tournament_id, isKata, user?.token])
 
   // grant.category_name — это стиль ката (см. app/main.py::draw_category_key),
   // а a.category_name у спортсмена — конкретная ката, которую он выбрал при
@@ -4851,7 +4859,7 @@ function SecretaryTable({ user, grant, tournament, onBack }) {
             competitionLevel={tournament?.competition_level || "municipal"}
             onChanged={async () => {
               const [athletesResponse, boutsResponse] = await Promise.all([
-                axios.get(`${API}/api/v1/tournaments/${grant.tournament_id}/athletes`),
+                axios.get(`${API}/api/v1/tournaments/${grant.tournament_id}/athletes`, { headers: authHeaders }),
                 axios.get(`${API}/api/v1/tournaments/${grant.tournament_id}/bouts`)
               ])
               setAthletes(athletesResponse.data)
