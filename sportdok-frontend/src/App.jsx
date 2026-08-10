@@ -2400,21 +2400,33 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
   roundsPerGroup.forEach((rounds, gi) => {
     const leafN = leafCounts[gi]
     const ys0 = [], present0 = []
-    for (let i = 0; i < leafN; i++) {
-      const cy = y + BR_BOX_H / 2
-      ys0.push(cy)
+    for (let i = 0; i < leafN; i += 2) {
       const match = rounds[0][Math.floor(i / 2)]
-      const slot = i % 2 === 0 ? match.a : match.b
-      present0.push(!!slot)
-      if (slot) {
-        // match.a/b both present means a real two-sided bout; a bye (one
-        // side missing) auto-advances the sole entrant with no fight, so it
-        // must render as a plain box, not a "won" highlight - otherwise a
-        // freshly-drawn bracket looks like fights already happened.
-        const realWin = !!(match.a && match.b && match.winner && match.winner.registration_id === slot.registration_id)
-        boxes.push({ x: 0, y, ...formatLabel(slot), win: realWin, participant: slot, seedEditable: true })
+      const slotA = match.a
+      const slotB = match.b
+      const isBye = Boolean(slotA) !== Boolean(slotB)
+
+      if (isBye) {
+        // Бай — одна горизонтальная строка вместо двух слотов круга
+        const cy = y + BR_BOX_H / 2
+        ys0.push(cy, cy)
+        present0.push(!!slotA, !!slotB)
+        const slot = slotA || slotB
+        boxes.push({ x: 0, y, ...formatLabel(slot), win: false, participant: slot, seedEditable: true })
+        y += BR_ROW_H
+      } else {
+        for (let k = 0; k < 2; k++) {
+          const cy = y + BR_BOX_H / 2
+          ys0.push(cy)
+          const slot = k === 0 ? slotA : slotB
+          present0.push(!!slot)
+          if (slot) {
+            const realWin = !!(slotA && slotB && match.winner && match.winner.registration_id === slot.registration_id)
+            boxes.push({ x: 0, y, ...formatLabel(slot), win: realWin, participant: slot, seedEditable: true })
+          }
+          y += BR_ROW_H
+        }
       }
-      y += BR_ROW_H
     }
     if (gi < nGroups - 1) y += BR_GROUP_GAP
 
@@ -2427,22 +2439,30 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
         const match = rounds[c - 1][j]
         const ya = colYs[2 * j]
         const yb = colYs[2 * j + 1]
-        // Вилка всегда — и при бае (один участник), как у полного боя
         const py = (ya + yb) / 2
         nextYs.push(py)
         const xFrom = colX(c) - BR_H_GAP, xTo = colX(c)
         const midX = xFrom + BR_H_GAP / 2
+        const isBye = Boolean(match.a) !== Boolean(match.b)
+
+        // Бай: участник только в листе (одна строка), дальше — линия без
+        // повторного бокса с тем же ФИО в следующем круге.
+        if (isBye) {
+          const presentY = match.a ? ya : yb
+          const xEnd = xTo + BR_BOX_W
+          lines.push(
+            { x1: xFrom, y1: presentY, x2: midX, y2: presentY },
+            { x1: midX, y1: presentY, x2: midX, y2: py },
+            { x1: midX, y1: py, x2: xEnd, y2: py },
+          )
+          continue
+        }
+
         lines.push({ x1: xFrom, y1: ya, x2: midX, y2: ya }, { x1: xFrom, y1: yb, x2: midX, y2: yb },
           { x1: midX, y1: ya, x2: midX, y2: yb }, { x1: midX, y1: py, x2: xTo, y2: py })
         boxes.push({
-          // После каждого соединителя — тот же бокс №|ФИО, что в 1-м круге
           x: xTo, y: py - BR_BOX_H / 2, ...(match.winner ? formatLabel(match.winner) : emptyBracketBox()),
-          // Same bye rule as the leaf boxes above - only highlight a name
-          // here as "won" if it came from an actual decided bout, not from
-          // a bye chain propagating with nobody on the other side yet.
           win: !!(match.a && match.b && match.winner), pending: !match.winner && match.a && match.b,
-          // Editable whenever there's a real two-sided match, decided or
-          // not - a wrong result needs to be correctable, not just enterable once.
           editable: !!(match.a && match.b),
           match, roundLabel
         })
@@ -2528,17 +2548,31 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
       }
       const leafN = 2 * rounds[0].length
       const ys0 = [], present0 = []
-      for (let i = 0; i < leafN; i++) {
-        const cy = y2 + BR_BOX_H / 2
-        ys0.push(cy)
+      for (let i = 0; i < leafN; i += 2) {
         const match = rounds[0][Math.floor(i / 2)]
-        const slot = i % 2 === 0 ? match.a : match.b
-        present0.push(!!slot)
-        if (slot) {
-          const realWin = !!(match.a && match.b && match.winner && match.winner.registration_id === slot.registration_id)
-          boxes.push({ x: 0, y: y2, ...formatLabel(slot), win: realWin })
+        const slotA = match.a
+        const slotB = match.b
+        const isBye = Boolean(slotA) !== Boolean(slotB)
+        if (isBye) {
+          const cy = y2 + BR_BOX_H / 2
+          ys0.push(cy, cy)
+          present0.push(!!slotA, !!slotB)
+          const slot = slotA || slotB
+          boxes.push({ x: 0, y: y2, ...formatLabel(slot), win: false })
+          y2 += BR_ROW_H
+        } else {
+          for (let k = 0; k < 2; k++) {
+            const cy = y2 + BR_BOX_H / 2
+            ys0.push(cy)
+            const slot = k === 0 ? slotA : slotB
+            present0.push(!!slot)
+            if (slot) {
+              const realWin = !!(slotA && slotB && match.winner && match.winner.registration_id === slot.registration_id)
+              boxes.push({ x: 0, y: y2, ...formatLabel(slot), win: realWin })
+            }
+            y2 += BR_ROW_H
+          }
         }
-        y2 += BR_ROW_H
       }
       if (gi < nRepGroups - 1) y2 += BR_GROUP_GAP
 
@@ -2553,6 +2587,17 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
           nextYs.push(py)
           const xFrom = colX(c) - BR_H_GAP, xTo = colX(c)
           const midX = xFrom + BR_H_GAP / 2
+          const isBye = Boolean(match.a) !== Boolean(match.b)
+          if (isBye) {
+            const presentY = match.a ? ya : yb
+            const xEnd = xTo + BR_BOX_W
+            lines.push(
+              { x1: xFrom, y1: presentY, x2: midX, y2: presentY },
+              { x1: midX, y1: presentY, x2: midX, y2: py },
+              { x1: midX, y1: py, x2: xEnd, y2: py },
+            )
+            continue
+          }
           lines.push({ x1: xFrom, y1: ya, x2: midX, y2: ya }, { x1: xFrom, y1: yb, x2: midX, y2: yb },
             { x1: midX, y1: ya, x2: midX, y2: yb }, { x1: midX, y1: py, x2: xTo, y2: py })
           boxes.push({
