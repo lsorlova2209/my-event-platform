@@ -2400,21 +2400,43 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
   roundsPerGroup.forEach((rounds, gi) => {
     const leafN = leafCounts[gi]
     const ys0 = [], present0 = []
-    for (let i = 0; i < leafN; i++) {
-      const cy = y + BR_BOX_H / 2
-      ys0.push(cy)
+    // Бай: одна длинная строка (1-й круг → 2-й), без пустого соперника и без дубля ФИО.
+    for (let i = 0; i < leafN; i += 2) {
       const match = rounds[0][Math.floor(i / 2)]
-      const slot = i % 2 === 0 ? match.a : match.b
-      present0.push(!!slot)
-      if (slot) {
-        // match.a/b both present means a real two-sided bout; a bye (one
-        // side missing) auto-advances the sole entrant with no fight, so it
-        // must render as a plain box, not a "won" highlight - otherwise a
-        // freshly-drawn bracket looks like fights already happened.
-        const realWin = !!(match.a && match.b && match.winner && match.winner.registration_id === slot.registration_id)
-        boxes.push({ x: 0, y, ...formatLabel(slot), win: realWin, participant: slot, seedEditable: true })
+      const slotA = match.a
+      const slotB = match.b
+      const isBye = Boolean(slotA) !== Boolean(slotB)
+      if (isBye) {
+        const cy = y + BR_BOX_H / 2
+        ys0.push(cy, cy)
+        present0.push(!!slotA, !!slotB)
+        const slot = slotA || slotB
+        boxes.push({
+          x: 0, y,
+          width: BR_BOX_W + BR_H_GAP + BR_BOX_W,
+          ...formatLabel(slot),
+          win: false,
+          participant: slot,
+          seedEditable: true,
+        })
+        y += BR_ROW_H
+      } else {
+        for (let k = 0; k < 2; k++) {
+          const cy = y + BR_BOX_H / 2
+          ys0.push(cy)
+          const slot = k === 0 ? slotA : slotB
+          present0.push(!!slot)
+          if (slot) {
+            // match.a/b both present means a real two-sided bout; a bye (one
+            // side missing) auto-advances the sole entrant with no fight, so it
+            // must render as a plain box, not a "won" highlight - otherwise a
+            // freshly-drawn bracket looks like fights already happened.
+            const realWin = !!(slotA && slotB && match.winner && match.winner.registration_id === slot.registration_id)
+            boxes.push({ x: 0, y, ...formatLabel(slot), win: realWin, participant: slot, seedEditable: true })
+          }
+          y += BR_ROW_H
+        }
       }
-      y += BR_ROW_H
     }
     if (gi < nGroups - 1) y += BR_GROUP_GAP
 
@@ -2427,9 +2449,11 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
         const match = rounds[c - 1][j]
         const ya = colYs[2 * j]
         const yb = colYs[2 * j + 1]
-        // Вилка всегда — и при бае (один участник), как у полного боя
         const py = (ya + yb) / 2
         nextYs.push(py)
+        // Настоящий бай только в 1-м круге; дальше «одна сторона» = ещё нет победителя фидера.
+        const isBye = c === 1 && Boolean(match.a) !== Boolean(match.b)
+        if (isBye) continue
         const xFrom = colX(c) - BR_H_GAP, xTo = colX(c)
         const midX = xFrom + BR_H_GAP / 2
         lines.push({ x1: xFrom, y1: ya, x2: midX, y2: ya }, { x1: xFrom, y1: yb, x2: midX, y2: yb },
@@ -2528,17 +2552,36 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
       }
       const leafN = 2 * rounds[0].length
       const ys0 = [], present0 = []
-      for (let i = 0; i < leafN; i++) {
-        const cy = y2 + BR_BOX_H / 2
-        ys0.push(cy)
+      for (let i = 0; i < leafN; i += 2) {
         const match = rounds[0][Math.floor(i / 2)]
-        const slot = i % 2 === 0 ? match.a : match.b
-        present0.push(!!slot)
-        if (slot) {
-          const realWin = !!(match.a && match.b && match.winner && match.winner.registration_id === slot.registration_id)
-          boxes.push({ x: 0, y: y2, ...formatLabel(slot), win: realWin })
+        const slotA = match.a
+        const slotB = match.b
+        const isBye = Boolean(slotA) !== Boolean(slotB)
+        if (isBye) {
+          const cy = y2 + BR_BOX_H / 2
+          ys0.push(cy, cy)
+          present0.push(!!slotA, !!slotB)
+          const slot = slotA || slotB
+          boxes.push({
+            x: 0, y: y2,
+            width: BR_BOX_W + BR_H_GAP + BR_BOX_W,
+            ...formatLabel(slot),
+            win: false,
+          })
+          y2 += BR_ROW_H
+        } else {
+          for (let k = 0; k < 2; k++) {
+            const cy = y2 + BR_BOX_H / 2
+            ys0.push(cy)
+            const slot = k === 0 ? slotA : slotB
+            present0.push(!!slot)
+            if (slot) {
+              const realWin = !!(slotA && slotB && match.winner && match.winner.registration_id === slot.registration_id)
+              boxes.push({ x: 0, y: y2, ...formatLabel(slot), win: realWin })
+            }
+            y2 += BR_ROW_H
+          }
         }
-        y2 += BR_ROW_H
       }
       if (gi < nRepGroups - 1) y2 += BR_GROUP_GAP
 
@@ -2551,6 +2594,8 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
           const yb = colYs[2 * j + 1]
           const py = (ya + yb) / 2
           nextYs.push(py)
+          const isBye = c === 1 && Boolean(match.a) !== Boolean(match.b)
+          if (isBye) continue
           const xFrom = colX(c) - BR_H_GAP, xTo = colX(c)
           const midX = xFrom + BR_H_GAP / 2
           lines.push({ x1: xFrom, y1: ya, x2: midX, y2: ya }, { x1: xFrom, y1: yb, x2: midX, y2: yb },
@@ -5314,12 +5359,13 @@ function BracketSvgView({ layout, interactive, onOpenMatch, canEditSeeds, displa
           {layout.boxes.map((b, i) => {
             const clickable = interactive && b.editable
             const name = b.name || (b.pending ? (interactive ? "Ввести результат" : "—") : "")
+            const boxW = b.width || BR_BOX_W
             return (
               <div key={i}
                 onClick={clickable ? () => onOpenMatch(b) : undefined}
                 title={clickable ? (b.pending ? "Ввести результат" : "Нажмите, чтобы изменить результат") : (b.text || name || undefined)}
                 style={{
-                  position: "absolute", left: b.x, top: b.y, width: BR_BOX_W, height: BR_BOX_H,
+                  position: "absolute", left: b.x, top: b.y, width: boxW, height: BR_BOX_H,
                   boxSizing: "border-box", border: `${b.big ? 2 : 1}px ${b.pending ? "dashed" : "solid"} ${b.big ? "#1A56A0" : "#D3D1C7"}`,
                   borderRadius: "2px", background: "white",
                   display: "flex", alignItems: "stretch", justifyContent: "flex-start",
