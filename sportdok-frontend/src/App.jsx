@@ -2361,22 +2361,21 @@ function computeKumiteBracketData(participants, bouts) {
 }
 
 // ─── ГЕОМЕТРИЯ СЕТКИ (боксы + линии, как в официальных протоколах) ────────────
-// Тот же макет, что и в app/documents.py::_BracketDiagram для PDF, только в
-// пикселях: колонка листьев, колонки кругов на подгруппу, финал сшивает две
-// подгруппы, матч за 3-е место - отдельный мини-блок снизу.
-const BR_BOX_W = 260
-const BR_BOX_H = 40
-const BR_H_GAP = 34
-const BR_ROW_H = 50
-const BR_GROUP_GAP = 30
-const BR_SEED_COL_W = 50
+// Компактные размеры + автомасштаб в BracketSvgView, чтобы сетка целиком
+// помещалась по ширине без горизонтального скролла.
+const BR_BOX_W = 168
+const BR_BOX_H = 28
+const BR_H_GAP = 16
+const BR_ROW_H = 34
+const BR_GROUP_GAP = 18
+const BR_SEED_COL_W = 32
 const seedSelectStyle = {
   flex: 1,
   minWidth: 0,
   border: "none",
   background: "transparent",
   textAlign: "center",
-  fontSize: "12px",
+  fontSize: "11px",
   fontFamily: "Arial",
   color: "#1A1A1A",
   padding: 0,
@@ -3611,8 +3610,8 @@ function TournamentDetail({ tournament, user, onBack }) {
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: "#f3f2ee", fontFamily: "Arial", padding: "32px", color: "#1A1A1A" }}>
-      <div style={{ maxWidth: "900px", margin: "0 auto" }}>
+    <div style={{ minHeight: "100vh", background: "#f3f2ee", fontFamily: "Arial", padding: "24px 16px", color: "#1A1A1A" }}>
+      <div style={{ maxWidth: "1100px", margin: "0 auto" }}>
         <button onClick={onBack} style={{ ...btnOutline, marginBottom: "16px" }}>← Назад к турнирам</button>
         <div style={{ marginBottom: "24px", display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: "12px" }}>
           <div>
@@ -5254,72 +5253,114 @@ function Modal({ children, onClose }) {
 // Линии - через <svg>, боксы - через позиционированные HTML-блоки поверх
 // (чтобы форма ввода результата оставалась обычной интерактивной вёрсткой,
 // а не жила внутри svg). Геометрия общая с PDF (app/documents.py).
+// Масштаб под ширину контейнера — без горизонтального ползунка.
 function BracketSvgView({ layout, interactive, onOpenMatch, canEditSeeds, displayOptions, onSeedChange, seedBusy }) {
+  const wrapRef = useRef(null)
+  const [scale, setScale] = useState(1)
+
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const update = () => {
+      const avail = el.clientWidth
+      if (!avail || !layout.width) {
+        setScale(1)
+        return
+      }
+      setScale(Math.min(1, avail / layout.width))
+    }
+    update()
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null
+    if (ro) ro.observe(el)
+    window.addEventListener("resize", update)
+    return () => {
+      if (ro) ro.disconnect()
+      window.removeEventListener("resize", update)
+    }
+  }, [layout.width])
+
+  const scaledH = Math.ceil(layout.height * scale)
+
   return (
-    <div style={{ position: "relative", width: layout.width, height: layout.height }}>
-      <svg width={layout.width} height={layout.height} style={{ position: "absolute", top: 0, left: 0 }}>
-        {layout.lines.map((l, i) => (
-          <line key={i} x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2} stroke="#C9C7BC" strokeWidth="1.5" />
-        ))}
-      </svg>
-      {layout.labels.map((lb, i) => (
-        <div key={i} style={{
-          position: "absolute", left: lb.x, top: lb.y, width: BR_BOX_W, fontSize: "12px",
-          color: "#4A4A48", fontWeight: lb.bold ? "bold" : "normal", textAlign: lb.bold ? "center" : "left"
-        }}>{lb.text}</div>
-      ))}
-      {layout.boxes.map((b, i) => {
-        const clickable = interactive && b.editable
-        return (
-          <div key={i}
-            onClick={clickable ? () => onOpenMatch(b) : undefined}
-            title={clickable ? (b.pending ? "Ввести результат" : "Нажмите, чтобы изменить результат") : (b.text || undefined)}
-            style={{
-              position: "absolute", left: b.x, top: b.y, width: BR_BOX_W, height: BR_BOX_H,
-              boxSizing: "border-box", border: `${b.big ? 2 : 1}px ${b.pending ? "dashed" : "solid"} ${b.big ? "#1A56A0" : "#D3D1C7"}`,
-              borderRadius: "2px", background: "white",
-              display: "flex", alignItems: "stretch", justifyContent: b.text ? "flex-start" : "center",
-              fontSize: "12px", fontFamily: "Arial",
-              fontWeight: b.text && b.win ? "bold" : "normal",
-              color: b.text && b.win ? "#0F6E56" : (b.pending ? "#4A4A48" : "#1A1A1A"),
-              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-              cursor: clickable ? "pointer" : "default"
-            }}
-          >
-            {/* Всегда №|ФИО — как на протоколе после соединителя */}
-            <>
-              <div style={{
-                width: BR_SEED_COL_W, minWidth: BR_SEED_COL_W, borderRight: "1px solid #E5E2D8",
-                display: "flex", alignItems: "center", justifyContent: "space-between", gap: "2px",
-                padding: "0 3px", boxSizing: "border-box"
-              }}
-                onClick={e => e.stopPropagation()}
+    <div ref={wrapRef} style={{ width: "100%", overflow: "hidden" }}>
+      <div style={{ width: "100%", height: scaledH, position: "relative" }}>
+        <div style={{
+          position: "absolute", top: 0, left: 0,
+          width: layout.width, height: layout.height,
+          transform: `scale(${scale})`, transformOrigin: "top left",
+        }}>
+          <svg width={layout.width} height={layout.height} style={{ position: "absolute", top: 0, left: 0 }}>
+            {layout.lines.map((l, i) => (
+              <line key={i} x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2} stroke="#C9C7BC" strokeWidth="1.25" />
+            ))}
+          </svg>
+          {layout.labels.map((lb, i) => (
+            <div key={i} style={{
+              position: "absolute", left: lb.x, top: lb.y, width: BR_BOX_W, fontSize: "11px",
+              color: "#4A4A48", fontWeight: lb.bold ? "bold" : "normal", textAlign: lb.bold ? "center" : "left",
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+            }}>{lb.text}</div>
+          ))}
+          {layout.boxes.map((b, i) => {
+            const clickable = interactive && b.editable
+            const name = b.name || (b.pending ? (interactive ? "Ввести результат" : "—") : "")
+            return (
+              <div key={i}
+                onClick={clickable ? () => onOpenMatch(b) : undefined}
+                title={clickable ? (b.pending ? "Ввести результат" : "Нажмите, чтобы изменить результат") : (b.text || name || undefined)}
+                style={{
+                  position: "absolute", left: b.x, top: b.y, width: BR_BOX_W, height: BR_BOX_H,
+                  boxSizing: "border-box", border: `${b.big ? 2 : 1}px ${b.pending ? "dashed" : "solid"} ${b.big ? "#1A56A0" : "#D3D1C7"}`,
+                  borderRadius: "2px", background: "white",
+                  display: "flex", alignItems: "stretch", justifyContent: "flex-start",
+                  fontSize: "11px", fontFamily: "Arial", lineHeight: 1.15,
+                  fontWeight: b.text && b.win ? "bold" : "normal",
+                  color: b.text && b.win ? "#0F6E56" : (b.pending ? "#4A4A48" : "#1A1A1A"),
+                  overflow: "hidden",
+                  cursor: clickable ? "pointer" : "default",
+                }}
               >
-                {canEditSeeds && b.seedEditable && b.participant && displayOptions?.length ? (
-                  <>
+                <div style={{
+                  width: BR_SEED_COL_W, minWidth: BR_SEED_COL_W, borderRight: "1px solid #E5E2D8",
+                  display: "flex", alignItems: "center", justifyContent: "center", gap: "1px",
+                  padding: "0 1px", boxSizing: "border-box", flexShrink: 0,
+                }}
+                  onClick={e => e.stopPropagation()}
+                >
+                  {canEditSeeds && b.seedEditable && b.participant && displayOptions?.length ? (
                     <select
                       value={b.participant.seed ?? ""}
                       disabled={seedBusy}
                       onChange={e => onSeedChange?.(b.participant, Number(e.target.value))}
                       style={{ ...seedSelectStyle, cursor: seedBusy ? "wait" : "pointer" }}
+                      title="Изменить № жребья"
                     >
                       {displayOptions.map(s => <option key={s} value={s}>{s}</option>)}
                     </select>
-                    <span style={{ fontSize: "9px", lineHeight: 1, color: "#666", flexShrink: 0, pointerEvents: "none", userSelect: "none" }} aria-hidden>▼</span>
-                  </>
-                ) : (b.seed || "")}
+                  ) : (
+                    <span style={{ fontWeight: 600 }}>{b.seed || ""}</span>
+                  )}
+                </div>
+                <div
+                  title={name || undefined}
+                  style={{
+                    flex: 1, minWidth: 0, padding: "0 5px",
+                    display: "flex", alignItems: "center",
+                    overflow: "hidden",
+                  }}
+                >
+                  <span style={{
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    width: "100%",
+                  }}>
+                    {name}
+                  </span>
+                </div>
               </div>
-              <div style={{
-                flex: 1, minWidth: 0, display: "flex", alignItems: "center",
-                padding: "0 8px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"
-              }}>
-                {b.name
-                  || (b.pending ? (interactive ? "Ввести результат" : "—") : "")}
-              </div>
-            </>
-          </div>
-        )
-      })}
+            )
+          })}
+        </div>
+      </div>
     </div>
   )
 }
@@ -5376,7 +5417,7 @@ function KumiteBracket({ grant, user, participants, bouts, onChanged, competitio
         </div>
       )}
       {data.roundRobin && <div style={{ fontSize: "13px", color: "#4A4A48", marginBottom: "12px" }}>Круговая система — каждый с каждым</div>}
-      <div style={{ overflowX: "auto", paddingBottom: "8px" }}>
+      <div style={{ width: "100%", paddingBottom: "4px" }}>
         <BracketSvgView layout={layout} interactive onOpenMatch={setActiveMatch}
           canEditSeeds={canEditSeeds} displayOptions={displayOptions}
           onSeedChange={handleSeedChange} seedBusy={seedBusy} />
