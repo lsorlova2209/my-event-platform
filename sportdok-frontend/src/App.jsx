@@ -4095,6 +4095,19 @@ function TournamentDetail({ tournament, user, onBack }) {
                   {publishLoading ? "…" : "Опубликовать жеребьёвку"}
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() => window.open(`${API}/api/v1/tournaments/${tournament.id}/documents/draw-pdf`, "_blank")}
+                disabled={drawLoading || !athletes.some(a => a.seed != null)}
+                style={{
+                  ...btnOutline,
+                  opacity: (drawLoading || !athletes.some(a => a.seed != null)) ? 0.55 : 1,
+                  cursor: (drawLoading || !athletes.some(a => a.seed != null)) ? "not-allowed" : "pointer",
+                }}
+                title={athletes.some(a => a.seed != null) ? "Скачать PDF жеребьёвки" : "Сначала проведите жеребьёвку"}
+              >
+                Скачать PDF жеребьёвки
+              </button>
             </div>
           </div>
           <p style={{ margin: "10px 0 0", color: "#4A4A48", fontSize: "13px", lineHeight: 1.4 }}>

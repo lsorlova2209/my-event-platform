@@ -2346,6 +2346,123 @@ def build_participants_list_pdf(tournament, categories):
     return buffer
 
 
+def build_draw_pdf(tournament, categories):
+    """PDF жеребьёвки: порядок/№ жребья по категориям (только уже разыгранные)."""
+    styles = _pdf_styles()
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=A4,
+        topMargin=1.5 * cm, bottomMargin=1.5 * cm, leftMargin=1.5 * cm, rightMargin=1.5 * cm,
+    )
+    story = []
+
+    title_style = ParagraphStyle(
+        "DrawTitle", parent=styles["Title"],
+        fontName="DejaVuSans-Bold", fontSize=16, leading=20, spaceAfter=6,
+    )
+    meta_style = ParagraphStyle(
+        "DrawMeta", parent=styles["Normal"],
+        fontName="DejaVuSans", fontSize=11, leading=14, alignment=1, textColor=colors.HexColor("#444444"),
+    )
+    cat_style = ParagraphStyle(
+        "DrawCat", parent=styles["Heading2"],
+        fontName="DejaVuSans-Bold", fontSize=12, leading=15, spaceBefore=8, spaceAfter=6,
+        textColor=colors.HexColor("#1A56A0"),
+    )
+    note_style = ParagraphStyle(
+        "DrawNote", parent=styles["Normal"],
+        fontName="DejaVuSans", fontSize=10, leading=13, textColor=colors.HexColor("#555555"),
+    )
+
+    story.append(Paragraph("Жеребьёвка", title_style))
+    story.append(Paragraph(tournament.get("name") or "Турнир", styles["Heading2"]))
+    meta_parts = []
+    if tournament.get("event_date"):
+        meta_parts.append(_fmt_date(tournament.get("event_date")) or tournament.get("event_date"))
+    if tournament.get("location"):
+        meta_parts.append(tournament.get("location"))
+    if meta_parts:
+        story.append(Paragraph(" · ".join(str(p) for p in meta_parts), meta_style))
+    story.append(Spacer(1, 0.35 * cm))
+
+    competition_level = _competition_level(tournament)
+    org_header = "Регион" if _uses_region_org(competition_level) else "Клуб"
+
+    drawn_cats = []
+    for cat in categories or []:
+        people = [p for p in (cat.get("participants") or []) if p.get("seed") is not None]
+        if not people:
+            continue
+        people = sorted(
+            people,
+            key=lambda p: (
+                int(p["seed"]) if str(p.get("seed")).isdigit() else 9999,
+                (p.get("last_name") or "").casefold(),
+                (p.get("first_name") or "").casefold(),
+            ),
+        )
+        drawn_cats.append({**cat, "participants": people})
+
+    drawn_cats.sort(
+        key=lambda c: (
+            _age_group_sort_key(_dominant_age_group(c.get("participants") or [])),
+            _category_label_site(c.get("discipline"), c.get("gender"), c.get("category_name")).casefold(),
+        )
+    )
+
+    if not drawn_cats:
+        story.append(Paragraph(
+            "Жеребьёвка ещё не проведена — нет категорий с присвоенными номерами жребия.",
+            note_style,
+        ))
+    else:
+        for i, cat in enumerate(drawn_cats):
+            if i > 0:
+                story.append(Spacer(1, 0.25 * cm))
+            age = _dominant_age_group(cat.get("participants") or [])
+            label = _category_label_site(
+                cat.get("discipline"), cat.get("gender"), cat.get("category_name"), age,
+            )
+            story.append(Paragraph(f"{label} ({len(cat['participants'])})", cat_style))
+
+            header = ["№ жребия", "ФИО", "Разряд", org_header, "Тренер"]
+            rows = [header]
+            for p in cat["participants"]:
+                full = " ".join(
+                    part for part in (p.get("last_name"), p.get("first_name"), p.get("middle_name")) if part
+                ).strip()
+                org = _participant_org(p, competition_level) or "—"
+                rows.append([
+                    str(p.get("seed")),
+                    full or "—",
+                    p.get("rank") or "—",
+                    org,
+                    p.get("trainer_name") or "—",
+                ])
+
+            widths = [2.0 * cm, 6.0 * cm, 2.2 * cm, 4.2 * cm, 3.3 * cm]
+            table = Table(rows, colWidths=widths, repeatRows=1, hAlign="LEFT")
+            table.setStyle(TableStyle([
+                ("FONTNAME", (0, 0), (-1, -1), "DejaVuSans"),
+                ("FONTNAME", (0, 0), (-1, 0), "DejaVuSans-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8eef7")),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ALIGN", (0, 0), (0, -1), "CENTER"),
+                ("ALIGN", (2, 1), (2, -1), "CENTER"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]))
+            story.append(table)
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
+
 def format_program_type(discipline, category_name):
     """Вид программы как в справке команды: «ОК - ката группа», «ОК - 50кг»."""
     raw = (category_name or "").strip()

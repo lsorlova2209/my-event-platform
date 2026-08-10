@@ -31,6 +31,7 @@ from app.documents import (
     build_category_excel_zip,
     build_pdf,
     build_participants_list_pdf,
+    build_draw_pdf,
     build_team_roster_xlsx,
     format_program_type,
     team_standings,
@@ -2416,6 +2417,21 @@ def export_participants_pdf(tournament_id: str, db: Session = Depends(get_db)):
         buffer,
         media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename=sportdok_participants_{tournament_id[:8]}.pdf"}
+    )
+
+
+@app.get("/api/v1/tournaments/{tournament_id}/documents/draw-pdf")
+def export_draw_pdf(tournament_id: str, db: Session = Depends(get_db)):
+    """PDF жеребьёвки: № жребья и участники по категориям."""
+    assembled = _assemble_tournament_documents(tournament_id, db)
+    if not assembled:
+        return {"success": False, "message": "Турнир не найден"}
+    tournament_info, _summary, categories_payload, _placements = assembled
+    buffer = build_draw_pdf(tournament_info, categories_payload)
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=sportdok_draw_{tournament_id[:8]}.pdf"}
     )
 
 
