@@ -843,13 +843,24 @@ def _apply_category_draw(db, tournament_id, discipline, gender, category_name, p
             for p in participants:
                 if "_reg" in p:
                     del p["_reg"]
+            if discipline == "kata":
+                return {
+                    "discipline": discipline,
+                    "gender": gender,
+                    "category_name": category_name,
+                    "participant_count": 0,
+                    "system": "kata_order",
+                    "participants": [],
+                    "message": empty_msg,
+                }
             return {
                 "discipline": discipline,
                 "gender": gender,
                 "category_name": category_name,
                 "participant_count": 0,
-                "system": "kata_order" if discipline == "kata" else "single_elimination_repechage",
+                "system": "single_elimination_repechage",
                 "participants": [],
+                "subgroups": [],
                 "message": empty_msg,
             }
 

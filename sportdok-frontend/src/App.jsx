@@ -1489,7 +1489,7 @@ const needsWeighAdmit = (a) => {
   return !NO_WEIGH_CATEGORIES.has(String(a.category_name || "").trim().toLowerCase())
 }
 
-const nameInList = (participants, id) => (participants.find(p => p.registration_id === id) || {}).full_name || "?"
+const nameInList = (participants, id) => ((participants || []).find(p => p.registration_id === id) || {}).full_name || "?"
 
 // ─── ПУБЛИЧНАЯ СТРАНИЦА ТУРНИРА: УЧАСТНИКИ ПО КАТЕГОРИЯМ ───────────────────────
 function PublicTournamentPage({ tournament, onBack, onLoginClick }) {
@@ -4165,35 +4165,35 @@ function TournamentDetail({ tournament, user, onBack }) {
           {drawResult && (
             <div style={{ marginTop: "24px", borderTop: "1px solid #f3f2ee", paddingTop: "16px" }}>
               <div style={{ fontWeight: "bold", color: "#1A56A0", marginBottom: "12px" }}>Результат последней жеребьёвки</div>
-              {drawResult.categories.map((cat, i) => (
+              {(drawResult.categories || []).map((cat, i) => (
                 <div key={i} style={{ marginBottom: "16px" }}>
                   <div style={{ fontWeight: "bold" }}>{categoryLabel(cat.discipline, cat.gender, cat.category_name)}</div>
                   <div style={{ fontSize: "13px", color: "#4A4A48", marginBottom: "6px" }}>
                     {cat.already_drawn
                       ? "Уже проведена ранее — не тронута (нажмите «Пережеребить заново»)"
-                      : cat.skipped
+                      : cat.skipped || cat.message
                         ? cat.message
                         : (DRAW_SYSTEM_LABELS[cat.system] || cat.system)}
                     {typeof cat.participant_count === "number" ? ` · в сетке: ${cat.participant_count}` : ""}
                     {cat.excluded_count ? ` · без допуска: ${cat.excluded_count}` : ""}
                   </div>
 
-                  {cat.system === "kata_order" && cat.participants.map(p => (
+                  {cat.system === "kata_order" && (cat.participants || []).map(p => (
                     <div key={p.registration_id} style={{ fontSize: "13px" }}>№{p.seed} {p.full_name}</div>
                   ))}
 
-                  {cat.system === "round_robin" && cat.matches.map((m, j) => (
+                  {cat.system === "round_robin" && (cat.matches || []).map((m, j) => (
                     <div key={j} style={{ fontSize: "13px" }}>
-                      {nameInList(cat.participants, m.registration_id_a)} vs {nameInList(cat.participants, m.registration_id_b)}
+                      {nameInList(cat.participants || [], m.registration_id_a)} vs {nameInList(cat.participants || [], m.registration_id_b)}
                     </div>
                   ))}
 
-                  {cat.system === "single_elimination_repechage" && cat.subgroups.map((sub, k) => (
+                  {cat.system === "single_elimination_repechage" && (cat.subgroups || []).map((sub, k) => (
                     <div key={k} style={{ marginBottom: "6px" }}>
                       {sub.subgroup && <div style={{ fontSize: "13px", color: "#4A4A48" }}>Подгруппа {sub.subgroup}</div>}
-                      {sub.round1.map((p, j) => (
+                      {(sub.round1 || []).map((p, j) => (
                         <div key={j} style={{ fontSize: "13px" }}>
-                          №{p.seed_a} {nameInList(sub.participants, p.registration_id_a)} vs {p.bye ? "БАЙ" : `№${p.seed_b} ${nameInList(sub.participants, p.registration_id_b)}`}
+                          №{p.seed_a} {nameInList(sub.participants || [], p.registration_id_a)} vs {p.bye ? "БАЙ" : `№${p.seed_b} ${nameInList(sub.participants || [], p.registration_id_b)}`}
                         </div>
                       ))}
                     </div>
