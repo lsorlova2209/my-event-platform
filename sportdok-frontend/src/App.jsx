@@ -1259,7 +1259,10 @@ function bracketParticipantParts(p, competitionLevel = "municipal") {
     ? (p.region || p.club_name || "")
     : (p.club_name || p.region || "")
   const orgPart = org ? ` (${org})` : ""
-  const namePart = `${p.full_name}${orgPart}`
+  // Как в протоколах: «Фамилия Имя (клуб)» в одну строку
+  const parts = String(p.full_name || "").trim().split(/\s+/).filter(Boolean)
+  const shortName = parts.length >= 2 ? `${parts[0]} ${parts[1]}` : (parts[0] || "")
+  const namePart = `${shortName}${orgPart}`
   return { seed: seedPart, name: namePart, text: `${seedPart ? `${seedPart} ` : ""}${namePart}` }
 }
 
@@ -2250,7 +2253,8 @@ function buildBracketRounds(participants, boutsByPair) {
   let current = round1PairsBySeed(size).map(([la, lb]) => {
     const pa = byLocal[la] || null, pb = byLocal[lb] || null
     const { winner, bout } = resolveMatch(pa, pb, boutsByPair)
-    return { a: pa, b: pb, winner, bout }
+    // seedA/B — номер слота в сетке (для пустых баев, как в протоколах)
+    return { a: pa, b: pb, seedA: la, seedB: lb, winner, bout }
   })
   const rounds = [current]
   while (current.length > 1) {
@@ -2361,22 +2365,23 @@ function computeKumiteBracketData(participants, bouts) {
 }
 
 // ─── ГЕОМЕТРИЯ СЕТКИ (боксы + линии, как в официальных протоколах) ────────────
-// Компактные размеры + автомасштаб в BracketSvgView, чтобы сетка целиком
-// помещалась по ширине без горизонтального скролла.
-const BR_BOX_W = 168
-const BR_BOX_H = 28
-const BR_H_GAP = 16
-const BR_ROW_H = 34
-const BR_GROUP_GAP = 18
-const BR_SEED_COL_W = 32
+// Визуально как в образцах: тонкие рамки, пустые боксы на баях, ФИО в 1 строку.
+// Автомасштаб — сетка целиком по ширине без горизонтального скролла.
+const BR_BOX_W = 200
+const BR_BOX_H = 26
+const BR_H_GAP = 18
+const BR_ROW_H = 32
+const BR_GROUP_GAP = 16
+const BR_SEED_COL_W = 28
+const BR_BORDER = "#1A1A1A"
 const seedSelectStyle = {
   flex: 1,
   minWidth: 0,
   border: "none",
   background: "transparent",
   textAlign: "center",
-  fontSize: "11px",
-  fontFamily: "Arial",
+  fontSize: "10px",
+  fontFamily: "Georgia, 'Times New Roman', serif",
   color: "#1A1A1A",
   padding: 0,
   margin: 0,
@@ -2399,26 +2404,30 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
 
   roundsPerGroup.forEach((rounds, gi) => {
     const leafN = leafCounts[gi]
-    const ys0 = [], present0 = []
+    const ys0 = []
     for (let i = 0; i < leafN; i++) {
       const cy = y + BR_BOX_H / 2
       ys0.push(cy)
       const match = rounds[0][Math.floor(i / 2)]
       const slot = i % 2 === 0 ? match.a : match.b
-      present0.push(!!slot)
+      const byeSeed = i % 2 === 0 ? match.seedA : match.seedB
       if (slot) {
-        // match.a/b both present means a real two-sided bout; a bye (one
-        // side missing) auto-advances the sole entrant with no fight, so it
-        // must render as a plain box, not a "won" highlight - otherwise a
-        // freshly-drawn bracket looks like fights already happened.
         const realWin = !!(match.a && match.b && match.winner && match.winner.registration_id === slot.registration_id)
         boxes.push({ x: 0, y, ...formatLabel(slot), win: realWin, participant: slot, seedEditable: true })
+      } else {
+        // Пустой бокс бая — как в образце (номер слота, без ФИО)
+        boxes.push({
+          x: 0, y,
+          seed: byeSeed != null ? String(byeSeed) : "",
+          name: "", text: " ",
+          emptySlot: true,
+        })
       }
       y += BR_ROW_H
     }
     if (gi < nGroups - 1) y += BR_GROUP_GAP
 
-    let colYs = ys0, colPresent = present0
+    let colYs = ys0
     for (let c = 1; c <= rounds.length; c++) {
       const isLastRound = c === rounds.length
       const roundLabel = isLastRound ? (nGroups > 1 ? "semifinal" : "final") : `round${c}`
@@ -2427,27 +2436,27 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
         const match = rounds[c - 1][j]
         const ya = colYs[2 * j]
         const yb = colYs[2 * j + 1]
-        // Вилка всегда — и при бае (один участник), как у полного боя
         const py = (ya + yb) / 2
         nextYs.push(py)
         const xFrom = colX(c) - BR_H_GAP, xTo = colX(c)
         const midX = xFrom + BR_H_GAP / 2
         lines.push({ x1: xFrom, y1: ya, x2: midX, y2: ya }, { x1: xFrom, y1: yb, x2: midX, y2: yb },
           { x1: midX, y1: ya, x2: midX, y2: yb }, { x1: midX, y1: py, x2: xTo, y2: py })
+
+        const isBye = Boolean(match.a) !== Boolean(match.b)
+        // Бай: следующий бокс пустой (ФИО только в 1-м круге), как в образце.
+        // Реальный бой: пусто до результата, затем победитель.
+        const showWinner = !isBye && match.winner
         boxes.push({
-          // После каждого соединителя — тот же бокс №|ФИО, что в 1-м круге
-          x: xTo, y: py - BR_BOX_H / 2, ...(match.winner ? formatLabel(match.winner) : emptyBracketBox()),
-          // Same bye rule as the leaf boxes above - only highlight a name
-          // here as "won" if it came from an actual decided bout, not from
-          // a bye chain propagating with nobody on the other side yet.
-          win: !!(match.a && match.b && match.winner), pending: !match.winner && match.a && match.b,
-          // Editable whenever there's a real two-sided match, decided or
-          // not - a wrong result needs to be correctable, not just enterable once.
+          x: xTo, y: py - BR_BOX_H / 2,
+          ...(showWinner ? formatLabel(match.winner) : emptyBracketBox()),
+          win: !!(match.a && match.b && match.winner),
+          pending: !match.winner && match.a && match.b,
           editable: !!(match.a && match.b),
-          match, roundLabel
+          match, roundLabel,
         })
       }
-      colYs = nextYs; colPresent = nextYs.map(() => true)
+      colYs = nextYs
     }
 
     const champion = rounds.length ? rounds[rounds.length - 1][0].winner : null
@@ -2527,22 +2536,29 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
         return
       }
       const leafN = 2 * rounds[0].length
-      const ys0 = [], present0 = []
+      const ys0 = []
       for (let i = 0; i < leafN; i++) {
         const cy = y2 + BR_BOX_H / 2
         ys0.push(cy)
         const match = rounds[0][Math.floor(i / 2)]
         const slot = i % 2 === 0 ? match.a : match.b
-        present0.push(!!slot)
+        const byeSeed = i % 2 === 0 ? match.seedA : match.seedB
         if (slot) {
           const realWin = !!(match.a && match.b && match.winner && match.winner.registration_id === slot.registration_id)
           boxes.push({ x: 0, y: y2, ...formatLabel(slot), win: realWin })
+        } else {
+          boxes.push({
+            x: 0, y: y2,
+            seed: byeSeed != null ? String(byeSeed) : "",
+            name: "", text: " ",
+            emptySlot: true,
+          })
         }
         y2 += BR_ROW_H
       }
       if (gi < nRepGroups - 1) y2 += BR_GROUP_GAP
 
-      let colYs = ys0, colPresent = present0
+      let colYs = ys0
       for (let c = 1; c <= rounds.length; c++) {
         const nextYs = []
         for (let j = 0; j < rounds[c - 1].length; j++) {
@@ -2555,14 +2571,16 @@ function layoutBracket(roundsPerGroup, finalMatch, bronzeMatch, repechagePerGrou
           const midX = xFrom + BR_H_GAP / 2
           lines.push({ x1: xFrom, y1: ya, x2: midX, y2: ya }, { x1: xFrom, y1: yb, x2: midX, y2: yb },
             { x1: midX, y1: ya, x2: midX, y2: yb }, { x1: midX, y1: py, x2: xTo, y2: py })
+          const isBye = Boolean(match.a) !== Boolean(match.b)
+          const showWinner = !isBye && match.winner
           boxes.push({
-            x: xTo, y: py - BR_BOX_H / 2, ...(match.winner ? formatLabel(match.winner) : emptyBracketBox()),
+            x: xTo, y: py - BR_BOX_H / 2, ...(showWinner ? formatLabel(match.winner) : emptyBracketBox()),
             win: !!(match.a && match.b && match.winner), pending: !match.winner && match.a && match.b,
             editable: !!(match.a && match.b),
             match, roundLabel: `repechage_r${c}`
           })
         }
-        colYs = nextYs; colPresent = nextYs.map(() => true)
+        colYs = nextYs
       }
       champYs2.push(colYs.length ? colYs[0] : ys0[0])
     })
@@ -5301,12 +5319,12 @@ function BracketSvgView({ layout, interactive, onOpenMatch, canEditSeeds, displa
         }}>
           <svg width={layout.width} height={layout.height} style={{ position: "absolute", top: 0, left: 0 }}>
             {layout.lines.map((l, i) => (
-              <line key={i} x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2} stroke="#C9C7BC" strokeWidth="1.25" />
+              <line key={i} x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2} stroke={BR_BORDER} strokeWidth="1" />
             ))}
           </svg>
           {layout.labels.map((lb, i) => (
             <div key={i} style={{
-              position: "absolute", left: lb.x, top: lb.y, width: BR_BOX_W, fontSize: "11px",
+              position: "absolute", left: lb.x, top: lb.y, width: BR_BOX_W, fontSize: "10px",
               color: "#4A4A48", fontWeight: lb.bold ? "bold" : "normal", textAlign: lb.bold ? "center" : "left",
               whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
             }}>{lb.text}</div>
@@ -5314,16 +5332,18 @@ function BracketSvgView({ layout, interactive, onOpenMatch, canEditSeeds, displa
           {layout.boxes.map((b, i) => {
             const clickable = interactive && b.editable
             const name = b.name || (b.pending ? (interactive ? "Ввести результат" : "—") : "")
+            const borderColor = b.big ? "#1A56A0" : BR_BORDER
             return (
               <div key={i}
                 onClick={clickable ? () => onOpenMatch(b) : undefined}
                 title={clickable ? (b.pending ? "Ввести результат" : "Нажмите, чтобы изменить результат") : (b.text || name || undefined)}
                 style={{
                   position: "absolute", left: b.x, top: b.y, width: BR_BOX_W, height: BR_BOX_H,
-                  boxSizing: "border-box", border: `${b.big ? 2 : 1}px ${b.pending ? "dashed" : "solid"} ${b.big ? "#1A56A0" : "#D3D1C7"}`,
-                  borderRadius: "2px", background: "white",
+                  boxSizing: "border-box",
+                  border: `${b.big ? 2 : 1}px ${b.pending ? "dashed" : "solid"} ${borderColor}`,
+                  borderRadius: 0, background: "white",
                   display: "flex", alignItems: "stretch", justifyContent: "flex-start",
-                  fontSize: "11px", fontFamily: "Arial", lineHeight: 1.15,
+                  fontSize: "10px", fontFamily: "Georgia, 'Times New Roman', serif", lineHeight: 1.1,
                   fontWeight: b.text && b.win ? "bold" : "normal",
                   color: b.text && b.win ? "#0F6E56" : (b.pending ? "#4A4A48" : "#1A1A1A"),
                   overflow: "hidden",
@@ -5331,7 +5351,7 @@ function BracketSvgView({ layout, interactive, onOpenMatch, canEditSeeds, displa
                 }}
               >
                 <div style={{
-                  width: BR_SEED_COL_W, minWidth: BR_SEED_COL_W, borderRight: "1px solid #E5E2D8",
+                  width: BR_SEED_COL_W, minWidth: BR_SEED_COL_W, borderRight: `1px solid ${BR_BORDER}`,
                   display: "flex", alignItems: "center", justifyContent: "center", gap: "1px",
                   padding: "0 1px", boxSizing: "border-box", flexShrink: 0,
                 }}
@@ -5342,7 +5362,7 @@ function BracketSvgView({ layout, interactive, onOpenMatch, canEditSeeds, displa
                       value={b.participant.seed ?? ""}
                       disabled={seedBusy}
                       onChange={e => onSeedChange?.(b.participant, Number(e.target.value))}
-                      style={{ ...seedSelectStyle, cursor: seedBusy ? "wait" : "pointer" }}
+                      style={{ ...seedSelectStyle, fontFamily: "Georgia, 'Times New Roman', serif", fontSize: "10px", cursor: seedBusy ? "wait" : "pointer" }}
                       title="Изменить № жребья"
                     >
                       {displayOptions.map(s => <option key={s} value={s}>{s}</option>)}
@@ -5354,7 +5374,7 @@ function BracketSvgView({ layout, interactive, onOpenMatch, canEditSeeds, displa
                 <div
                   title={name || undefined}
                   style={{
-                    flex: 1, minWidth: 0, padding: "0 5px",
+                    flex: 1, minWidth: 0, padding: "0 4px",
                     display: "flex", alignItems: "center",
                     overflow: "hidden",
                   }}
