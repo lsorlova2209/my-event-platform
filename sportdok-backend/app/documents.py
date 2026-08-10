@@ -200,6 +200,29 @@ def _category_label(discipline, gender, category_name):
     return " / ".join(part for part in (DISCIPLINE_LABELS.get(discipline, discipline), gender_label, category_name) if part)
 
 
+def _category_label_site(discipline, gender, category_name, age_group=None):
+    """Как на сайте: «Ката ОК-ката-вадо-рю / Ж / Девочки 10-11»."""
+    gender_short = {"male": "М", "female": "Ж"}.get(gender, "")
+    full = " ".join(
+        part for part in (DISCIPLINE_LABELS.get(discipline, discipline), category_name) if part
+    ).strip()
+    return " / ".join(part for part in (full, gender_short, age_group) if part)
+
+
+_AGE_GROUP_FALLBACK = "Без возрастной группы"
+
+
+def _age_group_sort_key(label):
+    """Как на фронте: 10-11 → 12-13 → … → взрослые (Мужчины/Женщины)."""
+    s = (label or "").strip()
+    if not s or s == _AGE_GROUP_FALLBACK:
+        return (9999, s or _AGE_GROUP_FALLBACK)
+    m = re.search(r"(\d+)", s)
+    if m:
+        return (int(m.group(1)), s)
+    return (100, s)
+
+
 def _header_row(ws, row, values):
     for col, value in enumerate(values, start=1):
         cell = ws.cell(row=row, column=col, value=value)
@@ -2178,7 +2201,11 @@ def build_pdf(tournament, summary, categories, team_ranking):
 
 
 def build_participants_list_pdf(tournament, categories):
-    """Публичный PDF: только списки участников по категориям (без сеток и протоколов хода)."""
+    """Публичный PDF: списки участников по возрастным группам (как на сайте).
+
+    Структура как на публичной странице турнира:
+    возрастная группа (от младших к старшим) → категории → таблица ФИО.
+    """
     styles = _pdf_styles()
     buffer = BytesIO()
     doc = SimpleDocTemplate(
@@ -2195,9 +2222,14 @@ def build_participants_list_pdf(tournament, categories):
         "ParticipantsMeta", parent=styles["Normal"],
         fontName="DejaVuSans", fontSize=11, leading=14, alignment=1, textColor=colors.HexColor("#444444"),
     )
+    age_style = ParagraphStyle(
+        "ParticipantsAge", parent=styles["Heading2"],
+        fontName="DejaVuSans-Bold", fontSize=13, leading=16, spaceBefore=10, spaceAfter=6,
+        textColor=colors.HexColor("#1A56A0"),
+    )
     cat_style = ParagraphStyle(
         "ParticipantsCat", parent=styles["Heading2"],
-        fontName="DejaVuSans-Bold", fontSize=12, leading=15, spaceBefore=4, spaceAfter=8,
+        fontName="DejaVuSans-Bold", fontSize=11, leading=14, spaceBefore=4, spaceAfter=6,
     )
 
     story.append(Paragraph("Список участников", title_style))
@@ -2209,68 +2241,95 @@ def build_participants_list_pdf(tournament, categories):
         meta_parts.append(tournament.get("location"))
     if meta_parts:
         story.append(Paragraph(" · ".join(str(p) for p in meta_parts), meta_style))
-    story.append(Spacer(1, 0.4 * cm))
+    story.append(Spacer(1, 0.35 * cm))
 
     competition_level = _competition_level(tournament)
     org_header = "Регион" if _uses_region_org(competition_level) else "Клуб"
 
-    cats = [c for c in (categories or []) if c.get("participants")]
-    cats = sorted(
-        cats,
-        key=lambda c: _category_label(c.get("discipline"), c.get("gender"), c.get("category_name")),
-    )
+    # Разбиваем каждую дисциплину/категорию на возрастные группы (как на сайте)
+    buckets = {}
+    for cat in categories or []:
+        by_age = {}
+        for p in cat.get("participants") or []:
+            age = (p.get("age_group") or "").strip() or _AGE_GROUP_FALLBACK
+            by_age.setdefault(age, []).append(p)
+        for age, people in by_age.items():
+            people = sorted(
+                people,
+                key=lambda p: (
+                    (p.get("last_name") or "").casefold(),
+                    (p.get("first_name") or "").casefold(),
+                    (p.get("middle_name") or "").casefold(),
+                ),
+            )
+            buckets.setdefault(age, []).append({
+                "discipline": cat.get("discipline"),
+                "gender": cat.get("gender"),
+                "category_name": cat.get("category_name"),
+                "age_group": age,
+                "participants": people,
+            })
 
-    if not cats:
+    age_order = sorted(buckets.keys(), key=_age_group_sort_key)
+
+    if not age_order:
         story.append(Paragraph("Пока нет зарегистрированных участников.", styles["Normal"]))
     else:
-        for i, cat in enumerate(cats):
-            if i > 0:
-                story.append(Spacer(1, 0.35 * cm))
-            label = _category_label(cat.get("discipline"), cat.get("gender"), cat.get("category_name"))
-            story.append(Paragraph(f"{label} ({len(cat['participants'])})", cat_style))
+        for age_i, age in enumerate(age_order):
+            sections = sorted(
+                buckets[age],
+                key=lambda c: _category_label_site(
+                    c.get("discipline"), c.get("gender"), c.get("category_name"),
+                ).casefold(),
+            )
+            age_count = sum(len(s["participants"]) for s in sections)
+            if age_i > 0:
+                story.append(Spacer(1, 0.25 * cm))
+            story.append(Paragraph(f"{age} ({age_count})", age_style))
 
-            is_kata = cat.get("discipline") == "kata"
-            header = ["№", "ФИО", org_header, "Возраст"]
-            if not is_kata:
-                header.append("Вес")
+            for cat in sections:
+                label = _category_label_site(
+                    cat.get("discipline"), cat.get("gender"), cat.get("category_name"),
+                )
+                story.append(Paragraph(f"{label} ({len(cat['participants'])})", cat_style))
 
-            def sort_key(p):
-                seed = p.get("seed")
-                return (0, seed) if seed is not None else (1, 9999, p.get("last_name") or "", p.get("first_name") or "")
-
-            participants = sorted(cat["participants"], key=sort_key)
-            rows = [header]
-            for idx, p in enumerate(participants, start=1):
-                full = " ".join(
-                    part for part in (p.get("last_name"), p.get("first_name"), p.get("middle_name")) if part
-                ).strip()
-                org = _participant_org(p, competition_level) or "—"
-                num = str(p["seed"]) if p.get("seed") is not None else str(idx)
-                row = [num, full or "—", org, p.get("age_group") or "—"]
+                is_kata = cat.get("discipline") == "kata"
+                header = ["№", "ФИО", org_header]
                 if not is_kata:
-                    row.append(str(p["weight"]) if p.get("weight") is not None else "—")
-                rows.append(row)
+                    header.append("Вес")
 
-            col_count = len(header)
-            if is_kata:
-                widths = [1.2 * cm, 8.5 * cm, 5.5 * cm, 3.0 * cm]
-            else:
-                widths = [1.2 * cm, 7.2 * cm, 4.8 * cm, 2.8 * cm, 2.2 * cm]
-            table = Table(rows, colWidths=widths[:col_count], repeatRows=1, hAlign="LEFT")
-            table.setStyle(TableStyle([
-                ("FONTNAME", (0, 0), (-1, -1), "DejaVuSans"),
-                ("FONTNAME", (0, 0), (-1, 0), "DejaVuSans-Bold"),
-                ("FONTSIZE", (0, 0), (-1, -1), 9),
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8eef7")),
-                ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("ALIGN", (0, 0), (0, -1), "CENTER"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-                ("TOPPADDING", (0, 0), (-1, -1), 3),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-            ]))
-            story.append(table)
+                rows = [header]
+                for idx, p in enumerate(cat["participants"], start=1):
+                    full = " ".join(
+                        part for part in (p.get("last_name"), p.get("first_name"), p.get("middle_name")) if part
+                    ).strip()
+                    org = _participant_org(p, competition_level) or "—"
+                    row = [str(idx), full or "—", org]
+                    if not is_kata:
+                        row.append(str(p["weight"]) if p.get("weight") is not None else "—")
+                    rows.append(row)
+
+                col_count = len(header)
+                if is_kata:
+                    widths = [1.2 * cm, 10.0 * cm, 6.5 * cm]
+                else:
+                    widths = [1.2 * cm, 8.5 * cm, 5.5 * cm, 2.5 * cm]
+                table = Table(rows, colWidths=widths[:col_count], repeatRows=1, hAlign="LEFT")
+                table.setStyle(TableStyle([
+                    ("FONTNAME", (0, 0), (-1, -1), "DejaVuSans"),
+                    ("FONTNAME", (0, 0), (-1, 0), "DejaVuSans-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 9),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8eef7")),
+                    ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("ALIGN", (0, 0), (0, -1), "CENTER"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ]))
+                story.append(table)
+                story.append(Spacer(1, 0.2 * cm))
 
     doc.build(story)
     buffer.seek(0)
