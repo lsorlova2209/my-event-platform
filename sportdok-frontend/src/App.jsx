@@ -864,7 +864,7 @@ function AdminPanel({ user, onLogout }) {
         </div>
 
         {/* Навигация */}
-        <div style={{ display: "flex", gap: "8px", marginBottom: "24px" }}>
+        <div style={{ display: "flex", gap: "8px", marginBottom: "24px", flexWrap: "wrap", alignItems: "center" }}>
           <button onClick={() => setPage("tournaments")} style={{
             ...btnOutline, fontWeight: page === "tournaments" ? "bold" : "normal",
             background: page === "tournaments" ? "#1A56A0" : "white",
@@ -883,6 +883,13 @@ function AdminPanel({ user, onLogout }) {
             background: page === "secretaries" ? "#1A56A0" : "white",
             color: page === "secretaries" ? "white" : "#4A4A48"
           }}>Секретари</button>
+          <button
+            onClick={() => window.open(`${API}/api/v1/catalog/categories-pdf`, "_blank")}
+            style={btnOutline}
+            title="PDF со всеми дисциплинами, весовыми категориями, видами ката и возрастными группами"
+          >
+            Справочник категорий (PDF)
+          </button>
         </div>
 
         {/* Турниры */}
@@ -2693,7 +2700,17 @@ function CategoryMultiSelect({ weightCategories, selectedKata, selectedKumite, o
   return (
     <div style={{ display: "flex", gap: "12px", marginBottom: "16px", flexWrap: "wrap" }}>
       <div style={{ flex: "1 1 260px" }}>
-        <label style={labelStyle}>Категории ката</label>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "8px", marginBottom: "4px" }}>
+          <label style={{ ...labelStyle, margin: 0 }}>Категории ката</label>
+          <a
+            href={`${API}/api/v1/catalog/categories-pdf`}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ fontSize: "12px", color: "#1A56A0", whiteSpace: "nowrap" }}
+          >
+            Справочник (PDF)
+          </a>
+        </div>
         <div style={boxStyle}>
           {KATA_PROGRAM_TYPES.map(type => {
             const disabled = disabledKeys.has(`kata|${type}`)
