@@ -33,7 +33,6 @@ from app.documents import (
     build_participants_list_pdf,
     build_draw_pdf,
     build_team_roster_xlsx,
-    build_categories_catalog_pdf,
     format_program_type,
     team_standings,
     _uses_region_org,
@@ -287,7 +286,25 @@ def create_admin():
         db.add(admin)
         db.commit()
 
-from app.category_catalog import WEIGHT_CATEGORIES, RANKS, NO_WEIGH_CATEGORIES
+WEIGHT_CATEGORIES = {
+    "kumite_ok": [
+        "38", "40", "42", "45", "47", "50", "52", "55", "57", "58", "60", "62",
+        "63", "65", "67", "68", "70", "70+", "73", "75", "78", "80", "83", "90", "90+",
+        "абсолютная категория", "командные соревнования", "двоеборье"
+    ],
+    "kumite_pk": [
+        "35", "40", "45", "50", "55", "60", "65", "70", "75", "75+", "80", "85", "90", "90+", "95"
+    ],
+    "kumite_sz": [
+        "36", "39", "42", "45", "48", "51", "54", "57", "60", "64", "68", "72",
+        "76", "76+", "80", "85", "90", "90+"
+    ],
+}
+
+RANKS = [
+    "МСМК", "МС", "КМС", "1 разряд", "2 разряд", "3 разряд",
+    "1 юн. разряд", "2 юн. разряд", "3 юн. разряд", "Б/р"
+]
 
 @app.on_event("startup")
 def seed_reference_catalogs():
@@ -693,6 +710,7 @@ def draw_category_key(discipline, category_name):
     return kata_style(category_name) if discipline == "kata" else category_name
 
 
+NO_WEIGH_CATEGORIES = {"абсолютная категория", "двоеборье", "командные соревнования"}
 KUMITE_DISCIPLINES = {"kumite_ok", "kumite_pk", "kumite_sz"}
 
 
@@ -2607,21 +2625,6 @@ def export_team_roster(
 
 
 # ─── СПРАВОЧНИКИ ──────────────────────────────────────────────────────────────
-
-@app.get("/api/v1/catalog/categories-pdf")
-def export_categories_catalog_pdf():
-    """PDF-справочник всех категорий: дисциплины, веса, ката, возраст, команды."""
-    buffer = build_categories_catalog_pdf()
-    return StreamingResponse(
-        buffer,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": (
-                "attachment; filename=sportdok_categories_catalog.pdf; "
-                "filename*=UTF-8''%D1%81%D0%BF%D1%80%D0%B0%D0%B2%D0%BE%D1%87%D0%BD%D0%B8%D0%BA_%D0%BA%D0%B0%D1%82%D0%B5%D0%B3%D0%BE%D1%80%D0%B8%D0%B9.pdf"
-            )
-        },
-    )
 
 @app.get("/api/v1/weight-categories/")
 def list_weight_categories(discipline: Optional[str] = None, db: Session = Depends(get_db)):
